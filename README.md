@@ -118,7 +118,7 @@ Lower values = more frequent API calls. Higher values = faster response but slig
 |---------|----------|
 | Status line doesn't appear | Run `python claude_status.py --install` and restart Claude Code |
 | Shows "No credentials found" | Make sure you're logged in to Claude Code (`claude /login`) |
-| Shows wrong plan tier | Restart Claude Code — credentials refresh on startup |
+| Shows wrong plan tier after upgrading | Log out (`claude /logout`) then log back in (`claude /login`) — your OAuth token needs to refresh to pick up the new subscription tier |
 | Stale percentages | Delete the cache: `~/.cache/claude-status/cache.json` (Linux/Mac) or `%LOCALAPPDATA%\claude-status\cache.json` (Windows) |
 
 ## License
