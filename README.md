@@ -27,6 +27,20 @@
 
 No guesswork. No scanning log files. It pulls the **exact same numbers** shown on [claude.ai/settings/usage](https://claude.ai/settings/usage) via Anthropic's OAuth API.
 
+## Quick Start — `/pulse`
+
+Once installed, just type **`/pulse`** in Claude Code. That's it. A guided wizard walks you through picking a theme, text colour, and animation settings — no commands to remember.
+
+```
+/pulse          — opens the interactive setup wizard
+/pulse ocean    — jump straight to a theme by name
+/pulse config   — see your current settings
+```
+
+Everything below can also be configured via `/pulse` — the CLI flags are there if you prefer them.
+
+---
+
 ## Features
 
 ### Colour-coded progress bars
@@ -153,21 +167,15 @@ python claude_status.py --config
 
 ### `/pulse` Slash Command
 
-If you have the slash command installed, configure everything from within Claude Code:
+All the CLI flags below also work as `/pulse` subcommands inside Claude Code:
 
 ```
-/pulse                — interactive theme picker with visual descriptions
-/pulse ocean          — set theme to ocean directly
-/pulse themes         — interactive theme menu
-/pulse visibility     — toggle which parts are visible
-/pulse hide timer     — hide the reset timer
-/pulse show extra     — enable extra usage display
-/pulse animate off    — disable shimmer animation
+/pulse visibility      — toggle which parts are visible
+/pulse hide timer      — hide the reset timer
+/pulse show extra      — enable extra usage display
+/pulse animate off     — disable shimmer animation
 /pulse text-color cyan — set text colour to cyan
-/pulse config         — show current config
 ```
-
-The `/pulse` menu uses Claude's interactive picker so you can see theme descriptions and choose visually — no need to remember theme names.
 
 ### Automatic Update Notifications
 
