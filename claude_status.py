@@ -637,9 +637,9 @@ def cmd_update():
     # Fetch remote version to show what's available
     remote_version = _fetch_remote_version()
     if remote_version and remote_version != VERSION:
-        utf8_print(f"  {BRIGHT_YELLOW}Update found! v{remote_version} available{RESET}")
-    elif remote:
-        utf8_print(f"  {BRIGHT_YELLOW}Update found!{RESET} ({remote[:8]})")
+        utf8_print(f"  {BRIGHT_YELLOW}Update found! v{VERSION} -> v{remote_version}{RESET}")
+    else:
+        utf8_print(f"  {BRIGHT_YELLOW}Update found! New changes available{RESET}")
 
     # Run git pull
     utf8_print(f"  Pulling latest from GitHub...")
