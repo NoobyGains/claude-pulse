@@ -35,11 +35,15 @@ If $ARGUMENTS is `update`:
 
 ### Interactive menu (when $ARGUMENTS is empty, `themes`, `theme`, or `menu`):
 
-**Step 1:** Run `python "[REPLACE_WITH_YOUR_PATH]/claude_status.py" --config` silently to get the current settings.
+**Step 0 — Update check:** Run `python "[REPLACE_WITH_YOUR_PATH]/claude_status.py" --config` silently to get the current settings. If the output contains "update available" or similar, tell the user FIRST:
 
-**Step 2:** Run `python "[REPLACE_WITH_YOUR_PATH]/claude_status.py" --themes-demo` and show the output to the user. This prints all 10 themes with their actual coloured bars so the user can see every option before picking.
+> **A new version of claude-pulse is available!** Run `/pulse update` to get the latest features and fixes.
 
-**Step 3:** Show the first `AskUserQuestion` picker (page 1 of 3):
+Then continue with the wizard. If no update is available, skip this message.
+
+**Step 1:** Run `python "[REPLACE_WITH_YOUR_PATH]/claude_status.py" --themes-demo` and show the output to the user. This prints all 10 themes with their actual coloured bars so the user can see every option before picking.
+
+**Step 2:** Show the first `AskUserQuestion` picker (page 1 of 3):
 
 ```
 Question: "Pick a theme from the preview above"
@@ -52,7 +56,7 @@ Options:
   - "More themes..." — "See all 10 themes"
 ```
 
-**Step 3b:** If "More themes...", show page 2:
+**Step 2b:** If "More themes...", show page 2:
 
 ```
 Question: "Pick a theme"
@@ -65,7 +69,7 @@ Options:
   - "More themes..." — "See neon, sunset, pride, mono"
 ```
 
-**Step 3c:** If "More themes..." again, show page 3:
+**Step 2c:** If "More themes..." again, show page 3:
 
 ```
 Question: "Pick a theme"
@@ -78,29 +82,37 @@ Options:
   - "← Back" — "Return to the first set of themes"
 ```
 
-If "← Back", go back to Step 3. Mono is available via "Other" on any page (it's visible in the preview above).
+If "← Back", go back to Step 2. Mono is available via "Other" on any page (it's visible in the preview above).
 
-**Step 4:** After the user picks a theme, apply it with `--theme <name>`.
+**Step 3:** After the user picks a theme, apply it with `--theme <name>`.
 
-**Step 5:** If the chosen theme is NOT rainbow, ask about text colour. The recommended option should be the theme's default (auto) which uses white for most themes — neutral and contrasts with all bar colours:
+**Step 4:** If the chosen theme is NOT rainbow, ask about text colour. Use the theme-specific recommendation as the top option:
+
+Theme-specific text colour recommendations:
+- **ocean** → recommend **cyan** — "Cool cyan that complements the blue/magenta bars"
+- **sunset** / **ember** → recommend **yellow** — "Warm tone that complements the orange/red bars"
+- **frost** → recommend **cyan** — "Icy tone that complements the blue/white bars"
+- **candy** → recommend **pink** — "Pink that complements the purple/cyan bars"
+- **neon** → recommend **green** — "Bright green that matches the neon energy"
+- **pride** → recommend **violet** — "Violet that complements the green/pink bars"
+- **default** / **mono** / anything else → recommend **white** — "Neutral light grey that works with any bars"
 
 ```
 Question: "What colour for the labels and percentages?"
 Header: "Text colour"
 multiSelect: false
 Options:
-  - "White (Recommended)" — "Neutral light grey that contrasts with theme bars and shows the shimmer"
+  - "<theme recommendation> (Recommended)" — "<reason from above>"
+  - "White" — "Neutral light grey — works with any theme and shows the shimmer"
   - "Default" — "Your terminal's default text colour"
-  - "cyan" — "Cool cyan text"
-  - "magenta" — "Magenta/pink text"
+  - "<a contrasting option>" — pick one that contrasts with the theme: cyan, magenta, green, yellow, etc.
 ```
 
-If they pick "White", use `--text-color auto` (auto resolves to white for most themes).
+If they pick the recommended option for a specific theme, use `--text-color <colour>` (e.g. `--text-color cyan` for ocean).
+If they pick "White", use `--text-color white`.
 If they pick "Default", use `--text-color default`.
 
-Apply with `--text-color <name>`. If they pick Auto, use `--text-color auto`.
-
-**Step 6:** Ask about animation:
+**Step 5:** Ask about animation:
 
 ```
 Question: "Enable the white shimmer animation?"
@@ -111,9 +123,9 @@ Options:
   - "Off" — "Static colours, no animation"
 ```
 
-**Step 7:** Apply the animation setting with `--animate on|off`.
+**Step 6:** Apply the animation setting with `--animate on|off`.
 
-**Step 8:** Confirm everything:
+**Step 7:** Confirm everything:
 "All set! Your status line is now using **<theme>** with **<text colour>** text and shimmer **<on/off>**. It'll update on the next refresh (~30s) or restart Claude Code to see it immediately."
 
 ---

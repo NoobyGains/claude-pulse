@@ -611,13 +611,13 @@ def cmd_update():
             if result.stdout.strip():
                 for ln in result.stdout.strip().split("\n"):
                     utf8_print(f"  {DIM}{ln}{RESET}")
-            # Clear update check cache so indicator disappears
+            # Clear all caches so the update indicator disappears immediately
             state_dir = get_state_dir()
-            uc_path = state_dir / "update_check.json"
-            try:
-                uc_path.unlink()
-            except OSError:
-                pass
+            for cache_name in ("update_check.json", "cache.json"):
+                try:
+                    (state_dir / cache_name).unlink()
+                except OSError:
+                    pass
             utf8_print(f"\n  Restart Claude Code to use the new version.")
         else:
             utf8_print(f"  {RED}Update failed:{RESET}")
