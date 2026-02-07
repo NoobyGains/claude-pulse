@@ -806,12 +806,13 @@ def build_status_line(usage, plan, config=None):
     # Extra usage (bonus/gifted credits) — off by default
     if show.get("extra", False):
         extra = usage.get("extra_usage")
+        currency = config.get("currency", "$")
         if extra and extra.get("is_enabled"):
             pct = min(extra.get("utilization", 0), 100)
             used = extra.get("used_credits", 0)
             limit = extra.get("monthly_limit", 0)
             bar = make_bar(pct, theme, plain=bar_plain)
-            parts.append(f"Extra {bar} ${used:.0f}/${limit:.0f}")
+            parts.append(f"Extra {bar} {currency}{used:.0f}/{currency}{limit:.0f}")
         elif show.get("extra") == True:
             # User explicitly enabled but no credits gifted
             parts.append(f"Extra {make_bar(0, theme, plain=bar_plain)} none")
@@ -1050,6 +1051,7 @@ def cmd_print_config():
     utf8_print(f"\n{BOLD}claude-pulse v{VERSION}{RESET}\n")
     utf8_print(f"  Theme:     {theme_name}  {preview}")
     utf8_print(f"  Cache TTL: {config.get('cache_ttl_seconds', DEFAULT_CACHE_TTL)}s")
+    utf8_print(f"  Currency:  {config.get('currency', '$')}")
     rb = config.get("rainbow_bars", True)
     rb_state = f"{GREEN}on{RESET}" if rb else f"{RED}off{RESET}"
     utf8_print(f"  Rainbow bars: {rb_state}  (rainbow colours {'include' if rb else 'skip'} the progress bars)")
@@ -1221,6 +1223,22 @@ def main():
             utf8_print(f"Animation: {state}")
         else:
             print("Usage: --animate on|off")
+        return
+
+    if "--currency" in args:
+        idx = args.index("--currency")
+        if idx + 1 < len(args):
+            val = args[idx + 1]
+            config = load_config()
+            config["currency"] = val
+            save_config(config)
+            try:
+                os.remove(get_cache_path())
+            except OSError:
+                pass
+            utf8_print(f"Currency symbol: {BOLD}{val}{RESET}")
+        else:
+            utf8_print("Usage: --currency <symbol>  (e.g. $, \u00a3, \u20ac, \u00a5)")
         return
 
     if "--config" in args:

@@ -29,6 +29,10 @@ If $ARGUMENTS matches `text-color <name>` or `text-colour <name>`:
 -> Run `--text-color <name>` directly.
 -> Available colours: auto, white, bright_white, cyan, blue, green, yellow, magenta, red, orange, violet, pink, dim, default, none
 
+If $ARGUMENTS matches `currency <symbol>` (e.g. `currency £`, `currency €`, `currency $`):
+-> Run `--currency <symbol>` directly.
+-> Confirm: "Currency set to **<symbol>**. Extra usage will display as <symbol>amount."
+
 If $ARGUMENTS is `update`:
 -> Run `python "[REPLACE_WITH_YOUR_PATH]/claude_status.py" --update` and show the output.
 -> After a successful update, remind the user to restart Claude Code to use the new version.
