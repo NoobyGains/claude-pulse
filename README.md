@@ -57,20 +57,13 @@ The bars change colour based on your usage level so you can tell at a glance how
 
 ### 10 Built-in Themes
 
-| Theme | Preview | Style |
-|-------|---------|-------|
-| `default` | ![](https://img.shields.io/badge/%E2%94%81%E2%94%81%E2%94%81%E2%94%81-2ea043?style=flat-square) ![](https://img.shields.io/badge/%E2%94%81%E2%94%81%E2%94%81%E2%94%81-d29922?style=flat-square) ![](https://img.shields.io/badge/%E2%94%81%E2%94%81%E2%94%81-cf222e?style=flat-square) | Classic traffic-light |
-| `ocean` | ![](https://img.shields.io/badge/%E2%94%81%E2%94%81%E2%94%81%E2%94%81-0891b2?style=flat-square) ![](https://img.shields.io/badge/%E2%94%81%E2%94%81%E2%94%81%E2%94%81-2563eb?style=flat-square) ![](https://img.shields.io/badge/%E2%94%81%E2%94%81%E2%94%81-a855f7?style=flat-square) | Cool tones |
-| `sunset` | ![](https://img.shields.io/badge/%E2%94%81%E2%94%81%E2%94%81%E2%94%81-d29922?style=flat-square) ![](https://img.shields.io/badge/%E2%94%81%E2%94%81%E2%94%81%E2%94%81-ea580c?style=flat-square) ![](https://img.shields.io/badge/%E2%94%81%E2%94%81%E2%94%81-cf222e?style=flat-square) | Warm tones |
-| `mono` | ![](https://img.shields.io/badge/%E2%94%81%E2%94%81%E2%94%81%E2%94%81-6e7681?style=flat-square) ![](https://img.shields.io/badge/%E2%94%81%E2%94%81%E2%94%81%E2%94%81-8b949e?style=flat-square) ![](https://img.shields.io/badge/%E2%94%81%E2%94%81%E2%94%81-c9d1d9?style=flat-square) | Brightness only |
-| `neon` | ![](https://img.shields.io/badge/%E2%94%81%E2%94%81%E2%94%81%E2%94%81-3fb950?style=flat-square) ![](https://img.shields.io/badge/%E2%94%81%E2%94%81%E2%94%81%E2%94%81-f0e040?style=flat-square) ![](https://img.shields.io/badge/%E2%94%81%E2%94%81%E2%94%81-f85149?style=flat-square) | Vivid/bold |
-| `pride` | ![](https://img.shields.io/badge/%E2%94%81%E2%94%81%E2%94%81%E2%94%81-af5fff?style=flat-square) ![](https://img.shields.io/badge/%E2%94%81%E2%94%81%E2%94%81%E2%94%81-00ffaf?style=flat-square) ![](https://img.shields.io/badge/%E2%94%81%E2%94%81%E2%94%81-ff00af?style=flat-square) | Violet, green & pink |
-| `frost` | ![](https://img.shields.io/badge/%E2%94%81%E2%94%81%E2%94%81%E2%94%81-87ceeb?style=flat-square) ![](https://img.shields.io/badge/%E2%94%81%E2%94%81%E2%94%81%E2%94%81-5fafff?style=flat-square) ![](https://img.shields.io/badge/%E2%94%81%E2%94%81%E2%94%81-ffffff?style=flat-square) | Icy blue to white |
-| `ember` | ![](https://img.shields.io/badge/%E2%94%81%E2%94%81%E2%94%81%E2%94%81-ffd700?style=flat-square) ![](https://img.shields.io/badge/%E2%94%81%E2%94%81%E2%94%81%E2%94%81-ff5f00?style=flat-square) ![](https://img.shields.io/badge/%E2%94%81%E2%94%81%E2%94%81-ff3333?style=flat-square) | Gold to hot red |
-| `candy` | ![](https://img.shields.io/badge/%E2%94%81%E2%94%81%E2%94%81%E2%94%81-ff87d7?style=flat-square) ![](https://img.shields.io/badge/%E2%94%81%E2%94%81%E2%94%81%E2%94%81-af87ff?style=flat-square) ![](https://img.shields.io/badge/%E2%94%81%E2%94%81%E2%94%81-00ffff?style=flat-square) | Pink, purple & cyan |
-| `rainbow` | ![](https://img.shields.io/badge/%E2%94%81-ff0000?style=flat-square) ![](https://img.shields.io/badge/%E2%94%81-ff8800?style=flat-square) ![](https://img.shields.io/badge/%E2%94%81-ffff00?style=flat-square) ![](https://img.shields.io/badge/%E2%94%81-00cc00?style=flat-square) ![](https://img.shields.io/badge/%E2%94%81-0088ff?style=flat-square) ![](https://img.shields.io/badge/%E2%94%81-8800ff?style=flat-square) | Animated rainbow shimmer |
+<p align="center">
+  <img src="themes.png" alt="All 10 themes" width="700">
+</p>
 
-Each preview shows **low** → **mid** → **high** usage colours as they appear on your status bar. The `rainbow` theme is animated — every character cycles through the full spectrum with a white shimmer highlight that sweeps across, like the Claude loading animation.
+Each theme uses accent colours for text and colour-coded progress bars that shift from **low** → **mid** → **high** based on your usage. The `rainbow` theme is animated — every character cycles through the full spectrum with a white shimmer highlight that sweeps across.
+
+Preview them live in Claude Code with `/pulse show`, or from the command line with `python claude_status.py --show-themes`.
 
 ### White Shimmer Animation
 

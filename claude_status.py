@@ -88,6 +88,20 @@ TEXT_COLORS = {
     "none": "",
 }
 
+# Accent text colour per theme — used in previews/demos to make each theme look distinct
+THEME_DEMO_TEXT = {
+    "default": "green",
+    "ocean":   "cyan",
+    "sunset":  "yellow",
+    "mono":    "dim",
+    "neon":    "green",
+    "pride":   "violet",
+    "frost":   "cyan",
+    "ember":   "yellow",
+    "candy":   "pink",
+    "rainbow": "none",
+}
+
 # Recommended text colour per theme — chosen for good contrast with bars
 # so the shimmer (white overlay on coloured text) is clearly visible
 THEME_TEXT_DEFAULTS = {
@@ -1040,7 +1054,8 @@ def cmd_themes_demo():
     current = user_config.get("theme", "default")
     user_bar_size = user_config.get("bar_size", DEFAULT_BAR_SIZE)
     for name in THEMES:
-        demo_config = {"theme": name, "bar_size": user_bar_size, "show": {"session": True, "weekly": True, "plan": True, "timer": False, "extra": False}}
+        demo_tc = THEME_DEMO_TEXT.get(name, "white")
+        demo_config = {"theme": name, "bar_size": user_bar_size, "text_color": demo_tc, "show": {"session": True, "weekly": True, "plan": True, "timer": False, "extra": False}}
         line = build_status_line(demo_usage, "Max 20x", demo_config)
         marker = " <<" if name == current else ""
         utf8_print(f"  {BOLD}{name:<10}{RESET} {line}{marker}")
@@ -1048,7 +1063,7 @@ def cmd_themes_demo():
 
 
 def cmd_show_themes():
-    """Show all themes with live status line previews."""
+    """Show all themes with live status line previews using accent colours."""
     current_config = load_config()
     current_theme = current_config.get("theme", "default")
     user_bar_size = current_config.get("bar_size", DEFAULT_BAR_SIZE)
@@ -1059,7 +1074,9 @@ def cmd_show_themes():
         "seven_day": {"utilization": 67},
     }
     for name in THEMES:
-        demo_config = {"theme": name, "bar_size": user_bar_size, "show": {"session": True, "weekly": True, "plan": True, "timer": False, "extra": False}}
+        # Use the accent colour so each theme looks distinct in the preview
+        demo_tc = THEME_DEMO_TEXT.get(name, "white")
+        demo_config = {"theme": name, "bar_size": user_bar_size, "text_color": demo_tc, "show": {"session": True, "weekly": True, "plan": True, "timer": False, "extra": False}}
         line = build_status_line(demo_usage, "Max 20x", demo_config)
         marker = f" {GREEN}<< current{RESET}" if name == current_theme else ""
         utf8_print(f"  {BOLD}{name:<10}{RESET} {line}{marker}")
