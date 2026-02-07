@@ -55,11 +55,11 @@ Each preview shows **low** → **mid** → **high** usage colours as they appear
 
 ### White Shimmer Animation
 
-All themes support a white shimmer effect — a bright highlight that sweeps across the status line while Claude is writing, matching the speed and feel of Claude's built-in "Crafting..." animation. The shimmer is:
+All themes support a white shimmer effect — a bright highlight that sweeps across the text while Claude is writing. The shimmer:
 
-- **Universal** — works on every theme, not just rainbow
-- **Fast and clean** — wide 20-character highlight band sweeps every 2.5 seconds, designed to look smooth at the status line's ~300ms refresh rate
-- **Automatic** — animates during active generation, freezes when idle (72% chance a frozen frame shows no shimmer)
+- **Only affects text** — labels, percentages and separators shimmer; progress bars keep their colour-coded meaning
+- **Hooks into Claude's lifecycle** — animates when Claude is writing, cleanly reverts to static when idle (no frozen shimmer artifacts)
+- **Fast and clean** — wide 20-character highlight band sweeps every 2.5 seconds, bright white (RGB 210-255) that's always visible against the text
 
 The shimmer is **on by default**. Toggle it:
 ```bash
@@ -70,11 +70,26 @@ python claude_status.py --animate off
 python claude_status.py --animate on
 ```
 
-When `animate` is off, rainbow renders pure rainbow colours without the white glint, and all other themes render with their static colours.
+### Animation Lifecycle Hooks
+
+The `--install` command automatically sets up Claude Code hooks so the animation knows when to start and stop:
+
+- **`UserPromptSubmit`** hook — flags that Claude is processing (animation starts)
+- **`Stop`** hook — clears the flag (animation stops, clean static display)
+
+This means:
+- While Claude is **writing** → rainbow shifts, shimmer sweeps
+- While Claude is **idle** → clean static colours, no frozen animation artifacts
+- **Backwards compatible** — without hooks, animation runs on every render (old behaviour)
+
+The hooks are installed automatically with `--install`. To add them separately:
+```bash
+python claude_status.py --install-hooks
+```
 
 ### Text Colour
 
-The labels and percentages outside the progress bars (e.g. "Session", "35%", "|") are coloured to match your theme. Each theme has a recommended default, but you can override it:
+The labels and percentages outside the progress bars (e.g. "Session", "35%", "|") use a contrasting colour so the shimmer is clearly visible against the bars:
 
 ```bash
 # Use the theme's recommended colour (default)
@@ -86,8 +101,6 @@ python claude_status.py --text-color magenta
 ```
 
 **Available colours:** `auto`, `white`, `bright_white`, `cyan`, `blue`, `green`, `yellow`, `magenta`, `red`, `orange`, `violet`, `pink`, `dim`, `default`, `none`
-
-The text colour should **contrast** with the bar colours so the shimmer animation is visible — the bright white highlight sweeping across lighter text creates the eye-catching effect. Most themes default to white text, which contrasts cleanly with all coloured bars.
 
 | Theme | Default text colour | Why |
 |-------|-------------------|-----|
@@ -156,6 +169,15 @@ If you have the slash command installed, configure everything from within Claude
 
 The `/pulse` menu uses Claude's interactive picker so you can see theme descriptions and choose visually — no need to remember theme names.
 
+### Automatic Update Notifications
+
+claude-pulse checks GitHub for new releases once per hour (cached, 3-second timeout). If a newer version is available, a subtle `↑ update` indicator appears on your status line. Run `git pull` to update.
+
+The update check is:
+- **Automatic** — no setup needed for git clone installs
+- **Silent** — never blocks the status line; skips quietly on network errors
+- **Lightweight** — one small GitHub API call per hour, result cached locally
+
 ### Lightweight and fast
 
 - **Single Python file** — no dependencies, no pip install, just Python 3.6+
@@ -186,7 +208,7 @@ cd claude-pulse
 python claude_status.py --install
 ```
 
-This adds the status line to your `~/.claude/settings.json` automatically.
+This adds the status line **and** animation lifecycle hooks to your `~/.claude/settings.json` automatically.
 
 ### 3. Restart Claude Code
 
@@ -216,7 +238,7 @@ Claude Code starts
 Calls claude_status.py (passes session JSON via stdin)
     ↓
 Check cache (~30s TTL)
-    ├── Fresh? → Return cached line instantly
+    ├── Fresh? → Re-render with current animation state
     └── Stale? → Read OAuth token from ~/.claude/.credentials.json
                      ↓
                  GET https://api.anthropic.com/api/oauth/usage
@@ -224,6 +246,10 @@ Check cache (~30s TTL)
                  Format status line with coloured bars
                      ↓
                  Cache result, print to stdout
+
+Animation hooks (automatic):
+    UserPromptSubmit → set "processing" flag  → animation ON
+    Stop             → clear flag             → animation OFF (clean static)
 ```
 
 The status line updates whenever Claude Code's conversation updates (roughly every 300ms), but the API is only hit once every 30 seconds to keep things fast and respectful.
@@ -253,15 +279,17 @@ Edit `config.json` directly or use the CLI flags:
 
 | Flag | Description |
 |------|-------------|
-| `--install` | Install the status line into Claude Code settings |
+| `--install` | Install status line + animation hooks into Claude Code settings |
+| `--install-hooks` | Install only the animation hooks (if already have status line) |
 | `--themes` | List all available themes with colour previews |
+| `--themes-demo` | Preview all themes with simulated status lines |
 | `--theme <name>` | Set the active theme |
 | `--show <parts>` | Enable comma-separated parts |
 | `--hide <parts>` | Disable comma-separated parts |
 | `--rainbow-bars on\|off` | Toggle whether rainbow colours the bars or just the text |
 | `--animate on\|off` | Toggle the white shimmer animation (default: on) |
 | `--text-color <name>` | Set the text colour for labels/percentages (default: auto) |
-| `--config` | Print current configuration summary |
+| `--config` | Print current configuration summary (includes hook/update status) |
 
 Lower cache TTL values = more frequent API calls. Higher values = faster response but slightly staler data. Default of 30 seconds is a good balance.
 
@@ -280,6 +308,8 @@ Lower cache TTL values = more frequent API calls. Higher values = faster respons
 | Shows wrong plan tier after upgrading | Log out (`claude /logout`) then log back in (`claude /login`) — your OAuth token needs to refresh to pick up the new subscription tier |
 | Stale percentages | Delete the cache: `~/.cache/claude-status/cache.json` (Linux/Mac) or `%LOCALAPPDATA%\claude-status\cache.json` (Windows) |
 | Theme not applying | Clear the cache file after changing themes so the next render uses the new colours |
+| Animation doesn't stop when idle | Run `python claude_status.py --install` to install the lifecycle hooks, then restart Claude Code |
+| `↑ update` showing | Run `git pull` in the claude-pulse directory to get the latest version |
 
 ## License
 
