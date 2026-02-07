@@ -803,15 +803,18 @@ def build_status_line(usage, plan, config=None):
             bar = make_bar(pct, theme, plain=bar_plain)
             parts.append(f"Weekly {bar} {pct:.0f}%")
 
-    # Extra usage (bonus/overflow credits) — off by default
+    # Extra usage (bonus/gifted credits) — off by default
     if show.get("extra", False):
-        extra = usage.get("extra")
-        if extra:
-            pct = extra.get("utilization", 0)
+        extra = usage.get("extra_usage")
+        if extra and extra.get("is_enabled"):
+            pct = min(extra.get("utilization", 0), 100)
+            used = extra.get("used_credits", 0)
+            limit = extra.get("monthly_limit", 0)
             bar = make_bar(pct, theme, plain=bar_plain)
-            parts.append(f"Extra {bar} {pct:.0f}%")
-        else:
-            parts.append(f"Extra {make_bar(0, theme, plain=bar_plain)} 0%")
+            parts.append(f"Extra {bar} ${used:.0f}/${limit:.0f}")
+        elif show.get("extra") == True:
+            # User explicitly enabled but no credits gifted
+            parts.append(f"Extra {make_bar(0, theme, plain=bar_plain)} none")
 
     # Plan name
     if show.get("plan", True) and plan:
