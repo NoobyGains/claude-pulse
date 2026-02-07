@@ -94,8 +94,32 @@ def hsv_to_rgb(h, s, v):
     return vi, p, q
 
 
-def rainbow_colorize(text, color_all=True):
-    """Apply animated rainbow gradient with a white shimmer sweep.
+def detect_activity():
+    """Detect if Claude is actively thinking based on call frequency.
+
+    The status line is called every ~300ms during generation but less often
+    when idle.  We touch a file each call and check how recently the previous
+    call happened.  Rapid calls (< 1.5 s apart) → active/thinking.
+    """
+    cache_dir = get_cache_path().parent
+    state_path = cache_dir / ".last_render"
+    now = time.time()
+    try:
+        last_time = state_path.stat().st_mtime
+    except (FileNotFoundError, OSError):
+        last_time = 0
+    try:
+        state_path.touch()
+    except OSError:
+        pass
+    return (now - last_time) < 1.5
+
+
+def rainbow_colorize(text, color_all=True, is_active=False):
+    """Apply animated rainbow with two modes.
+
+    Active/thinking — fast colour drift + rapid 3-second shimmer.
+    Idle            — nearly static colours + soft 10-second white glimmer.
 
     color_all=True  — strip existing ANSI, rainbow every character (bars + text).
     color_all=False — preserve existing ANSI-colored chars (bars), only rainbow
@@ -118,10 +142,21 @@ def rainbow_colorize(text, color_all=True):
     if visible_count == 0:
         return text
 
-    # Shimmer highlight sweeps across every ~3 seconds
-    cycle = 3.0
-    highlight_center = (now % cycle) / cycle * (visible_count + 10) - 5
-    highlight_width = 5
+    # Animation parameters — active vs idle
+    if is_active:
+        hue_drift = now * 0.15          # fast colour shifting
+        cycle = 3.0                     # rapid shimmer
+        highlight_width = 5
+        shimmer_desat = 0.75            # strong white flash
+        shimmer_val_boost = 0.05
+    else:
+        hue_drift = now * 0.02          # barely perceptible drift
+        cycle = 10.0                    # slow, calm glimmer
+        highlight_width = 8             # wider, softer gradient
+        shimmer_desat = 0.60            # gentler white wash
+        shimmer_val_boost = 0.05
+
+    highlight_center = (now % cycle) / cycle * (visible_count + highlight_width * 2) - highlight_width
 
     result = []
     visible_idx = 0
@@ -145,8 +180,6 @@ def rainbow_colorize(text, color_all=True):
                 if seq == "\033[0m":
                     has_existing_color = False
                 else:
-                    # Any non-reset sequence (color, DIM, etc.) means the
-                    # following chars are part of a styled region (the bar)
                     has_existing_color = True
                 result.append(seq)
                 i = j + 1
@@ -158,13 +191,16 @@ def rainbow_colorize(text, color_all=True):
             result.append(text[i])
         else:
             # Apply rainbow
-            hue = ((visible_idx * 0.04) + (now * 0.15)) % 1.0
+            hue = ((visible_idx * 0.04) + hue_drift) % 1.0
             dist = abs(visible_idx - highlight_center)
 
             if dist < highlight_width:
+                # Shimmer band — desaturate toward white
                 blend = 1.0 - (dist / highlight_width)
-                sat = 0.85 * (1.0 - blend * 0.75)
-                val = 1.0
+                if not is_active:
+                    blend = blend * blend  # quadratic falloff for softer edge
+                sat = 0.85 * (1.0 - blend * shimmer_desat)
+                val = 0.95 + blend * shimmer_val_boost
             else:
                 sat = 0.85
                 val = 0.95
@@ -390,7 +426,8 @@ def build_status_line(usage, plan, config=None):
     line = " | ".join(parts)
 
     if is_rainbow:
-        line = rainbow_colorize(line, color_all=rainbow_bars)
+        is_active = config.get("_is_active", False)
+        line = rainbow_colorize(line, color_all=rainbow_bars, is_active=is_active)
 
     return line
 
@@ -619,6 +656,10 @@ def main():
     config = load_config()
     cache_ttl = config.get("cache_ttl_seconds", DEFAULT_CACHE_TTL)
     is_rainbow = config.get("theme") == "rainbow"
+
+    # Detect thinking vs idle for rainbow animation style
+    if is_rainbow:
+        config["_is_active"] = detect_activity()
 
     try:
         sys.stdin.read()
