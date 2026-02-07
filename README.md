@@ -63,6 +63,9 @@ The bars change colour based on your usage level so you can tell at a glance how
 | `mono` | ![](https://img.shields.io/badge/%E2%94%81%E2%94%81%E2%94%81%E2%94%81-6e7681?style=flat-square) ![](https://img.shields.io/badge/%E2%94%81%E2%94%81%E2%94%81%E2%94%81-8b949e?style=flat-square) ![](https://img.shields.io/badge/%E2%94%81%E2%94%81%E2%94%81-c9d1d9?style=flat-square) | Brightness only |
 | `neon` | ![](https://img.shields.io/badge/%E2%94%81%E2%94%81%E2%94%81%E2%94%81-3fb950?style=flat-square) ![](https://img.shields.io/badge/%E2%94%81%E2%94%81%E2%94%81%E2%94%81-f0e040?style=flat-square) ![](https://img.shields.io/badge/%E2%94%81%E2%94%81%E2%94%81-f85149?style=flat-square) | Vivid/bold |
 | `pride` | ![](https://img.shields.io/badge/%E2%94%81%E2%94%81%E2%94%81%E2%94%81-af5fff?style=flat-square) ![](https://img.shields.io/badge/%E2%94%81%E2%94%81%E2%94%81%E2%94%81-00ffaf?style=flat-square) ![](https://img.shields.io/badge/%E2%94%81%E2%94%81%E2%94%81-ff00af?style=flat-square) | Violet, green & pink |
+| `frost` | ![](https://img.shields.io/badge/%E2%94%81%E2%94%81%E2%94%81%E2%94%81-87ceeb?style=flat-square) ![](https://img.shields.io/badge/%E2%94%81%E2%94%81%E2%94%81%E2%94%81-5fafff?style=flat-square) ![](https://img.shields.io/badge/%E2%94%81%E2%94%81%E2%94%81-ffffff?style=flat-square) | Icy blue to white |
+| `ember` | ![](https://img.shields.io/badge/%E2%94%81%E2%94%81%E2%94%81%E2%94%81-ffd700?style=flat-square) ![](https://img.shields.io/badge/%E2%94%81%E2%94%81%E2%94%81%E2%94%81-ff5f00?style=flat-square) ![](https://img.shields.io/badge/%E2%94%81%E2%94%81%E2%94%81-ff3333?style=flat-square) | Gold to hot red |
+| `candy` | ![](https://img.shields.io/badge/%E2%94%81%E2%94%81%E2%94%81%E2%94%81-ff87d7?style=flat-square) ![](https://img.shields.io/badge/%E2%94%81%E2%94%81%E2%94%81%E2%94%81-af87ff?style=flat-square) ![](https://img.shields.io/badge/%E2%94%81%E2%94%81%E2%94%81-00ffff?style=flat-square) | Pink, purple & cyan |
 | `rainbow` | ![](https://img.shields.io/badge/%E2%94%81-ff0000?style=flat-square) ![](https://img.shields.io/badge/%E2%94%81-ff8800?style=flat-square) ![](https://img.shields.io/badge/%E2%94%81-ffff00?style=flat-square) ![](https://img.shields.io/badge/%E2%94%81-00cc00?style=flat-square) ![](https://img.shields.io/badge/%E2%94%81-0088ff?style=flat-square) ![](https://img.shields.io/badge/%E2%94%81-8800ff?style=flat-square) | Animated rainbow shimmer |
 
 Each preview shows **low** → **mid** → **high** usage colours as they appear on your status bar. The `rainbow` theme is animated — every character cycles through the full spectrum with a white shimmer highlight that sweeps across, like the Claude loading animation.
@@ -123,6 +126,9 @@ python claude_status.py --text-color magenta
 | `sunset` | white | Contrasts with yellow/orange/red bars |
 | `neon` | white | Contrasts with bright green/yellow/red bars |
 | `pride` | white | Contrasts with violet/green/pink bars |
+| `frost` | white | Contrasts with icy blue/steel bars |
+| `ember` | white | Contrasts with gold/orange/red bars |
+| `candy` | white | Contrasts with pink/purple/cyan bars |
 | `mono` | dim | Subtle contrast with white/bright bars |
 | `rainbow` | none | Rainbow handles its own colouring |
 

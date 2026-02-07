@@ -37,6 +37,13 @@ BRIGHT_ORANGE_256 = "\033[38;5;214m"
 PRIDE_VIOLET = "\033[38;5;135m"
 PRIDE_GREEN = "\033[38;5;49m"
 PRIDE_PINK = "\033[38;5;199m"
+FROST_ICE = "\033[38;5;159m"
+FROST_STEEL = "\033[38;5;75m"
+EMBER_GOLD = "\033[38;5;220m"
+EMBER_HOT = "\033[38;5;202m"
+CANDY_PINK = "\033[38;5;213m"
+CANDY_PURPLE = "\033[38;5;141m"
+CANDY_CYAN = "\033[38;5;51m"
 
 # Theme definitions — each maps usage levels to ANSI colour codes
 # "rainbow" uses representative colours for previews; actual rendering is animated
@@ -47,6 +54,9 @@ THEMES = {
     "mono":    {"low": WHITE, "mid": WHITE, "high": BRIGHT_WHITE},
     "neon":    {"low": BRIGHT_GREEN, "mid": BRIGHT_YELLOW, "high": BRIGHT_RED},
     "pride":   {"low": PRIDE_VIOLET, "mid": PRIDE_GREEN, "high": PRIDE_PINK},
+    "frost":   {"low": FROST_ICE, "mid": FROST_STEEL, "high": BRIGHT_WHITE},
+    "ember":   {"low": EMBER_GOLD, "mid": EMBER_HOT, "high": BRIGHT_RED},
+    "candy":   {"low": CANDY_PINK, "mid": CANDY_PURPLE, "high": CANDY_CYAN},
     "rainbow": {"low": BRIGHT_GREEN, "mid": BRIGHT_YELLOW, "high": MAGENTA},
 }
 
@@ -83,6 +93,9 @@ THEME_TEXT_DEFAULTS = {
     "mono":    "dim",
     "neon":    "white",
     "pride":   "white",
+    "frost":   "white",
+    "ember":   "white",
+    "candy":   "white",
     "rainbow": "none",
 }
 
