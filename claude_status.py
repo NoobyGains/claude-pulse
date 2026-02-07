@@ -671,37 +671,26 @@ def install_status_line():
         except (json.JSONDecodeError, OSError):
             pass
 
+    # Status line command
     settings["statusLine"] = {
         "type": "command",
         "command": f'python "{script_path}"',
     }
 
+    # Animation lifecycle hooks — animate only while Claude is writing
+    _install_hooks_into(settings, script_path)
+
     settings_path.parent.mkdir(parents=True, exist_ok=True)
     with open(settings_path, "w") as f:
         json.dump(settings, f, indent=2)
 
-    print(f"Installed status line to {settings_path}")
+    print(f"Installed status line + animation hooks to {settings_path}")
     print(f"Command: python \"{script_path}\"")
     print("Restart Claude Code to see the status line.")
 
 
-def install_hooks():
-    """Install animation lifecycle hooks into Claude Code settings.
-
-    Adds UserPromptSubmit and Stop hooks that flag when Claude is processing,
-    so the status line only animates during active generation.
-    """
-    settings_path = Path.home() / ".claude" / "settings.json"
-    script_path = Path(__file__).resolve()
-
-    settings = {}
-    if settings_path.exists():
-        try:
-            with open(settings_path, "r") as f:
-                settings = json.load(f)
-        except (json.JSONDecodeError, OSError):
-            pass
-
+def _install_hooks_into(settings, script_path):
+    """Wire animation lifecycle hooks into a settings dict (no file I/O)."""
     hooks = settings.get("hooks", {})
 
     start_hook = {
@@ -715,7 +704,6 @@ def install_hooks():
 
     # Add to UserPromptSubmit — fires when the user presses Enter
     submit_hooks = hooks.get("UserPromptSubmit", [])
-    # Check if our hook is already installed (avoid duplicates)
     our_cmd = f'python "{script_path}" --hook-start'
     already = any(
         h.get("hooks", [{}])[0].get("command", "") == our_cmd
@@ -739,6 +727,22 @@ def install_hooks():
     hooks["Stop"] = stop_hooks
 
     settings["hooks"] = hooks
+
+
+def install_hooks():
+    """Install animation lifecycle hooks into Claude Code settings (standalone)."""
+    settings_path = Path.home() / ".claude" / "settings.json"
+    script_path = Path(__file__).resolve()
+
+    settings = {}
+    if settings_path.exists():
+        try:
+            with open(settings_path, "r") as f:
+                settings = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    _install_hooks_into(settings, script_path)
 
     with open(settings_path, "w") as f:
         json.dump(settings, f, indent=2)
