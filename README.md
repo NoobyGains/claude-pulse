@@ -56,7 +56,7 @@ If you upgrade your plan, just restart Claude Code and it picks up the new tier 
 ### 1. Clone the repo
 
 ```bash
-git clone https://github.com/PigeonDroid/claude-pulse.git
+git clone https://github.com/defendeuw/claude-pulse.git
 cd claude-pulse
 ```
 
