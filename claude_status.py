@@ -219,13 +219,31 @@ def rainbow_colorize(text, color_all=True, is_active=False):
 # Config
 # ---------------------------------------------------------------------------
 
+def get_config_path():
+    """Return path to user config — stored alongside cache, outside the repo."""
+    if sys.platform == "win32":
+        base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+    else:
+        base = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
+    config_dir = base / "claude-status"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    return config_dir / "config.json"
+
+
 def load_config():
-    config_path = Path(__file__).parent / "config.json"
-    try:
-        with open(config_path, "r") as f:
-            data = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        data = {}
+    user_path = get_config_path()
+    repo_path = Path(__file__).parent / "config.json"
+
+    # User config takes priority, fall back to repo template
+    data = {}
+    for path in (user_path, repo_path):
+        try:
+            with open(path, "r") as f:
+                data = json.load(f)
+            break
+        except (FileNotFoundError, json.JSONDecodeError):
+            continue
+
     # Apply defaults
     data.setdefault("cache_ttl_seconds", DEFAULT_CACHE_TTL)
     data.setdefault("theme", "default")
@@ -238,9 +256,11 @@ def load_config():
 
 
 def save_config(config):
-    config_path = Path(__file__).parent / "config.json"
+    config_path = get_config_path()
+    # Only save user-facing keys, not internal ones
+    save_data = {k: v for k, v in config.items() if not k.startswith("_")}
     with open(config_path, "w") as f:
-        json.dump(config, f, indent=2)
+        json.dump(save_data, f, indent=2)
 
 
 # ---------------------------------------------------------------------------
