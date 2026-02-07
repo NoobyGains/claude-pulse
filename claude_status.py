@@ -813,10 +813,10 @@ def build_status_line(usage, plan, config=None):
         currency = config.get("currency", "\u00a3")
         if extra and extra.get("is_enabled"):
             pct = min(extra.get("utilization", 0), 100)
-            used = extra.get("used_credits", 0)
-            limit = extra.get("monthly_limit", 0)
+            used = extra.get("used_credits", 0) / 100  # API returns pence/cents
+            limit = extra.get("monthly_limit", 0) / 100
             bar = make_bar(pct, theme, plain=bar_plain)
-            parts.append(f"Extra {bar} {currency}{used:.0f}/{currency}{limit:.0f}")
+            parts.append(f"Extra {bar} {currency}{used:.2f}/{currency}{limit:.2f}")
         elif extra_enabled_by_user:
             # User explicitly enabled but no credits gifted
             parts.append(f"Extra {make_bar(0, theme, plain=bar_plain)} none")
@@ -1131,6 +1131,8 @@ def cmd_print_config():
             utf8_print(f"  Update:       {GREEN}up to date (v{VERSION}){RESET}")
         else:
             utf8_print(f"  Update:       {DIM}check failed{RESET}")
+    show = config.get("show", DEFAULT_SHOW)
+
     # Extra credits status — check the API
     utf8_print(f"\n  {BOLD}Extra Credits:{RESET}")
     try:
@@ -1140,11 +1142,11 @@ def cmd_print_config():
             _extra = _usage.get("extra_usage")
             if _extra and _extra.get("is_enabled"):
                 currency = config.get("currency", "\u00a3")
-                used = _extra.get("used_credits", 0)
-                limit = _extra.get("monthly_limit", 0)
+                used = _extra.get("used_credits", 0) / 100  # API returns pence/cents
+                limit = _extra.get("monthly_limit", 0) / 100
                 pct = min(_extra.get("utilization", 0), 100)
                 utf8_print(f"    Status:    {GREEN}active{RESET}")
-                utf8_print(f"    Used:      {currency}{used:.0f} / {currency}{limit:.0f} ({pct:.0f}%)")
+                utf8_print(f"    Used:      {currency}{used:.2f} / {currency}{limit:.2f} ({pct:.0f}%)")
                 if config.get("extra_hidden"):
                     utf8_print(f"    Display:   {RED}hidden{RESET}  (run {BOLD}--show extra{RESET} to re-enable)")
                 else:
@@ -1161,7 +1163,6 @@ def cmd_print_config():
         utf8_print(f"    Status:    {DIM}check failed{RESET}")
 
     utf8_print(f"\n  {BOLD}Visibility:{RESET}")
-    show = config.get("show", DEFAULT_SHOW)
     for key in DEFAULT_SHOW:
         state = f"{GREEN}on{RESET}" if show.get(key, DEFAULT_SHOW[key]) else f"{RED}off{RESET}"
         utf8_print(f"    {key:<10} {state}")
