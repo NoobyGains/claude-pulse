@@ -37,7 +37,7 @@ The bars change colour based on your usage level so you can tell at a glance how
 | 50–79% | Yellow | Getting warm |
 | 80%+ | Red | Close to the limit |
 
-### 6 Built-in Themes
+### 7 Built-in Themes
 
 | Theme | Preview | Style |
 |-------|---------|-------|
@@ -47,8 +47,9 @@ The bars change colour based on your usage level so you can tell at a glance how
 | `mono` | ![](https://img.shields.io/badge/%E2%94%81%E2%94%81%E2%94%81%E2%94%81-6e7681?style=flat-square) ![](https://img.shields.io/badge/%E2%94%81%E2%94%81%E2%94%81%E2%94%81-8b949e?style=flat-square) ![](https://img.shields.io/badge/%E2%94%81%E2%94%81%E2%94%81-c9d1d9?style=flat-square) | Brightness only |
 | `neon` | ![](https://img.shields.io/badge/%E2%94%81%E2%94%81%E2%94%81%E2%94%81-3fb950?style=flat-square) ![](https://img.shields.io/badge/%E2%94%81%E2%94%81%E2%94%81%E2%94%81-f0e040?style=flat-square) ![](https://img.shields.io/badge/%E2%94%81%E2%94%81%E2%94%81-f85149?style=flat-square) | Vivid/bold |
 | `pride` | ![](https://img.shields.io/badge/%E2%94%81%E2%94%81%E2%94%81%E2%94%81-af5fff?style=flat-square) ![](https://img.shields.io/badge/%E2%94%81%E2%94%81%E2%94%81%E2%94%81-00ffaf?style=flat-square) ![](https://img.shields.io/badge/%E2%94%81%E2%94%81%E2%94%81-ff00af?style=flat-square) | Violet, green & pink |
+| `rainbow` | ![](https://img.shields.io/badge/%E2%94%81-ff0000?style=flat-square) ![](https://img.shields.io/badge/%E2%94%81-ff8800?style=flat-square) ![](https://img.shields.io/badge/%E2%94%81-ffff00?style=flat-square) ![](https://img.shields.io/badge/%E2%94%81-00cc00?style=flat-square) ![](https://img.shields.io/badge/%E2%94%81-0088ff?style=flat-square) ![](https://img.shields.io/badge/%E2%94%81-8800ff?style=flat-square) | Animated rainbow shimmer |
 
-Each preview shows **low** → **mid** → **high** usage colours as they appear on your status bar.
+Each preview shows **low** → **mid** → **high** usage colours as they appear on your status bar. The `rainbow` theme is animated — every character cycles through the full spectrum with a white shimmer highlight that sweeps across, like the Claude loading animation.
 
 Preview all themes in your terminal:
 ```bash

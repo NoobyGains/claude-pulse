@@ -2,6 +2,7 @@
 """Minimal Claude Code status line — fetches real usage data from Anthropic's OAuth API."""
 
 import json
+import math
 import os
 import sys
 import time
@@ -37,6 +38,7 @@ PRIDE_GREEN = "\033[38;5;49m"
 PRIDE_PINK = "\033[38;5;199m"
 
 # Theme definitions — each maps usage levels to ANSI colour codes
+# "rainbow" uses representative colours for previews; actual rendering is animated
 THEMES = {
     "default": {"low": GREEN, "mid": YELLOW, "high": RED},
     "ocean":   {"low": CYAN, "mid": BLUE, "high": MAGENTA},
@@ -44,6 +46,7 @@ THEMES = {
     "mono":    {"low": WHITE, "mid": WHITE, "high": BRIGHT_WHITE},
     "neon":    {"low": BRIGHT_GREEN, "mid": BRIGHT_YELLOW, "high": BRIGHT_RED},
     "pride":   {"low": PRIDE_VIOLET, "mid": PRIDE_GREEN, "high": PRIDE_PINK},
+    "rainbow": {"low": BRIGHT_GREEN, "mid": BRIGHT_YELLOW, "high": MAGENTA},
 }
 
 PLAN_NAMES = {
@@ -60,6 +63,76 @@ DEFAULT_SHOW = {
     "extra": False,
 }
 
+
+# ---------------------------------------------------------------------------
+# Rainbow animation helpers
+# ---------------------------------------------------------------------------
+
+def hsv_to_rgb(h, s, v):
+    """Convert HSV (all 0-1) to RGB (0-255 ints)."""
+    if s == 0.0:
+        c = int(v * 255)
+        return c, c, c
+    h6 = h * 6.0
+    i = int(h6)
+    f = h6 - i
+    p = int(v * (1.0 - s) * 255)
+    q = int(v * (1.0 - s * f) * 255)
+    t = int(v * (1.0 - s * (1.0 - f)) * 255)
+    vi = int(v * 255)
+    i %= 6
+    if i == 0:
+        return vi, t, p
+    if i == 1:
+        return q, vi, p
+    if i == 2:
+        return p, vi, t
+    if i == 3:
+        return p, q, vi
+    if i == 4:
+        return t, p, vi
+    return vi, p, q
+
+
+def rainbow_colorize(text):
+    """Apply animated rainbow gradient with a white shimmer sweep."""
+    now = time.time()
+    text_len = len(text)
+    if text_len == 0:
+        return text
+
+    # Shimmer highlight sweeps across every ~3 seconds
+    cycle = 3.0
+    highlight_center = (now % cycle) / cycle * (text_len + 10) - 5
+    highlight_width = 5
+
+    result = []
+    for i, ch in enumerate(text):
+        # Rainbow hue: spread across the line + drift slowly over time
+        hue = ((i * 0.04) + (now * 0.15)) % 1.0
+
+        # Distance from the shimmer highlight
+        dist = abs(i - highlight_center)
+
+        if dist < highlight_width:
+            # Inside the shimmer band — desaturate toward white
+            blend = 1.0 - (dist / highlight_width)
+            sat = 0.85 * (1.0 - blend * 0.75)
+            val = 1.0
+        else:
+            sat = 0.85
+            val = 0.95
+
+        r, g, b = hsv_to_rgb(hue, sat, val)
+        result.append(f"\033[38;2;{r};{g};{b}m{ch}")
+
+    result.append(RESET)
+    return "".join(result)
+
+
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
 
 def load_config():
     config_path = Path(__file__).parent / "config.json"
@@ -84,6 +157,11 @@ def save_config(config):
         json.dump(config, f, indent=2)
 
 
+# ---------------------------------------------------------------------------
+# Cache — stores usage data alongside the rendered line so rainbow can
+# re-render each call without re-hitting the API.
+# ---------------------------------------------------------------------------
+
 def get_cache_path():
     if sys.platform == "win32":
         base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
@@ -95,23 +173,33 @@ def get_cache_path():
 
 
 def read_cache(cache_path, ttl):
+    """Return the full cache dict if fresh, else None."""
     try:
         with open(cache_path, "r") as f:
             cached = json.load(f)
         if time.time() - cached.get("timestamp", 0) < ttl:
-            return cached.get("line", "")
+            return cached
     except (FileNotFoundError, json.JSONDecodeError, KeyError):
         pass
     return None
 
 
-def write_cache(cache_path, line):
+def write_cache(cache_path, line, usage=None, plan=None):
     try:
+        data = {"timestamp": time.time(), "line": line}
+        if usage is not None:
+            data["usage"] = usage
+        if plan is not None:
+            data["plan"] = plan
         with open(cache_path, "w") as f:
-            json.dump({"timestamp": time.time(), "line": line}, f)
+            json.dump(data, f)
     except OSError:
         pass
 
+
+# ---------------------------------------------------------------------------
+# Credentials & API
+# ---------------------------------------------------------------------------
 
 def get_credentials():
     """Read OAuth token and plan info from Claude Code's credentials file."""
@@ -143,6 +231,10 @@ def fetch_usage(token):
         return json.loads(resp.read())
 
 
+# ---------------------------------------------------------------------------
+# Status line rendering
+# ---------------------------------------------------------------------------
+
 def get_theme_colours(theme_name):
     """Return the colour dict for the given theme name."""
     return THEMES.get(theme_name, THEMES["default"])
@@ -157,12 +249,14 @@ def bar_colour(pct, theme):
     return theme["low"]
 
 
-def make_bar(pct, theme=None):
-    """Build a thin coloured bar."""
+def make_bar(pct, theme=None, plain=False):
+    """Build a thin coloured bar. plain=True returns characters only (no ANSI)."""
     if theme is None:
         theme = THEMES["default"]
     filled = round(pct / 100 * BAR_WIDTH)
     filled = max(0, min(BAR_WIDTH, filled))
+    if plain:
+        return f"{FILL * filled}{EMPTY * (BAR_WIDTH - filled)}"
     colour = bar_colour(pct, theme)
     return f"{colour}{FILL * filled}{DIM}{EMPTY * (BAR_WIDTH - filled)}{RESET}"
 
@@ -189,7 +283,9 @@ def build_status_line(usage, plan, config=None):
     if config is None:
         config = load_config()
 
-    theme = get_theme_colours(config.get("theme", "default"))
+    theme_name = config.get("theme", "default")
+    is_rainbow = theme_name == "rainbow"
+    theme = THEMES["default"] if is_rainbow else get_theme_colours(theme_name)
     show = config.get("show", DEFAULT_SHOW)
     parts = []
 
@@ -198,19 +294,19 @@ def build_status_line(usage, plan, config=None):
         five = usage.get("five_hour")
         if five:
             pct = five.get("utilization", 0)
-            bar = make_bar(pct, theme)
+            bar = make_bar(pct, theme, plain=is_rainbow)
             reset = format_reset_time(five.get("resets_at")) if show.get("timer", True) else None
             reset_str = f" {reset}" if reset else ""
             parts.append(f"Session {bar} {pct:.0f}%{reset_str}")
         else:
-            parts.append(f"Session {make_bar(0, theme)} 0%")
+            parts.append(f"Session {make_bar(0, theme, plain=is_rainbow)} 0%")
 
     # Weekly Limit (7-day all models)
     if show.get("weekly", True):
         seven = usage.get("seven_day")
         if seven:
             pct = seven.get("utilization", 0)
-            bar = make_bar(pct, theme)
+            bar = make_bar(pct, theme, plain=is_rainbow)
             parts.append(f"Weekly {bar} {pct:.0f}%")
 
     # Extra usage (bonus/overflow credits) — off by default
@@ -218,18 +314,26 @@ def build_status_line(usage, plan, config=None):
         extra = usage.get("extra")
         if extra:
             pct = extra.get("utilization", 0)
-            bar = make_bar(pct, theme)
+            bar = make_bar(pct, theme, plain=is_rainbow)
             parts.append(f"Extra {bar} {pct:.0f}%")
         else:
-            # Show placeholder if enabled but no data
-            parts.append(f"Extra {make_bar(0, theme)} 0%")
+            parts.append(f"Extra {make_bar(0, theme, plain=is_rainbow)} 0%")
 
     # Plan name
     if show.get("plan", True) and plan:
         parts.append(plan)
 
-    return " | ".join(parts)
+    line = " | ".join(parts)
 
+    if is_rainbow:
+        line = rainbow_colorize(line)
+
+    return line
+
+
+# ---------------------------------------------------------------------------
+# Install
+# ---------------------------------------------------------------------------
 
 def install_status_line():
     settings_path = Path.home() / ".claude" / "settings.json"
@@ -257,6 +361,10 @@ def install_status_line():
     print("Restart Claude Code to see the status line.")
 
 
+# ---------------------------------------------------------------------------
+# CLI commands
+# ---------------------------------------------------------------------------
+
 def utf8_print(text):
     """Print text with UTF-8 encoding (avoids Windows cp1252 errors)."""
     sys.stdout.buffer.write((text + "\n").encode("utf-8"))
@@ -266,26 +374,31 @@ def cmd_list_themes():
     """Print all available themes with a colour preview."""
     utf8_print(f"\n{BOLD}Available themes:{RESET}\n")
     for name, colours in THEMES.items():
-        low_bar = f"{colours['low']}{FILL * 3}{RESET}"
-        mid_bar = f"{colours['mid']}{FILL * 3}{RESET}"
-        high_bar = f"{colours['high']}{FILL * 2}{RESET}"
-        preview = f"{low_bar}{mid_bar}{high_bar}"
-        utf8_print(f"  {name:<10} {preview}  ({colours['low']}low{RESET} {colours['mid']}mid{RESET} {colours['high']}high{RESET})")
+        if name == "rainbow":
+            # Show a mini rainbow preview
+            preview = rainbow_colorize(FILL * 8)
+            utf8_print(f"  {name:<10} {preview}  (animated rainbow shimmer)")
+        else:
+            low_bar = f"{colours['low']}{FILL * 3}{RESET}"
+            mid_bar = f"{colours['mid']}{FILL * 3}{RESET}"
+            high_bar = f"{colours['high']}{FILL * 2}{RESET}"
+            preview = f"{low_bar}{mid_bar}{high_bar}"
+            utf8_print(f"  {name:<10} {preview}  ({colours['low']}low{RESET} {colours['mid']}mid{RESET} {colours['high']}high{RESET})")
     utf8_print("")
 
 
 def cmd_themes_demo():
     """Print a simulated status line for each theme so users can see them in action."""
     utf8_print(f"\n{BOLD}Theme previews:{RESET}\n")
-    # Simulated usage data for the demo
     demo_usage = {
         "five_hour": {"utilization": 42, "resets_at": None},
         "seven_day": {"utilization": 67},
     }
-    for name, colours in THEMES.items():
+    current = load_config().get("theme", "default")
+    for name in THEMES:
         demo_config = {"theme": name, "show": {"session": True, "weekly": True, "plan": True, "timer": False, "extra": False}}
         line = build_status_line(demo_usage, "Max 20x", demo_config)
-        marker = " <<" if name == load_config().get("theme", "default") else ""
+        marker = " <<" if name == current else ""
         utf8_print(f"  {BOLD}{name:<10}{RESET} {line}{marker}")
     utf8_print(f"\n  Set with: python claude_status.py --theme <name>\n")
 
@@ -299,8 +412,16 @@ def cmd_set_theme(name):
     config = load_config()
     config["theme"] = name
     save_config(config)
-    colours = THEMES[name]
-    preview = f"{colours['low']}{FILL * 3}{colours['mid']}{FILL * 3}{colours['high']}{FILL * 2}{RESET}"
+    # Clear the cache so the new theme takes effect immediately
+    try:
+        os.remove(get_cache_path())
+    except OSError:
+        pass
+    if name == "rainbow":
+        preview = rainbow_colorize(FILL * 8)
+    else:
+        colours = THEMES[name]
+        preview = f"{colours['low']}{FILL * 3}{colours['mid']}{FILL * 3}{colours['high']}{FILL * 2}{RESET}"
     utf8_print(f"Theme set to {BOLD}{name}{RESET}  {preview}")
 
 
@@ -338,8 +459,12 @@ def cmd_print_config():
     """Print the current configuration summary."""
     config = load_config()
     theme_name = config.get("theme", "default")
-    colours = THEMES.get(theme_name, THEMES["default"])
-    preview = f"{colours['low']}{FILL * 3}{colours['mid']}{FILL * 3}{colours['high']}{FILL * 2}{RESET}"
+
+    if theme_name == "rainbow":
+        preview = rainbow_colorize(FILL * 8)
+    else:
+        colours = THEMES.get(theme_name, THEMES["default"])
+        preview = f"{colours['low']}{FILL * 3}{colours['mid']}{FILL * 3}{colours['high']}{FILL * 2}{RESET}"
 
     utf8_print(f"\n{BOLD}claude-pulse config{RESET}\n")
     utf8_print(f"  Theme:     {theme_name}  {preview}")
@@ -351,6 +476,10 @@ def cmd_print_config():
         utf8_print(f"    {key:<10} {state}")
     utf8_print("")
 
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 
 def main():
     args = sys.argv[1:]
@@ -398,6 +527,7 @@ def main():
     # Normal status line mode
     config = load_config()
     cache_ttl = config.get("cache_ttl_seconds", DEFAULT_CACHE_TTL)
+    is_rainbow = config.get("theme") == "rainbow"
 
     try:
         sys.stdin.read()
@@ -406,8 +536,14 @@ def main():
 
     cache_path = get_cache_path()
     cached = read_cache(cache_path, cache_ttl)
+
     if cached is not None:
-        sys.stdout.buffer.write((cached + "\n").encode("utf-8"))
+        if is_rainbow and "usage" in cached:
+            # Re-render with fresh timestamp for animation
+            line = build_status_line(cached["usage"], cached.get("plan", ""), config)
+        else:
+            line = cached.get("line", "")
+        sys.stdout.buffer.write((line + "\n").encode("utf-8"))
         return
 
     token, plan = get_credentials()
@@ -421,11 +557,13 @@ def main():
         usage = fetch_usage(token)
         line = build_status_line(usage, plan, config)
     except urllib.error.HTTPError as e:
+        usage = None
         line = f"API error: {e.code}"
     except Exception:
+        usage = None
         line = "Usage unavailable"
 
-    write_cache(cache_path, line)
+    write_cache(cache_path, line, usage, plan)
     sys.stdout.buffer.write((line + "\n").encode("utf-8"))
 
 
