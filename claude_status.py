@@ -21,6 +21,26 @@ YELLOW = "\033[33m"
 RED = "\033[31m"
 DIM = "\033[2m"
 RESET = "\033[0m"
+BOLD = "\033[1m"
+CYAN = "\033[36m"
+BLUE = "\033[34m"
+MAGENTA = "\033[35m"
+WHITE = "\033[37m"
+BRIGHT_WHITE = "\033[97m"
+BRIGHT_GREEN = "\033[92m"
+BRIGHT_YELLOW = "\033[93m"
+BRIGHT_RED = "\033[91m"
+ORANGE_256 = "\033[38;5;208m"
+BRIGHT_ORANGE_256 = "\033[38;5;214m"
+
+# Theme definitions — each maps usage levels to ANSI colour codes
+THEMES = {
+    "default": {"low": GREEN, "mid": YELLOW, "high": RED},
+    "ocean":   {"low": CYAN, "mid": BLUE, "high": MAGENTA},
+    "sunset":  {"low": YELLOW, "mid": ORANGE_256, "high": RED},
+    "mono":    {"low": WHITE, "mid": WHITE, "high": BRIGHT_WHITE},
+    "neon":    {"low": BRIGHT_GREEN, "mid": BRIGHT_YELLOW, "high": BRIGHT_RED},
+}
 
 PLAN_NAMES = {
     "default_claude_pro": "Pro",
@@ -28,14 +48,36 @@ PLAN_NAMES = {
     "default_claude_max_20x": "Max 20x",
 }
 
+DEFAULT_SHOW = {
+    "session": True,
+    "weekly": True,
+    "plan": True,
+    "timer": True,
+    "extra": False,
+}
+
 
 def load_config():
     config_path = Path(__file__).parent / "config.json"
     try:
         with open(config_path, "r") as f:
-            return json.load(f)
+            data = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
-        return {}
+        data = {}
+    # Apply defaults
+    data.setdefault("cache_ttl_seconds", DEFAULT_CACHE_TTL)
+    data.setdefault("theme", "default")
+    show = data.get("show", {})
+    for key, default in DEFAULT_SHOW.items():
+        show.setdefault(key, default)
+    data["show"] = show
+    return data
+
+
+def save_config(config):
+    config_path = Path(__file__).parent / "config.json"
+    with open(config_path, "w") as f:
+        json.dump(config, f, indent=2)
 
 
 def get_cache_path():
@@ -97,20 +139,27 @@ def fetch_usage(token):
         return json.loads(resp.read())
 
 
-def bar_colour(pct):
-    """Return ANSI colour based on usage percentage: green < 50, yellow < 80, red >= 80."""
+def get_theme_colours(theme_name):
+    """Return the colour dict for the given theme name."""
+    return THEMES.get(theme_name, THEMES["default"])
+
+
+def bar_colour(pct, theme):
+    """Return ANSI colour based on usage percentage using theme colours."""
     if pct >= 80:
-        return RED
+        return theme["high"]
     if pct >= 50:
-        return YELLOW
-    return GREEN
+        return theme["mid"]
+    return theme["low"]
 
 
-def make_bar(pct):
+def make_bar(pct, theme=None):
     """Build a thin coloured bar."""
+    if theme is None:
+        theme = THEMES["default"]
     filled = round(pct / 100 * BAR_WIDTH)
     filled = max(0, min(BAR_WIDTH, filled))
-    colour = bar_colour(pct)
+    colour = bar_colour(pct, theme)
     return f"{colour}{FILL * filled}{DIM}{EMPTY * (BAR_WIDTH - filled)}{RESET}"
 
 
@@ -132,29 +181,47 @@ def format_reset_time(resets_at_str):
         return None
 
 
-def build_status_line(usage, plan):
+def build_status_line(usage, plan, config=None):
+    if config is None:
+        config = load_config()
+
+    theme = get_theme_colours(config.get("theme", "default"))
+    show = config.get("show", DEFAULT_SHOW)
     parts = []
 
     # Current Session (5-hour block)
-    five = usage.get("five_hour")
-    if five:
-        pct = five.get("utilization", 0)
-        bar = make_bar(pct)
-        reset = format_reset_time(five.get("resets_at"))
-        reset_str = f" {reset}" if reset else ""
-        parts.append(f"Session {bar} {pct:.0f}%{reset_str}")
-    else:
-        parts.append(f"Session {make_bar(0)} 0%")
+    if show.get("session", True):
+        five = usage.get("five_hour")
+        if five:
+            pct = five.get("utilization", 0)
+            bar = make_bar(pct, theme)
+            reset = format_reset_time(five.get("resets_at")) if show.get("timer", True) else None
+            reset_str = f" {reset}" if reset else ""
+            parts.append(f"Session {bar} {pct:.0f}%{reset_str}")
+        else:
+            parts.append(f"Session {make_bar(0, theme)} 0%")
 
     # Weekly Limit (7-day all models)
-    seven = usage.get("seven_day")
-    if seven:
-        pct = seven.get("utilization", 0)
-        bar = make_bar(pct)
-        parts.append(f"Weekly {bar} {pct:.0f}%")
+    if show.get("weekly", True):
+        seven = usage.get("seven_day")
+        if seven:
+            pct = seven.get("utilization", 0)
+            bar = make_bar(pct, theme)
+            parts.append(f"Weekly {bar} {pct:.0f}%")
+
+    # Extra usage (bonus/overflow credits) — off by default
+    if show.get("extra", False):
+        extra = usage.get("extra")
+        if extra:
+            pct = extra.get("utilization", 0)
+            bar = make_bar(pct, theme)
+            parts.append(f"Extra {bar} {pct:.0f}%")
+        else:
+            # Show placeholder if enabled but no data
+            parts.append(f"Extra {make_bar(0, theme)} 0%")
 
     # Plan name
-    if plan:
+    if show.get("plan", True) and plan:
         parts.append(plan)
 
     return " | ".join(parts)
@@ -186,11 +253,125 @@ def install_status_line():
     print("Restart Claude Code to see the status line.")
 
 
+def utf8_print(text):
+    """Print text with UTF-8 encoding (avoids Windows cp1252 errors)."""
+    sys.stdout.buffer.write((text + "\n").encode("utf-8"))
+
+
+def cmd_list_themes():
+    """Print all available themes with a colour preview."""
+    utf8_print(f"\n{BOLD}Available themes:{RESET}\n")
+    for name, colours in THEMES.items():
+        low_bar = f"{colours['low']}{FILL * 3}{RESET}"
+        mid_bar = f"{colours['mid']}{FILL * 3}{RESET}"
+        high_bar = f"{colours['high']}{FILL * 2}{RESET}"
+        preview = f"{low_bar}{mid_bar}{high_bar}"
+        utf8_print(f"  {name:<10} {preview}  ({colours['low']}low{RESET} {colours['mid']}mid{RESET} {colours['high']}high{RESET})")
+    utf8_print("")
+
+
+def cmd_set_theme(name):
+    """Set the active theme and save to config."""
+    if name not in THEMES:
+        utf8_print(f"Unknown theme: {name}")
+        utf8_print(f"Available: {', '.join(THEMES.keys())}")
+        return
+    config = load_config()
+    config["theme"] = name
+    save_config(config)
+    colours = THEMES[name]
+    preview = f"{colours['low']}{FILL * 3}{colours['mid']}{FILL * 3}{colours['high']}{FILL * 2}{RESET}"
+    utf8_print(f"Theme set to {BOLD}{name}{RESET}  {preview}")
+
+
+def cmd_show(parts_str):
+    """Enable the given comma-separated parts."""
+    config = load_config()
+    parts = [p.strip().lower() for p in parts_str.split(",")]
+    valid = set(DEFAULT_SHOW.keys())
+    for part in parts:
+        if part not in valid:
+            print(f"Unknown part: {part} (valid: {', '.join(sorted(valid))})")
+            return
+    for part in parts:
+        config["show"][part] = True
+    save_config(config)
+    print(f"Enabled: {', '.join(parts)}")
+
+
+def cmd_hide(parts_str):
+    """Disable the given comma-separated parts."""
+    config = load_config()
+    parts = [p.strip().lower() for p in parts_str.split(",")]
+    valid = set(DEFAULT_SHOW.keys())
+    for part in parts:
+        if part not in valid:
+            print(f"Unknown part: {part} (valid: {', '.join(sorted(valid))})")
+            return
+    for part in parts:
+        config["show"][part] = False
+    save_config(config)
+    print(f"Disabled: {', '.join(parts)}")
+
+
+def cmd_print_config():
+    """Print the current configuration summary."""
+    config = load_config()
+    theme_name = config.get("theme", "default")
+    colours = THEMES.get(theme_name, THEMES["default"])
+    preview = f"{colours['low']}{FILL * 3}{colours['mid']}{FILL * 3}{colours['high']}{FILL * 2}{RESET}"
+
+    utf8_print(f"\n{BOLD}claude-pulse config{RESET}\n")
+    utf8_print(f"  Theme:     {theme_name}  {preview}")
+    utf8_print(f"  Cache TTL: {config.get('cache_ttl_seconds', DEFAULT_CACHE_TTL)}s")
+    utf8_print(f"\n  {BOLD}Visibility:{RESET}")
+    show = config.get("show", DEFAULT_SHOW)
+    for key in DEFAULT_SHOW:
+        state = f"{GREEN}on{RESET}" if show.get(key, DEFAULT_SHOW[key]) else f"{RED}off{RESET}"
+        utf8_print(f"    {key:<10} {state}")
+    utf8_print("")
+
+
 def main():
-    if "--install" in sys.argv:
+    args = sys.argv[1:]
+
+    if "--install" in args:
         install_status_line()
         return
 
+    if "--themes" in args:
+        cmd_list_themes()
+        return
+
+    if "--theme" in args:
+        idx = args.index("--theme")
+        if idx + 1 < len(args):
+            cmd_set_theme(args[idx + 1])
+        else:
+            print("Usage: --theme <name>")
+        return
+
+    if "--show" in args:
+        idx = args.index("--show")
+        if idx + 1 < len(args):
+            cmd_show(args[idx + 1])
+        else:
+            print("Usage: --show <parts>  (comma-separated: session,weekly,plan,timer,extra)")
+        return
+
+    if "--hide" in args:
+        idx = args.index("--hide")
+        if idx + 1 < len(args):
+            cmd_hide(args[idx + 1])
+        else:
+            print("Usage: --hide <parts>  (comma-separated: session,weekly,plan,timer,extra)")
+        return
+
+    if "--config" in args:
+        cmd_print_config()
+        return
+
+    # Normal status line mode
     config = load_config()
     cache_ttl = config.get("cache_ttl_seconds", DEFAULT_CACHE_TTL)
 
@@ -214,7 +395,7 @@ def main():
 
     try:
         usage = fetch_usage(token)
-        line = build_status_line(usage, plan)
+        line = build_status_line(usage, plan, config)
     except urllib.error.HTTPError as e:
         line = f"API error: {e.code}"
     except Exception:

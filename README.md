@@ -21,6 +21,7 @@
 - **Time remaining** — countdown until your session resets
 - **Weekly usage** — your 7-day rolling usage across all models
 - **Plan tier** — auto-detected (Pro, Max 5x, Max 20x)
+- **Extra usage** — optional bonus/overflow credit tracking
 
 No guesswork. No scanning log files. It pulls the **exact same numbers** shown on [claude.ai/settings/usage](https://claude.ai/settings/usage) via Anthropic's OAuth API.
 
@@ -35,6 +36,58 @@ The bars change colour based on your usage level so you can tell at a glance how
 | 0–49% | Green | Plenty of headroom |
 | 50–79% | Yellow | Getting warm |
 | 80%+ | Red | Close to the limit |
+
+### 5 Built-in Themes
+
+| Theme | Low | Mid | High | Style |
+|-------|-----|-----|------|-------|
+| `default` | Green | Yellow | Red | Classic traffic-light |
+| `ocean` | Cyan | Blue | Magenta | Cool tones |
+| `sunset` | Yellow | Orange | Red | Warm tones |
+| `mono` | White | White | Bright White | No colour, brightness only |
+| `neon` | Bright Green | Bright Yellow | Bright Red | Vivid/bold |
+
+Preview all themes:
+```bash
+python claude_status.py --themes
+```
+
+Set a theme:
+```bash
+python claude_status.py --theme ocean
+```
+
+### Visibility Toggles
+
+Show or hide individual parts of the status line:
+
+```bash
+# Hide the timer and plan name
+python claude_status.py --hide timer,plan
+
+# Show them again
+python claude_status.py --show timer,plan
+
+# Enable extra usage tracking (off by default)
+python claude_status.py --show extra
+
+# See current config
+python claude_status.py --config
+```
+
+**Available parts:** `session`, `weekly`, `plan`, `timer`, `extra`
+
+### `/pulse` Slash Command
+
+If you have the slash command installed, configure everything from within Claude Code:
+
+```
+/pulse ocean          — set theme to ocean
+/pulse themes         — list all themes
+/pulse hide timer     — hide the reset timer
+/pulse show extra     — enable extra usage display
+/pulse config         — show current config
+```
 
 ### Lightweight and fast
 
@@ -74,6 +127,20 @@ Close and reopen Claude Code. The status bar appears at the bottom of your termi
 
 That's it. No virtual environments, no dependencies, no build steps.
 
+### 4. (Optional) Install the slash command
+
+Copy the pulse command file to your Claude Code commands directory:
+
+```bash
+# Linux/Mac
+cp pulse.md ~/.claude/commands/pulse.md
+
+# Windows
+copy pulse.md %USERPROFILE%\.claude\commands\pulse.md
+```
+
+Now you can use `/pulse` inside Claude Code to configure themes and visibility.
+
 ## How it works
 
 ```
@@ -96,15 +163,34 @@ The status line updates whenever Claude Code's conversation updates (roughly eve
 
 ## Configuration
 
-Edit `config.json` to change the cache interval:
+Edit `config.json` directly or use the CLI flags:
 
 ```json
 {
-  "cache_ttl_seconds": 30
+  "cache_ttl_seconds": 30,
+  "theme": "default",
+  "show": {
+    "session": true,
+    "weekly": true,
+    "plan": true,
+    "timer": true,
+    "extra": false
+  }
 }
 ```
 
-Lower values = more frequent API calls. Higher values = faster response but slightly staler data. Default of 30 seconds is a good balance.
+### CLI Flags
+
+| Flag | Description |
+|------|-------------|
+| `--install` | Install the status line into Claude Code settings |
+| `--themes` | List all available themes with colour previews |
+| `--theme <name>` | Set the active theme |
+| `--show <parts>` | Enable comma-separated parts |
+| `--hide <parts>` | Disable comma-separated parts |
+| `--config` | Print current configuration summary |
+
+Lower cache TTL values = more frequent API calls. Higher values = faster response but slightly staler data. Default of 30 seconds is a good balance.
 
 ## Requirements
 
@@ -120,6 +206,7 @@ Lower values = more frequent API calls. Higher values = faster response but slig
 | Shows "No credentials found" | Make sure you're logged in to Claude Code (`claude /login`) |
 | Shows wrong plan tier after upgrading | Log out (`claude /logout`) then log back in (`claude /login`) — your OAuth token needs to refresh to pick up the new subscription tier |
 | Stale percentages | Delete the cache: `~/.cache/claude-status/cache.json` (Linux/Mac) or `%LOCALAPPDATA%\claude-status\cache.json` (Windows) |
+| Theme not applying | Clear the cache file after changing themes so the next render uses the new colours |
 
 ## License
 

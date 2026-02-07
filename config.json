@@ -1,3 +1,11 @@
 {
-  "cache_ttl_seconds": 30
+  "cache_ttl_seconds": 30,
+  "theme": "default",
+  "show": {
+    "session": true,
+    "weekly": true,
+    "plan": true,
+    "timer": true,
+    "extra": false
+  }
 }
