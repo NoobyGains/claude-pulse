@@ -8,7 +8,9 @@
 </p>
 
 <p align="center">
-  <code>Session ━━────── 23% 2h 06m | Weekly ──────── 4% | Max 20x</code>
+  <img src="rainbow.png" alt="Rainbow theme" width="500">
+  <br>
+  <sub>Rainbow theme — animated colours that shift while thinking, with a white shimmer when idle</sub>
 </p>
 
 ---
@@ -50,12 +52,6 @@ The bars change colour based on your usage level so you can tell at a glance how
 | `rainbow` | ![](https://img.shields.io/badge/%E2%94%81-ff0000?style=flat-square) ![](https://img.shields.io/badge/%E2%94%81-ff8800?style=flat-square) ![](https://img.shields.io/badge/%E2%94%81-ffff00?style=flat-square) ![](https://img.shields.io/badge/%E2%94%81-00cc00?style=flat-square) ![](https://img.shields.io/badge/%E2%94%81-0088ff?style=flat-square) ![](https://img.shields.io/badge/%E2%94%81-8800ff?style=flat-square) | Animated rainbow shimmer |
 
 Each preview shows **low** → **mid** → **high** usage colours as they appear on your status bar. The `rainbow` theme is animated — every character cycles through the full spectrum with a white shimmer highlight that sweeps across, like the Claude loading animation.
-
-<p align="center">
-  <img src="rainbow_preview.png" alt="Rainbow theme in action" width="600">
-  <br>
-  <sub>Rainbow theme — colours shift while thinking, with a gentle white shimmer when idle</sub>
-</p>
 
 Preview all themes in your terminal:
 ```bash
