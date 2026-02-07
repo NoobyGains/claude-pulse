@@ -1079,7 +1079,13 @@ def cmd_show_themes():
         demo_config = {"theme": name, "bar_size": user_bar_size, "text_color": demo_tc, "show": {"session": True, "weekly": True, "plan": True, "timer": False, "extra": False}}
         line = build_status_line(demo_usage, "Max 20x", demo_config)
         marker = f" {GREEN}<< current{RESET}" if name == current_theme else ""
-        utf8_print(f"  {BOLD}{name:<10}{RESET} {line}{marker}")
+        # Colour the theme name with its accent colour
+        name_colour = TEXT_COLORS.get(demo_tc, "") if name != "rainbow" else ""
+        if name == "rainbow":
+            coloured_name = rainbow_colorize(f"{name:<10}", shimmer=False)
+        else:
+            coloured_name = f"{name_colour}{BOLD}{name:<10}{RESET}"
+        utf8_print(f"  {coloured_name} {line}{marker}")
     utf8_print("")
 
 
@@ -1092,12 +1098,19 @@ def cmd_show_colors():
     utf8_print(f"\n{BOLD}Text colours:{RESET}\n")
     sample = "Session 42% | Weekly 67%"
     for tc_name, tc_code in TEXT_COLORS.items():
+        # Colour the name label with its own colour
         if tc_name == "none":
-            utf8_print(f"  {tc_name:<14} {DIM}(no colour applied){RESET}")
+            coloured_label = f"{DIM}{tc_name:<14}{RESET}"
+            utf8_print(f"  {coloured_label} {DIM}(no colour applied){RESET}")
         elif tc_name == "default":
-            utf8_print(f"  {tc_name:<14} \033[39m{sample}{RESET}")
+            coloured_label = f"\033[39m{tc_name:<14}{RESET}"
+            utf8_print(f"  {coloured_label} \033[39m{sample}{RESET}")
+        elif tc_name == "dim":
+            coloured_label = f"{tc_code}{tc_name:<14}{RESET}"
+            utf8_print(f"  {coloured_label} {tc_code}{sample}{RESET}")
         else:
-            utf8_print(f"  {tc_name:<14} {tc_code}{sample}{RESET}")
+            coloured_label = f"{tc_code}{BOLD}{tc_name:<14}{RESET}"
+            utf8_print(f"  {coloured_label} {tc_code}{sample}{RESET}")
     if current_tc == "auto":
         resolved = THEME_TEXT_DEFAULTS.get(current_theme, "white")
         utf8_print(f"\n  Current: {BOLD}auto{RESET} (using {resolved} for {current_theme} theme)")
