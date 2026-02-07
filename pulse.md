@@ -16,7 +16,11 @@ If $ARGUMENTS is `config` or `settings`:
 -> Run `python "[REPLACE_WITH_YOUR_PATH]/claude_status.py" --config` silently.
 -> Summarise the settings in your response text (don't show raw ANSI output).
 
-If $ARGUMENTS contains `hide <parts>` or `show <parts>`:
+If $ARGUMENTS is exactly `show` (no parts after it), or `colors`, or `colours`, or `preview`:
+-> Run `python "[REPLACE_WITH_YOUR_PATH]/claude_status.py" --show-all` and show the output to the user.
+-> This displays all themes with live previews AND all text colours with samples.
+
+If $ARGUMENTS contains `hide <parts>` or `show <parts>` (with specific parts like extra, timer, etc.):
 -> Run the corresponding `--hide` or `--show` command directly.
 
 If $ARGUMENTS is `rainbow-bars on` or `rainbow-bars off`:

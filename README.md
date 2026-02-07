@@ -33,6 +33,7 @@ Once installed, just type **`/pulse`** in Claude Code. That's it. A guided wizar
 
 ```
 /pulse          — opens the interactive setup wizard
+/pulse show     — preview all themes and text colours
 /pulse ocean    — jump straight to a theme by name
 /pulse config   — see your current settings
 /pulse update   — pull the latest version from GitHub
@@ -334,6 +335,7 @@ Edit `config.json` directly or use the CLI flags:
 |------|-------------|
 | `--install` | Install status line + animation hooks into Claude Code settings |
 | `--install-hooks` | Install only the animation hooks (if already have status line) |
+| `--show-all` | Preview all themes and text colours with live samples |
 | `--themes` | List all available themes with colour previews |
 | `--themes-demo` | Preview all themes with simulated status lines |
 | `--theme <name>` | Set the active theme |

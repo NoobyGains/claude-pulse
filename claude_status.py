@@ -989,6 +989,44 @@ def cmd_themes_demo():
     utf8_print(f"\n  Set with: python claude_status.py --theme <name>\n")
 
 
+def cmd_show_all():
+    """Show all themes and text colours with visual previews."""
+    current_config = load_config()
+    current_theme = current_config.get("theme", "default")
+    current_tc = current_config.get("text_color", "auto")
+
+    # Themes
+    utf8_print(f"\n{BOLD}Themes:{RESET}\n")
+    demo_usage = {
+        "five_hour": {"utilization": 42, "resets_at": None},
+        "seven_day": {"utilization": 67},
+    }
+    for name in THEMES:
+        demo_config = {"theme": name, "show": {"session": True, "weekly": True, "plan": True, "timer": False, "extra": False}}
+        line = build_status_line(demo_usage, "Max 20x", demo_config)
+        marker = f" {GREEN}<< current{RESET}" if name == current_theme else ""
+        utf8_print(f"  {BOLD}{name:<10}{RESET} {line}{marker}")
+
+    # Text colours
+    utf8_print(f"\n{BOLD}Text colours:{RESET}\n")
+    sample = "Session 42% | Weekly 67%"
+    for tc_name, tc_code in TEXT_COLORS.items():
+        if tc_name == "none":
+            utf8_print(f"  {tc_name:<14} {DIM}(no colour applied){RESET}")
+        elif tc_name == "default":
+            utf8_print(f"  {tc_name:<14} \033[39m{sample}{RESET}")
+        else:
+            utf8_print(f"  {tc_name:<14} {tc_code}{sample}{RESET}")
+        # Mark current
+    if current_tc == "auto":
+        resolved = THEME_TEXT_DEFAULTS.get(current_theme, "white")
+        utf8_print(f"\n  Current: {BOLD}auto{RESET} (using {resolved} for {current_theme} theme)")
+    else:
+        utf8_print(f"\n  Current: {BOLD}{current_tc}{RESET}")
+
+    utf8_print(f"\n  Set theme: {DIM}--theme <name>{RESET}  |  Set text colour: {DIM}--text-color <name>{RESET}\n")
+
+
 def cmd_set_theme(name):
     """Set the active theme and save to config."""
     if name not in THEMES:
@@ -1156,6 +1194,10 @@ def main():
 
     if "--install" in args:
         install_status_line()
+        return
+
+    if "--show-all" in args:
+        cmd_show_all()
         return
 
     if "--themes-demo" in args:
