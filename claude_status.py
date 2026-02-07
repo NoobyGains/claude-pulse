@@ -55,6 +55,36 @@ PLAN_NAMES = {
     "default_claude_max_20x": "Max 20x",
 }
 
+# Named text colours for non-bar text (labels, percentages, separators)
+TEXT_COLORS = {
+    "white": "\033[37m",
+    "bright_white": "\033[97m",
+    "cyan": "\033[36m",
+    "blue": "\033[34m",
+    "green": "\033[32m",
+    "yellow": "\033[33m",
+    "magenta": "\033[35m",
+    "red": "\033[31m",
+    "orange": "\033[38;5;208m",
+    "violet": "\033[38;5;135m",
+    "pink": "\033[38;5;199m",
+    "dim": "\033[2;37m",
+    "default": "\033[39m",
+    "none": "",
+}
+
+# Recommended text colour per theme — chosen for good contrast with bars
+# so the shimmer (white overlay on coloured text) is clearly visible
+THEME_TEXT_DEFAULTS = {
+    "default": "white",
+    "ocean":   "white",
+    "sunset":  "white",
+    "mono":    "dim",
+    "neon":    "white",
+    "pride":   "white",
+    "rainbow": "none",
+}
+
 DEFAULT_SHOW = {
     "session": True,
     "weekly": True,
@@ -94,37 +124,32 @@ def hsv_to_rgb(h, s, v):
     return vi, p, q
 
 
-def rainbow_colorize(text, color_all=True):
-    """Apply animated rainbow colouring with a periodic white shimmer glint.
+def rainbow_colorize(text, color_all=True, shimmer=True):
+    """Apply rainbow colouring — animated when processing, clean static when idle.
 
-    The status line only refreshes during active generation (~300ms frames).
-    When generation stops the last frame freezes on screen.
-
-    Design:
-    - Rainbow colours drift smoothly (hue shifts each frame).
-    - A white shimmer "glint" sweeps across briefly every few seconds,
-      then disappears — like Claude's "Combobulating…" shimmer.
-    - The glint is only visible for ~1s out of every 4s cycle, so when
-      generation stops there's a ~75% chance the frozen frame is pure
-      rainbow with no white artefacts.
+    shimmer=True  — Claude is processing: hue drifts each frame + white glint sweep.
+    shimmer=False — Claude is idle: static rainbow gradient, no animation artifacts.
 
     color_all=True  — strip existing ANSI, rainbow every character.
     color_all=False — preserve ANSI-colored chars (bars), rainbow the rest.
     """
     now = time.time()
 
-    # Rainbow hue drift — shifts the colour gradient each frame
-    hue_drift = now * 0.12
+    if shimmer:
+        # Rainbow hue drift — shifts the colour gradient each frame
+        # At 300ms refresh: 0.25 * 0.3 = 0.075 per frame ≈ 27° of hue wheel
+        hue_drift = now * 0.25
+    else:
+        # Static mode — fixed hue offset so the rainbow looks clean when frozen
+        hue_drift = 0.0
 
-    # Shimmer timing — glint visible for 1.0s out of every 4.0s
-    CYCLE = 4.0            # total cycle length
-    GLINT_DURATION = 1.0   # how long the glint is visible
-    HIGHLIGHT_WIDTH = 8    # chars wide — wider = smoother at low FPS
-    SHIMMER_DESAT = 0.80   # how white the center gets (0=none, 1=pure white)
-    SHIMMER_VAL = 0.08     # extra brightness at center
+    # Shimmer timing — fast wide sweep like Claude's "Crafting…" animation
+    CYCLE = 2.5            # total cycle length
+    GLINT_DURATION = 0.7   # short flash — ~2-3 frames at 300ms refresh
+    HIGHLIGHT_WIDTH = 20   # wide band — covers enough chars to look smooth between frames
 
     phase = now % CYCLE
-    glint_active = phase >= (CYCLE - GLINT_DURATION)
+    glint_active = shimmer and phase >= (CYCLE - GLINT_DURATION)
 
     # Count visible characters (skip ANSI escapes)
     visible_count = 0
@@ -178,26 +203,139 @@ def rainbow_colorize(text, color_all=True):
         if not color_all and has_existing_color:
             result.append(text[i])
         else:
-            hue = ((visible_idx * 0.04) + hue_drift) % 1.0
+            # Wider bands: 0.025 per char = full rainbow every ~40 chars
+            hue = ((visible_idx * 0.025) + hue_drift) % 1.0
+
+            # Vivid rainbow: high saturation and brightness
+            r, g, b = hsv_to_rgb(hue, 0.92, 0.95)
+
+            # Shimmer: blend directly toward white in RGB space
+            # This produces a clean bright flash, not the muddy gray that
+            # HSV desaturation creates
             dist = abs(visible_idx - highlight_center)
-
             if glint_active and dist < HIGHLIGHT_WIDTH:
-                # White shimmer — quadratic falloff for soft edges
                 blend = 1.0 - (dist / HIGHLIGHT_WIDTH)
-                blend = blend * blend
-                sat = 0.85 * (1.0 - blend * SHIMMER_DESAT)
-                val = 0.95 + blend * SHIMMER_VAL
-            else:
-                sat = 0.85
-                val = 0.95
+                blend = blend * blend  # quadratic falloff for soft edges
+                # Blend from rainbow color toward bright white (210-255 range)
+                target = int(210 + blend * 45)
+                r = int(r + (target - r) * blend)
+                g = int(g + (target - g) * blend)
+                b = int(b + (target - b) * blend)
 
-            r, g, b = hsv_to_rgb(hue, sat, val)
             result.append(f"\033[38;2;{r};{g};{b}m{text[i]}")
 
         visible_idx += 1
         i += 1
 
     result.append(RESET)
+    return "".join(result)
+
+
+def resolve_text_color(config):
+    """Return the ANSI code for the configured text colour."""
+    theme_name = config.get("theme", "default")
+    tc = config.get("text_color", "auto")
+    if tc == "auto":
+        tc = THEME_TEXT_DEFAULTS.get(theme_name, "white")
+    return TEXT_COLORS.get(tc, TEXT_COLORS["white"])
+
+
+def apply_text_color(line, color_code):
+    """Wrap non-bar text in a base colour so the shimmer has something to contrast against.
+
+    Prepends the colour, re-applies it after every RESET, and appends a final RESET.
+    Bar colours override this inline; after their RESET the base colour resumes.
+    """
+    if not color_code:
+        return line
+    # Prepend base colour, replace every \033[0m with \033[0m + base colour,
+    # then append a final reset at the end
+    return color_code + line.replace("\033[0m", "\033[0m" + color_code) + "\033[0m"
+
+
+def apply_shimmer(text):
+    """Post-process any ANSI-coloured text to add a white shimmer glint.
+
+    Works on all themes — walks through the text, tracks the active ANSI
+    state, and overlays a white highlight in the shimmer zone, then restores
+    the original colour after each shimmer character.
+
+    Fast wide sweep like Claude's "Crafting…" animation.
+    72% of the time returns text unchanged (no glint visible).
+    """
+    CYCLE = 2.5
+    GLINT_DURATION = 0.7
+    HIGHLIGHT_WIDTH = 20
+
+    now = time.time()
+    phase = now % CYCLE
+    glint_active = phase >= (CYCLE - GLINT_DURATION)
+
+    if not glint_active:
+        return text  # fast path — 75% of the time
+
+    # Count visible characters
+    visible_count = 0
+    idx = 0
+    while idx < len(text):
+        if text[idx] == "\033":
+            while idx < len(text) and text[idx] != "m":
+                idx += 1
+            idx += 1
+            continue
+        visible_count += 1
+        idx += 1
+
+    if visible_count == 0:
+        return text
+
+    # Shimmer position
+    sweep = (phase - (CYCLE - GLINT_DURATION)) / GLINT_DURATION
+    total_range = visible_count + HIGHLIGHT_WIDTH * 2
+    highlight_center = sweep * total_range - HIGHLIGHT_WIDTH
+
+    result = []
+    visible_idx = 0
+    # Track all active ANSI codes so we can restore after shimmer chars
+    active_codes = []
+    i = 0
+
+    while i < len(text):
+        if text[i] == "\033":
+            j = i
+            while j < len(text) and text[j] != "m":
+                j += 1
+            seq = text[i : j + 1]
+            result.append(seq)
+            # Track ANSI state
+            if seq == "\033[0m":
+                active_codes = []
+            else:
+                active_codes.append(seq)
+            i = j + 1
+            continue
+
+        dist = abs(visible_idx - highlight_center)
+        # Skip shimmer on bar characters — only animate text (labels, %, separators)
+        is_bar_char = text[i] in (FILL, EMPTY)
+        if not is_bar_char and dist < HIGHLIGHT_WIDTH:
+            # White shimmer overlay — quadratic falloff
+            blend = 1.0 - (dist / HIGHLIGHT_WIDTH)
+            blend = blend * blend
+            brightness = int(210 + blend * 45)  # 210 to 255 — always brighter than \033[37m (~187)
+            result.append(f"\033[38;2;{brightness};{brightness};{brightness}m")
+            result.append(text[i])
+            # Restore original ANSI state
+            if active_codes:
+                result.extend(active_codes)
+            else:
+                result.append("\033[0m")
+        else:
+            result.append(text[i])
+
+        visible_idx += 1
+        i += 1
+
     return "".join(result)
 
 
@@ -234,6 +372,8 @@ def load_config():
     data.setdefault("cache_ttl_seconds", DEFAULT_CACHE_TTL)
     data.setdefault("theme", "default")
     data.setdefault("rainbow_bars", True)
+    data.setdefault("animate", True)
+    data.setdefault("text_color", "auto")
     show = data.get("show", {})
     for key, default in DEFAULT_SHOW.items():
         show.setdefault(key, default)
@@ -254,14 +394,78 @@ def save_config(config):
 # re-render each call without re-hitting the API.
 # ---------------------------------------------------------------------------
 
-def get_cache_path():
+def get_state_dir():
+    """Return the shared state/cache directory."""
     if sys.platform == "win32":
         base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
     else:
         base = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
-    cache_dir = base / "claude-status"
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    return cache_dir / "cache.json"
+    state_dir = base / "claude-status"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    return state_dir
+
+
+def get_cache_path():
+    return get_state_dir() / "cache.json"
+
+
+# ---------------------------------------------------------------------------
+# Animation state — hooks write this to signal processing start/stop
+# ---------------------------------------------------------------------------
+
+def get_animation_state_path():
+    return get_state_dir() / "animating"
+
+
+def hooks_installed():
+    """Check if animation hooks have ever been used (state file has been created before)."""
+    # The stop hook creates a "stopped" marker; the start hook creates the "animating" file.
+    # If neither has ever existed, hooks aren't installed.
+    state_dir = get_state_dir()
+    return (state_dir / "animating").exists() or (state_dir / "hooks_installed").exists()
+
+
+def is_claude_processing():
+    """Check if Claude is actively processing (set by hooks).
+
+    Returns True if:
+    - Hooks aren't installed (fallback: always animate, old behaviour)
+    - Hooks are installed AND the animating flag is set
+    """
+    if not hooks_installed():
+        return True  # No hooks → always animate (backwards compatible)
+    state_path = get_animation_state_path()
+    try:
+        if not state_path.exists():
+            return False
+        # Stale guard: if the flag is older than 5 minutes, assume it's orphaned
+        age = time.time() - state_path.stat().st_mtime
+        if age > 300:
+            try:
+                state_path.unlink()
+            except OSError:
+                pass
+            return False
+        return True
+    except OSError:
+        return False
+
+
+def set_processing(active):
+    """Write or remove the animation state flag."""
+    state_dir = get_state_dir()
+    state_path = get_animation_state_path()
+    marker = state_dir / "hooks_installed"
+    try:
+        # Mark that hooks are installed (so we know to check the flag)
+        if not marker.exists():
+            marker.write_text("1")
+        if active:
+            state_path.write_text("1")
+        else:
+            state_path.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def read_cache(cache_path, ttl):
@@ -431,8 +635,22 @@ def build_status_line(usage, plan, config=None):
 
     line = " | ".join(parts)
 
+    animate = config.get("animate", True)
+    # Only animate when Claude is actively processing (hooks set this flag)
+    # Falls back to always-animate if hooks aren't installed (flag missing = process)
+    processing = is_claude_processing()
+    should_animate = animate and processing
+
     if is_rainbow:
-        line = rainbow_colorize(line, color_all=rainbow_bars)
+        line = rainbow_colorize(line, color_all=rainbow_bars, shimmer=should_animate)
+    else:
+        # Apply text colour to labels/percentages/separators
+        text_color_code = resolve_text_color(config)
+        if text_color_code:
+            line = apply_text_color(line, text_color_code)
+        # Shimmer overlays white on the now-coloured text
+        if should_animate:
+            line = apply_shimmer(line)
 
     return line
 
@@ -465,6 +683,72 @@ def install_status_line():
     print(f"Installed status line to {settings_path}")
     print(f"Command: python \"{script_path}\"")
     print("Restart Claude Code to see the status line.")
+
+
+def install_hooks():
+    """Install animation lifecycle hooks into Claude Code settings.
+
+    Adds UserPromptSubmit and Stop hooks that flag when Claude is processing,
+    so the status line only animates during active generation.
+    """
+    settings_path = Path.home() / ".claude" / "settings.json"
+    script_path = Path(__file__).resolve()
+
+    settings = {}
+    if settings_path.exists():
+        try:
+            with open(settings_path, "r") as f:
+                settings = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    hooks = settings.get("hooks", {})
+
+    start_hook = {
+        "type": "command",
+        "command": f'python "{script_path}" --hook-start',
+    }
+    stop_hook = {
+        "type": "command",
+        "command": f'python "{script_path}" --hook-stop',
+    }
+
+    # Add to UserPromptSubmit — fires when the user presses Enter
+    submit_hooks = hooks.get("UserPromptSubmit", [])
+    # Check if our hook is already installed (avoid duplicates)
+    our_cmd = f'python "{script_path}" --hook-start'
+    already = any(
+        h.get("hooks", [{}])[0].get("command", "") == our_cmd
+        if isinstance(h, dict) and "hooks" in h else False
+        for h in submit_hooks
+    )
+    if not already:
+        submit_hooks.append({"hooks": [start_hook]})
+    hooks["UserPromptSubmit"] = submit_hooks
+
+    # Add to Stop — fires when Claude finishes responding
+    stop_hooks = hooks.get("Stop", [])
+    our_cmd_stop = f'python "{script_path}" --hook-stop'
+    already_stop = any(
+        h.get("hooks", [{}])[0].get("command", "") == our_cmd_stop
+        if isinstance(h, dict) and "hooks" in h else False
+        for h in stop_hooks
+    )
+    if not already_stop:
+        stop_hooks.append({"hooks": [stop_hook]})
+    hooks["Stop"] = stop_hooks
+
+    settings["hooks"] = hooks
+
+    with open(settings_path, "w") as f:
+        json.dump(settings, f, indent=2)
+
+    utf8_print(f"{BOLD}Animation hooks installed!{RESET}")
+    utf8_print(f"  UserPromptSubmit → --hook-start (animation ON)")
+    utf8_print(f"  Stop             → --hook-stop  (animation OFF)")
+    utf8_print(f"  Settings: {settings_path}")
+    utf8_print(f"\nRestart Claude Code for hooks to take effect.")
+    utf8_print(f"The shimmer will now only animate while Claude is writing.")
 
 
 # ---------------------------------------------------------------------------
@@ -578,6 +862,24 @@ def cmd_print_config():
     rb = config.get("rainbow_bars", True)
     rb_state = f"{GREEN}on{RESET}" if rb else f"{RED}off{RESET}"
     utf8_print(f"  Rainbow bars: {rb_state}  (rainbow colours {'include' if rb else 'skip'} the progress bars)")
+    anim = config.get("animate", True)
+    anim_state = f"{GREEN}on{RESET}" if anim else f"{RED}off{RESET}"
+    utf8_print(f"  Animation:    {anim_state}  (white shimmer {'sweeps across' if anim else 'disabled'} while Claude is writing)")
+    tc = config.get("text_color", "auto")
+    if tc == "auto":
+        resolved = THEME_TEXT_DEFAULTS.get(theme_name, "white")
+        tc_code = TEXT_COLORS.get(resolved, "")
+        utf8_print(f"  Text colour:  {tc_code}auto{RESET}  (using {tc_code}{resolved}{RESET} for {theme_name} theme)")
+    else:
+        tc_code = TEXT_COLORS.get(tc, "")
+        utf8_print(f"  Text colour:  {tc_code}{tc}{RESET}")
+    has_hooks = hooks_installed()
+    hook_state = f"{GREEN}installed{RESET}" if has_hooks else f"{DIM}not installed{RESET}"
+    utf8_print(f"  Hooks:        {hook_state}  (animation {'only while Claude writes' if has_hooks else 'always on — run --install-hooks'})")
+    if has_hooks:
+        processing = is_claude_processing()
+        proc_state = f"{GREEN}processing{RESET}" if processing else f"{DIM}idle{RESET}"
+        utf8_print(f"  Status:       {proc_state}")
     utf8_print(f"\n  {BOLD}Visibility:{RESET}")
     show = config.get("show", DEFAULT_SHOW)
     for key in DEFAULT_SHOW:
@@ -592,6 +894,19 @@ def cmd_print_config():
 
 def main():
     args = sys.argv[1:]
+
+    # Hook commands — called by Claude Code lifecycle hooks (fast, no output)
+    if "--hook-start" in args:
+        set_processing(True)
+        return
+
+    if "--hook-stop" in args:
+        set_processing(False)
+        return
+
+    if "--install-hooks" in args:
+        install_hooks()
+        return
 
     if "--install" in args:
         install_status_line()
@@ -653,6 +968,56 @@ def main():
             print("Usage: --rainbow-bars on|off")
         return
 
+    if "--text-color" in args:
+        idx = args.index("--text-color")
+        if idx + 1 < len(args):
+            val = args[idx + 1].lower()
+            if val not in TEXT_COLORS and val != "auto":
+                utf8_print(f"Unknown colour: {val}")
+                utf8_print(f"Available: auto, {', '.join(TEXT_COLORS.keys())}")
+                return
+            config = load_config()
+            config["text_color"] = val
+            save_config(config)
+            try:
+                os.remove(get_cache_path())
+            except OSError:
+                pass
+            if val == "auto":
+                resolved = THEME_TEXT_DEFAULTS.get(config.get("theme", "default"), "white")
+                utf8_print(f"Text colour: {BOLD}auto{RESET} (using {resolved} for {config.get('theme', 'default')} theme)")
+            else:
+                code = TEXT_COLORS.get(val, "")
+                utf8_print(f"Text colour: {code}{BOLD}{val}{RESET}")
+        else:
+            utf8_print(f"Usage: --text-color <name>")
+            utf8_print(f"Available: auto, {', '.join(TEXT_COLORS.keys())}")
+        return
+
+    if "--animate" in args:
+        idx = args.index("--animate")
+        if idx + 1 < len(args):
+            val = args[idx + 1].lower()
+            if val in ("on", "true", "yes", "1"):
+                anim = True
+            elif val in ("off", "false", "no", "0"):
+                anim = False
+            else:
+                print(f"Unknown value: {val}  (use on or off)")
+                return
+            config = load_config()
+            config["animate"] = anim
+            save_config(config)
+            try:
+                os.remove(get_cache_path())
+            except OSError:
+                pass
+            state = f"{GREEN}on{RESET}" if anim else f"{RED}off{RESET}"
+            utf8_print(f"Animation: {state}")
+        else:
+            print("Usage: --animate on|off")
+        return
+
     if "--config" in args:
         cmd_print_config()
         return
@@ -660,7 +1025,7 @@ def main():
     # Normal status line mode
     config = load_config()
     cache_ttl = config.get("cache_ttl_seconds", DEFAULT_CACHE_TTL)
-    is_rainbow = config.get("theme") == "rainbow"
+    animate = config.get("animate", True)
 
     try:
         sys.stdin.read()
@@ -671,8 +1036,10 @@ def main():
     cached = read_cache(cache_path, cache_ttl)
 
     if cached is not None:
-        if is_rainbow and "usage" in cached:
-            # Re-render with fresh timestamp for animation
+        if animate and "usage" in cached:
+            # Always re-render from cached data — this ensures:
+            # - During processing: fresh animation frame (hue drift + shimmer)
+            # - After stop: clean static render (no frozen shimmer artifacts)
             line = build_status_line(cached["usage"], cached.get("plan", ""), config)
         else:
             line = cached.get("line", "")

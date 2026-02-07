@@ -10,7 +10,7 @@
 <p align="center">
   <img src="rainbow.png" alt="Rainbow theme" width="500">
   <br>
-  <sub>Rainbow theme — animated colours that shift while thinking, with a white shimmer when idle</sub>
+  <sub>Rainbow theme — animated colours that shift while Claude is writing, with a white shimmer sweep</sub>
 </p>
 
 ---
@@ -52,6 +52,52 @@ The bars change colour based on your usage level so you can tell at a glance how
 | `rainbow` | ![](https://img.shields.io/badge/%E2%94%81-ff0000?style=flat-square) ![](https://img.shields.io/badge/%E2%94%81-ff8800?style=flat-square) ![](https://img.shields.io/badge/%E2%94%81-ffff00?style=flat-square) ![](https://img.shields.io/badge/%E2%94%81-00cc00?style=flat-square) ![](https://img.shields.io/badge/%E2%94%81-0088ff?style=flat-square) ![](https://img.shields.io/badge/%E2%94%81-8800ff?style=flat-square) | Animated rainbow shimmer |
 
 Each preview shows **low** → **mid** → **high** usage colours as they appear on your status bar. The `rainbow` theme is animated — every character cycles through the full spectrum with a white shimmer highlight that sweeps across, like the Claude loading animation.
+
+### White Shimmer Animation
+
+All themes support a white shimmer effect — a bright highlight that sweeps across the status line while Claude is writing, matching the speed and feel of Claude's built-in "Crafting..." animation. The shimmer is:
+
+- **Universal** — works on every theme, not just rainbow
+- **Fast and clean** — wide 20-character highlight band sweeps every 2.5 seconds, designed to look smooth at the status line's ~300ms refresh rate
+- **Automatic** — animates during active generation, freezes when idle (72% chance a frozen frame shows no shimmer)
+
+The shimmer is **on by default**. Toggle it:
+```bash
+# Disable shimmer animation
+python claude_status.py --animate off
+
+# Re-enable shimmer animation
+python claude_status.py --animate on
+```
+
+When `animate` is off, rainbow renders pure rainbow colours without the white glint, and all other themes render with their static colours.
+
+### Text Colour
+
+The labels and percentages outside the progress bars (e.g. "Session", "35%", "|") are coloured to match your theme. Each theme has a recommended default, but you can override it:
+
+```bash
+# Use the theme's recommended colour (default)
+python claude_status.py --text-color auto
+
+# Pick a specific colour
+python claude_status.py --text-color cyan
+python claude_status.py --text-color magenta
+```
+
+**Available colours:** `auto`, `white`, `bright_white`, `cyan`, `blue`, `green`, `yellow`, `magenta`, `red`, `orange`, `violet`, `pink`, `dim`, `default`, `none`
+
+The text colour should **contrast** with the bar colours so the shimmer animation is visible — the bright white highlight sweeping across lighter text creates the eye-catching effect. Most themes default to white text, which contrasts cleanly with all coloured bars.
+
+| Theme | Default text colour | Why |
+|-------|-------------------|-----|
+| `default` | white | Contrasts with green/yellow/red bars |
+| `ocean` | white | Contrasts with cyan/blue/magenta bars |
+| `sunset` | white | Contrasts with yellow/orange/red bars |
+| `neon` | white | Contrasts with bright green/yellow/red bars |
+| `pride` | white | Contrasts with violet/green/pink bars |
+| `mono` | dim | Subtle contrast with white/bright bars |
+| `rainbow` | none | Rainbow handles its own colouring |
 
 Preview all themes in your terminal:
 ```bash
@@ -97,12 +143,18 @@ python claude_status.py --config
 If you have the slash command installed, configure everything from within Claude Code:
 
 ```
-/pulse ocean          — set theme to ocean
-/pulse themes         — list all themes
+/pulse                — interactive theme picker with visual descriptions
+/pulse ocean          — set theme to ocean directly
+/pulse themes         — interactive theme menu
+/pulse visibility     — toggle which parts are visible
 /pulse hide timer     — hide the reset timer
 /pulse show extra     — enable extra usage display
+/pulse animate off    — disable shimmer animation
+/pulse text-color cyan — set text colour to cyan
 /pulse config         — show current config
 ```
+
+The `/pulse` menu uses Claude's interactive picker so you can see theme descriptions and choose visually — no need to remember theme names.
 
 ### Lightweight and fast
 
@@ -185,6 +237,8 @@ Edit `config.json` directly or use the CLI flags:
   "cache_ttl_seconds": 30,
   "theme": "default",
   "rainbow_bars": true,
+  "animate": true,
+  "text_color": "auto",
   "show": {
     "session": true,
     "weekly": true,
@@ -205,6 +259,8 @@ Edit `config.json` directly or use the CLI flags:
 | `--show <parts>` | Enable comma-separated parts |
 | `--hide <parts>` | Disable comma-separated parts |
 | `--rainbow-bars on\|off` | Toggle whether rainbow colours the bars or just the text |
+| `--animate on\|off` | Toggle the white shimmer animation (default: on) |
+| `--text-color <name>` | Set the text colour for labels/percentages (default: auto) |
 | `--config` | Print current configuration summary |
 
 Lower cache TTL values = more frequent API calls. Higher values = faster response but slightly staler data. Default of 30 seconds is a good balance.
