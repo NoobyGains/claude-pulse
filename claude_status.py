@@ -32,6 +32,9 @@ BRIGHT_YELLOW = "\033[93m"
 BRIGHT_RED = "\033[91m"
 ORANGE_256 = "\033[38;5;208m"
 BRIGHT_ORANGE_256 = "\033[38;5;214m"
+PRIDE_VIOLET = "\033[38;5;135m"
+PRIDE_GREEN = "\033[38;5;49m"
+PRIDE_PINK = "\033[38;5;199m"
 
 # Theme definitions — each maps usage levels to ANSI colour codes
 THEMES = {
@@ -40,6 +43,7 @@ THEMES = {
     "sunset":  {"low": YELLOW, "mid": ORANGE_256, "high": RED},
     "mono":    {"low": WHITE, "mid": WHITE, "high": BRIGHT_WHITE},
     "neon":    {"low": BRIGHT_GREEN, "mid": BRIGHT_YELLOW, "high": BRIGHT_RED},
+    "pride":   {"low": PRIDE_VIOLET, "mid": PRIDE_GREEN, "high": PRIDE_PINK},
 }
 
 PLAN_NAMES = {
