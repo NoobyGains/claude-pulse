@@ -25,9 +25,10 @@
 - **Context window** — how full Claude's memory/context is (with colour-coded bar)
 - **Model name** — which model is active (Opus 4.6, Sonnet 4.5, etc.)
 - **Plan tier** — auto-detected (Pro, Max 5x, Max 20x)
-- **Extra credits** — auto-shows when Claude gifts you bonus credits
+- **Extra credits** — auto-shows when you have credits enabled in https://claude.ai/settings/usage
 
 No guesswork. No scanning log files. It pulls the **exact same numbers** shown on [claude.ai/settings/usage](https://claude.ai/settings/usage) via Anthropic's OAuth API.
+I got tried to checking all the time. 
 
 ## Quick Start — `/pulse`
 
