@@ -105,6 +105,18 @@ MODEL_SHORT_NAMES = {
     "claude-3-opus": "Opus",
 }
 
+# Context window sizes by model short name (used to derive token counts from %)
+MODEL_CONTEXT_WINDOWS = {
+    "Opus": 200_000,
+    "Opus 4.6": 200_000,
+    "Sonnet": 200_000,
+    "Sonnet 4": 200_000,
+    "Sonnet 4.5": 200_000,
+    "Haiku": 200_000,
+    "Haiku 4.5": 200_000,
+}
+DEFAULT_CONTEXT_WINDOW = 200_000
+
 def _sanitize(text):
     """Strip ANSI escape sequences from untrusted strings."""
     return re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', str(text))
@@ -1611,7 +1623,14 @@ def build_status_line(usage, plan, config=None, stdin_ctx=None):
             ctx_used = stdin_ctx.get("context_used")
             ctx_limit = stdin_ctx.get("context_limit")
 
-            if ctx_fmt == "tokens" and ctx_used is not None and ctx_limit is not None:
+            # Derive token counts from percentage + model when API doesn't provide them
+            if ctx_used is None or ctx_limit is None:
+                model_name = stdin_ctx.get("model_name", "")
+                window = MODEL_CONTEXT_WINDOWS.get(model_name, DEFAULT_CONTEXT_WINDOW)
+                ctx_limit = window
+                ctx_used = int(ctx_pct / 100 * window)
+
+            if ctx_fmt == "tokens":
                 used_str = _fmt_tokens(ctx_used)
                 limit_str = _fmt_tokens(ctx_limit)
                 label = f"{used_str}/{limit_str}"
