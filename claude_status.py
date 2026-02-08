@@ -470,6 +470,7 @@ def load_config():
     data.setdefault("bar_style", DEFAULT_BAR_STYLE)
     data.setdefault("layout", DEFAULT_LAYOUT)
     data.setdefault("context_format", "percent")
+    data.setdefault("extra_display", "auto")
     show = data.get("show", {})
     for key, default in DEFAULT_SHOW.items():
         show.setdefault(key, default)
@@ -1598,15 +1599,26 @@ def build_status_line(usage, plan, config=None, stdin_ctx=None):
             pct = min(extra.get("utilization") or 0, 100)
             used = (extra.get("used_credits") or 0) / 100  # API returns pence/cents
             limit = (extra.get("monthly_limit") or 0) / 100
-            bar = make_bar(pct, theme, plain=bar_plain, width=bw, bar_style=bstyle)
-            if layout == "compact":
-                parts.append(f"E {bar} {currency}{used:.2f}/{currency}{limit:.2f}")
-            elif layout == "minimal":
-                parts.append(f"{bar} {currency}{used:.2f}")
-            elif layout == "percent-first":
-                parts.append(f"{currency}{used:.2f} {bar}")
+            extra_display = config.get("extra_display", "auto")
+            if extra_display == "auto":
+                extra_display = "amount" if limit == 0 else "full"
+            if extra_display == "amount":
+                if layout == "compact":
+                    parts.append(f"E {currency}{used:.2f}")
+                elif layout == "minimal":
+                    parts.append(f"{currency}{used:.2f}")
+                else:
+                    parts.append(f"Extra {currency}{used:.2f}")
             else:
-                parts.append(f"Extra {bar} {currency}{used:.2f}/{currency}{limit:.2f}")
+                bar = make_bar(pct, theme, plain=bar_plain, width=bw, bar_style=bstyle)
+                if layout == "compact":
+                    parts.append(f"E {bar} {currency}{used:.2f}/{currency}{limit:.2f}")
+                elif layout == "minimal":
+                    parts.append(f"{bar} {currency}{used:.2f}")
+                elif layout == "percent-first":
+                    parts.append(f"{currency}{used:.2f} {bar}")
+                else:
+                    parts.append(f"Extra {bar} {currency}{used:.2f}/{currency}{limit:.2f}")
         elif extra_enabled_by_user:
             bar = make_bar(0, theme, plain=bar_plain, bar_style=bstyle)
             if layout == "minimal":
@@ -1923,6 +1935,8 @@ def cmd_print_config():
     utf8_print(f"  Layout:    {ly}")
     cf = config.get("context_format", "percent")
     utf8_print(f"  Context:   {cf}")
+    ed = config.get("extra_display", "auto")
+    utf8_print(f"  Extra display: {ed}")
     anim = config.get("animate", False)
     anim_state = f"{GREEN}on{RESET}" if anim else f"{RED}off{RESET}"
     utf8_print(f"  Animation:    {anim_state}  ({'rainbow always moving' if anim else 'static'})")
@@ -2145,6 +2159,33 @@ def main():
             for name, (fc, ec) in BAR_STYLES.items():
                 demo = f"{GREEN}{fc * 4}{DIM}{ec * 4}{RESET}"
                 utf8_print(f"  {name:<10} {demo}")
+        return
+
+    if "--extra-display" in args:
+        idx = args.index("--extra-display")
+        if idx + 1 < len(args):
+            val = args[idx + 1].lower()
+            if val not in ("auto", "full", "amount"):
+                utf8_print(f"Unknown value: {val}  (use auto, full, or amount)")
+                return
+            config = load_config()
+            config["extra_display"] = val
+            save_config(config)
+            try:
+                os.remove(get_cache_path())
+            except OSError:
+                pass
+            descriptions = {
+                "auto": "auto-detects (amount only if no spending limit, full bar otherwise)",
+                "full": "progress bar with amount and limit",
+                "amount": "spend amount only, no bar",
+            }
+            utf8_print(f"Extra display: {BOLD}{val}{RESET}  ({descriptions[val]})")
+        else:
+            utf8_print("Usage: --extra-display <auto|full|amount>")
+            utf8_print(f"  {'auto':<8} Auto-detect (amount only if no spending limit)")
+            utf8_print(f"  {'full':<8} Progress bar with amount and limit")
+            utf8_print(f"  {'amount':<8} Spend amount only, no bar")
         return
 
     if "--context-format" in args:

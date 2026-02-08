@@ -339,6 +339,7 @@ Edit `config.json` directly or use the CLI flags:
 | `--bar-style <name>` | Set bar character style (default: classic) |
 | `--layout <name>` | Set text layout (default: standard) |
 | `--currency <symbol>` | Set currency symbol for extra credits (default: £) |
+| `--extra-display <auto\|full\|amount>` | Extra credits display mode (default: auto) |
 | `--update` | Pull the latest version from GitHub (shows changelog) |
 | `--config` | Print current configuration summary |
 

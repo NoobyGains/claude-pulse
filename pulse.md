@@ -49,6 +49,13 @@ If $ARGUMENTS matches `layout <name>` (where name is `standard`, `compact`, `min
 -> Run `--layout <name>` directly.
 -> Confirm: "Layout set to **<name>**. The status line will update on the next refresh."
 
+If $ARGUMENTS matches `extra-display <mode>` (where mode is `auto`, `full`, or `amount`):
+-> Run `--extra-display <mode>` directly.
+-> Confirm with description:
+  - `auto`: "Extra display set to **auto**. Shows amount only if you have no spending limit, full bar otherwise."
+  - `full`: "Extra display set to **full**. Shows progress bar with amount spent and limit."
+  - `amount`: "Extra display set to **amount**. Shows just how much you've spent, no bar."
+
 If $ARGUMENTS is `update`:
 -> Run `python "[REPLACE_WITH_YOUR_PATH]/claude_status.py" --update` and show the output.
 -> After a successful update, remind the user to restart Claude Code to use the new version.
@@ -209,6 +216,24 @@ Options:
 
 If "Dynamic", no command needed (default). If "Hide", run `--hide extra`.
 
+**Step 7b:** If credits are **active** AND the user chose "Dynamic" or "Always show" in Step 7, ask about display mode:
+
+```
+Question: "How should extra credits be displayed?"
+Header: "Display"
+multiSelect: false
+Options:
+  - "Full bar (Recommended)" — "Progress bar with amount spent and limit"
+  - "Amount only" — "Just show how much you've spent, no bar"
+  - "Auto-detect" — "Shows amount only if you have no spending limit"
+```
+
+If they pick "Full bar", run `--extra-display full`.
+If they pick "Amount only", run `--extra-display amount`.
+If they pick "Auto-detect", run `--extra-display auto`.
+
+If credits are **not active**, skip this question (they'll get the `auto` default).
+
 **Step 8:** Ask about currency (only if they chose "Dynamic" or "Always show"):
 
 ```
@@ -228,7 +253,10 @@ Apply with `--currency <symbol>`.
 **Step 9:** Confirm everything:
 "All set! Your status line is now using **<theme>** with **<text colour>** text and animation **<on/off>**. It'll update on the next refresh (~30s) or restart Claude Code to see it immediately."
 
-If credits were shown, also mention: "Your bonus credits will appear as **Extra ━━━━ <currency>used/<currency>limit**."
+If credits were shown, also mention the display format:
+- If display mode is "full": "Your bonus credits will appear as **Extra ━━━━ <currency>used/<currency>limit**."
+- If display mode is "amount": "Your bonus credits will appear as **Extra <currency>amount**."
+- If display mode is "auto": "Your bonus credits will auto-detect the best display format."
 
 ---
 
