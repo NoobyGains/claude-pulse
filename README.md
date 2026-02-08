@@ -532,7 +532,7 @@ claude-pulse is a read-only status tool. It reads your existing OAuth token to f
 
 - Does not send data to any third-party service
 - Does not collect analytics or telemetry
-- Does not modify your Claude Code installation
+- Does not modify your Claude Code installation — the `↑ Claude Update` indicator is notification only; you update Claude Code yourself via `claude update`
 - Does not store or transmit your conversations
 - Does not require any permissions beyond reading your existing OAuth token
 
