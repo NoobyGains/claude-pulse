@@ -2539,8 +2539,8 @@ def main():
         usage = None
         line = f"Usage unavailable: {type(e).__name__}"
 
-    write_cache(cache_path, line, usage, plan)
     if usage is not None:
+        write_cache(cache_path, line, usage, plan)
         _append_history(usage)
         _update_heatmap(usage)
         try:
