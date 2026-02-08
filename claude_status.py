@@ -2227,7 +2227,10 @@ def main():
 
     token, plan = get_credentials()
     if not token:
-        line = "No credentials \u2014 run claude and /login"
+        if os.environ.get("ANTHROPIC_API_KEY"):
+            line = "API key detected \u2014 claude-pulse requires a Pro/Max subscription"
+        else:
+            line = "No credentials \u2014 run claude and /login"
         write_cache(cache_path, line)
         sys.stdout.buffer.write((line + RESET + "\n").encode("utf-8"))
         return
