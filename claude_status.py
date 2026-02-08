@@ -108,7 +108,7 @@ MODEL_SHORT_NAMES = {
 # Context window sizes by model short name (used to derive token counts from %)
 MODEL_CONTEXT_WINDOWS = {
     "Opus": 200_000,
-    "Opus 4.6": 1_000_000,
+    "Opus 4.6": 200_000,
     "Sonnet": 200_000,
     "Sonnet 4": 200_000,
     "Sonnet 4.5": 200_000,
