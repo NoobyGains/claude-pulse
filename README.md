@@ -27,7 +27,7 @@
 - **Plan tier** — auto-detected (Pro, Max 5x, Max 20x)
 - **Extra credits** — auto-shows when you have credits enabled in https://claude.ai/settings/usage
 
-No guesswork. No scanning log files. It pulls the **exact same numbers** shown on [claude.ai/settings/usage](https://claude.ai/settings/usage) via Anthropic's OAuth API.
+No guesswork. No scanning log files. I got tired of checking [claude.ai/settings/usage](https://claude.ai/settings/usage) all the time, so this pulls the exact same numbers via Anthropic's OAuth API.
 I got tried to checking all the time. 
 
 ## Quick Start — `/pulse`
