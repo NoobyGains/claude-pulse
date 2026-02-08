@@ -5,7 +5,9 @@ VERSION = "2.2.0"
 
 import json
 import os
+import re
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -102,6 +104,10 @@ MODEL_SHORT_NAMES = {
     "claude-3-5-haiku": "Haiku",
     "claude-3-opus": "Opus",
 }
+
+def _sanitize(text):
+    """Strip ANSI escape sequences from untrusted strings."""
+    return re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', str(text))
 
 # Named text colours for non-bar text (labels, percentages, separators)
 TEXT_COLORS = {
@@ -382,6 +388,8 @@ def apply_shimmer(text):
 def _secure_mkdir(path):
     """Create directory with 0o700 permissions on Unix. Normal mkdir on Windows."""
     path = Path(path)
+    if path.is_symlink():
+        path.unlink()
     if path.exists():
         return
     if sys.platform == "win32":
@@ -396,10 +404,16 @@ def _secure_mkdir(path):
 
 def _secure_open_write(filepath):
     """Open file for writing with 0o600 permissions on Unix. Normal open on Windows."""
+    filepath = Path(filepath)
+    if filepath.is_symlink():
+        filepath.unlink()
     if sys.platform == "win32":
-        return open(filepath, "w")
-    fd = os.open(str(filepath), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    return os.fdopen(fd, "w")
+        return open(filepath, "w", encoding="utf-8")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = os.open(str(filepath), flags, 0o600)
+    return os.fdopen(fd, "w", encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -425,7 +439,7 @@ def load_config():
     data = {}
     for path in (user_path, repo_path):
         try:
-            with open(path, "r") as f:
+            with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             break
         except (FileNotFoundError, json.JSONDecodeError):
@@ -470,7 +484,7 @@ def _cleanup_hooks():
         return
     settings_path = Path.home() / ".claude" / "settings.json"
     try:
-        with open(settings_path, "r") as f:
+        with open(settings_path, "r", encoding="utf-8") as f:
             settings = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         # No settings file or invalid — nothing to clean
@@ -498,7 +512,7 @@ def _cleanup_hooks():
             changed = True
 
     if changed:
-        with open(settings_path, "w") as f:
+        with _secure_open_write(settings_path) as f:
             json.dump(settings, f, indent=2)
 
     try:
@@ -577,7 +591,7 @@ def check_for_update():
 
     # Read cached result
     try:
-        with open(update_cache, "r") as f:
+        with open(update_cache, "r", encoding="utf-8") as f:
             cached = json.load(f)
         if time.time() - cached.get("timestamp", 0) < UPDATE_CHECK_TTL:
             return cached.get("update_available", False)
@@ -666,11 +680,34 @@ def cmd_update():
         utf8_print(f"  Re-clone from: https://github.com/{GITHUB_REPO}")
         return
 
+    # Verify the git remote points to the expected repository
+    try:
+        origin_result = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            capture_output=True, text=True, timeout=5,
+            cwd=str(repo_dir),
+        )
+        origin_url = origin_result.stdout.strip().lower() if origin_result.returncode == 0 else ""
+        expected_paths = [GITHUB_REPO.lower(), GITHUB_REPO.lower() + ".git"]
+        if not any(origin_url.endswith(p) for p in expected_paths):
+            utf8_print(f"  {RED}Origin URL does not match expected repository.{RESET}")
+            utf8_print(f"  Expected: {GITHUB_REPO}")
+            utf8_print(f"  Got:      {origin_url}")
+            return
+    except Exception:
+        utf8_print(f"  {RED}Could not verify git remote.{RESET}")
+        return
+
     # Check current status
     local = get_local_commit()
     remote = get_remote_commit()
 
-    if local and remote and local == remote:
+    if remote is None:
+        utf8_print(f"  {RED}Could not reach GitHub API to verify update integrity.{RESET}")
+        utf8_print(f"  Check your network connection and try again.")
+        return
+
+    if local and local == remote:
         utf8_print(f"  {GREEN}No update found — you're on the latest version (v{VERSION}).{RESET}")
         return
 
@@ -709,21 +746,20 @@ def cmd_update():
         )
         if result.returncode == 0:
             # Verify post-pull HEAD matches the expected remote commit
-            if remote is not None:
-                post_pull_head = get_local_commit()
-                if post_pull_head and post_pull_head != remote:
-                    utf8_print(f"  {RED}Integrity check failed: HEAD after pull ({post_pull_head[:8]}) does not match expected remote ({remote[:8]}).{RESET}")
-                    utf8_print(f"  Rolling back to previous commit ({pre_pull_commit[:8]})...")
-                    try:
-                        subprocess.run(
-                            ["git", "reset", "--hard", pre_pull_commit],
-                            capture_output=True, text=True, timeout=10,
-                            cwd=str(repo_dir),
-                        )
-                    except Exception:
-                        pass
-                    utf8_print(f"  {YELLOW}Update aborted. Please try again or re-clone the repository.{RESET}")
-                    return
+            post_pull_head = get_local_commit()
+            if post_pull_head and post_pull_head != remote:
+                utf8_print(f"  {RED}Integrity check failed: HEAD after pull ({post_pull_head[:8]}) does not match expected remote ({remote[:8]}).{RESET}")
+                utf8_print(f"  Rolling back to previous commit ({pre_pull_commit[:8]})...")
+                try:
+                    subprocess.run(
+                        ["git", "reset", "--hard", pre_pull_commit],
+                        capture_output=True, text=True, timeout=10,
+                        cwd=str(repo_dir),
+                    )
+                except Exception:
+                    pass
+                utf8_print(f"  {YELLOW}Update aborted. Please try again or re-clone the repository.{RESET}")
+                return
             # Read the new version from the updated file on disk
             new_version = _read_version_from_file(script_path)
             if new_version and new_version != VERSION:
@@ -763,13 +799,13 @@ def cmd_update():
     except subprocess.TimeoutExpired:
         utf8_print(f"  {RED}Timed out. Check your network connection.{RESET}")
     except Exception as e:
-        utf8_print(f"  {RED}Error: {e}{RESET}")
+        utf8_print(f"  {RED}Update error: {type(e).__name__}{RESET}")
 
 
 def read_cache(cache_path, ttl):
     """Return the full cache dict if fresh, else None."""
     try:
-        with open(cache_path, "r") as f:
+        with open(cache_path, "r", encoding="utf-8") as f:
             cached = json.load(f)
         if time.time() - cached.get("timestamp", 0) < ttl:
             return cached
@@ -778,11 +814,13 @@ def read_cache(cache_path, ttl):
     return None
 
 
+_USAGE_CACHE_KEYS = {"five_hour", "seven_day", "extra_usage"}
+
 def write_cache(cache_path, line, usage=None, plan=None):
     try:
         data = {"timestamp": time.time(), "line": line}
         if usage is not None:
-            data["usage"] = usage
+            data["usage"] = {k: v for k, v in usage.items() if k in _USAGE_CACHE_KEYS}
         if plan is not None:
             data["plan"] = plan
         with _secure_open_write(cache_path) as f:
@@ -804,13 +842,13 @@ def get_credentials():
         tier = oauth.get("rateLimitTier", "")
         if not token:
             return None, None
-        plan = PLAN_NAMES.get(tier, tier.replace("default_claude_", "").replace("_", " ").title())
+        plan = PLAN_NAMES.get(tier, _sanitize(tier.replace("default_claude_", "").replace("_", " ").title()))
         return token, plan
 
     # 1. File-based (~/.claude/.credentials.json)
     creds_path = Path.home() / ".claude" / ".credentials.json"
     try:
-        with open(creds_path, "r") as f:
+        with open(creds_path, "r", encoding="utf-8") as f:
             data = json.load(f)
         token, plan = _extract(data)
         if token:
@@ -917,7 +955,7 @@ def _get_history_path():
 def _read_history():
     """Read usage history samples."""
     try:
-        with open(_get_history_path(), "r") as f:
+        with open(_get_history_path(), "r", encoding="utf-8") as f:
             return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         return []
@@ -1073,7 +1111,7 @@ def _get_stats_path():
 def _load_stats():
     """Load stats from disk with defaults."""
     try:
-        with open(_get_stats_path(), "r") as f:
+        with open(_get_stats_path(), "r", encoding="utf-8") as f:
             return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         return {
@@ -1243,7 +1281,7 @@ def _parse_stdin_context(raw_stdin):
         else:
             model_id = model.get("id", "")
             if model_id:
-                result["model_name"] = MODEL_SHORT_NAMES.get(model_id, model_id.split("-")[-1].title())
+                result["model_name"] = MODEL_SHORT_NAMES.get(model_id, _sanitize(model_id.split("-")[-1].title()))
     except (AttributeError, KeyError):
         pass
 
@@ -1282,7 +1320,7 @@ def _update_heatmap(usage):
 
     # Load existing heatmap
     try:
-        with open(_get_heatmap_path(), "r") as f:
+        with open(_get_heatmap_path(), "r", encoding="utf-8") as f:
             heatmap = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         heatmap = {}
@@ -1344,7 +1382,7 @@ def _render_heatmap(config=None):
 
     # Load heatmap data
     try:
-        with open(_get_heatmap_path(), "r") as f:
+        with open(_get_heatmap_path(), "r", encoding="utf-8") as f:
             heatmap = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         heatmap = {}
@@ -1617,7 +1655,7 @@ def install_status_line():
     settings = {}
     if settings_path.exists():
         try:
-            with open(settings_path, "r") as f:
+            with open(settings_path, "r", encoding="utf-8") as f:
                 settings = json.load(f)
         except (json.JSONDecodeError, OSError):
             pass
@@ -1898,6 +1936,10 @@ def cmd_print_config():
 # ---------------------------------------------------------------------------
 
 def main():
+    # Handle SIGPIPE gracefully on Unix (e.g. when piped to head)
+    if hasattr(signal, "SIGPIPE"):
+        signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+
     args = sys.argv[1:]
 
     if "--update" in args:
@@ -2148,10 +2190,11 @@ def main():
         pass
 
     raw_stdin = ""
-    try:
-        raw_stdin = sys.stdin.read(65536)
-    except Exception:
-        pass
+    if not sys.stdin.isatty():
+        try:
+            raw_stdin = sys.stdin.read(65536)
+        except Exception:
+            pass
     stdin_ctx = _parse_stdin_context(raw_stdin)
 
     # Persist stdin context (model, context %) in a separate file so it
@@ -2159,13 +2202,13 @@ def main():
     stdin_ctx_path = get_state_dir() / "stdin_ctx.json"
     if stdin_ctx:
         try:
-            with open(str(stdin_ctx_path), "w") as f:
+            with _secure_open_write(stdin_ctx_path) as f:
                 json.dump(stdin_ctx, f)
         except OSError:
             pass
     elif not stdin_ctx:
         try:
-            with open(str(stdin_ctx_path), "r") as f:
+            with open(str(stdin_ctx_path), "r", encoding="utf-8") as f:
                 stdin_ctx = json.load(f)
         except (FileNotFoundError, json.JSONDecodeError, OSError):
             pass
@@ -2206,9 +2249,9 @@ def main():
     except json.JSONDecodeError:
         usage = None
         line = "API returned invalid data"
-    except (TypeError, ValueError) as e:
+    except (TypeError, ValueError):
         usage = None
-        line = f"Data error: {e}"
+        line = "Data error"
     except Exception as e:
         usage = None
         line = f"Usage unavailable: {type(e).__name__}"
