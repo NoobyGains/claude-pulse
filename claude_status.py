@@ -118,8 +118,11 @@ MODEL_CONTEXT_WINDOWS = {
 DEFAULT_CONTEXT_WINDOW = 200_000
 
 def _sanitize(text):
-    """Strip ANSI escape sequences from untrusted strings."""
-    return re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', str(text))
+    """Strip ANSI/terminal escape sequences and control characters from untrusted strings."""
+    # Strip CSI (\x1b[...), OSC (\x1b]...), DCS (\x1bP...) and other escape sequences
+    cleaned = re.sub(r'\x1b[^a-zA-Z]*[a-zA-Z]', '', str(text))
+    # Strip remaining control characters (keep \n for multi-line contexts)
+    return re.sub(r'[\x00-\x09\x0b-\x1f\x7f-\x9f]', '', cleaned)
 
 # Named text colours for non-bar text (labels, percentages, separators)
 TEXT_COLORS = {
@@ -725,7 +728,7 @@ def cmd_update():
     # Fetch remote version to show what's available
     remote_version = _fetch_remote_version()
     if remote_version and remote_version != VERSION:
-        utf8_print(f"  {BRIGHT_YELLOW}Update found! v{VERSION} -> v{remote_version}{RESET}")
+        utf8_print(f"  {BRIGHT_YELLOW}Update found! v{VERSION} -> v{_sanitize(remote_version)}{RESET}")
     else:
         utf8_print(f"  {BRIGHT_YELLOW}Update found! New changes available{RESET}")
 
@@ -1970,7 +1973,7 @@ def cmd_print_config():
                         cc_cache_path = get_state_dir() / "claude_code_update.json"
                         with open(cc_cache_path, "r", encoding="utf-8") as f:
                             cc_cached = json.load(f)
-                        remote_ver = cc_cached.get("remote", "?")
+                        remote_ver = _sanitize(cc_cached.get("remote", "?"))
                     except Exception:
                         remote_ver = "newer"
                     utf8_print(f"  Claude Code:  {BRIGHT_YELLOW}{local_ver} \u2192 {remote_ver} available{RESET}")
