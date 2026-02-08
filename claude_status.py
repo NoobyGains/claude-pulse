@@ -185,6 +185,7 @@ DEFAULT_SHOW = {
     "model": True,
     "context": True,
     "claude_update": True,
+    "weekly_timer": True,
 }
 
 # Sparkline and history constants
@@ -970,6 +971,71 @@ def format_reset_time(resets_at_str):
         return None
 
 
+WEEKLY_TIMER_FORMATS = ("auto", "countdown", "date", "full")
+DEFAULT_WEEKLY_TIMER_FORMAT = "auto"
+DEFAULT_WEEKLY_TIMER_PREFIX = "R:"
+
+
+def _weekly_countdown(total_seconds):
+    """Format seconds as compact countdown: '2d 5h', '14h 22m', or '45m'."""
+    if total_seconds >= 86400:
+        days = total_seconds // 86400
+        hours = (total_seconds % 86400) // 3600
+        return f"{days}d {hours}h"
+    hours = total_seconds // 3600
+    minutes = (total_seconds % 3600) // 60
+    if hours > 0:
+        return f"{hours}h {minutes:02d}m"
+    return f"{minutes}m"
+
+
+def _weekly_date(resets_at):
+    """Format reset time as local day+hour: 'Sat 5pm'."""
+    local_dt = resets_at.astimezone()
+    hour = local_dt.hour
+    if hour == 0:
+        time_str = "12am"
+    elif hour < 12:
+        time_str = f"{hour}am"
+    elif hour == 12:
+        time_str = "12pm"
+    else:
+        time_str = f"{hour - 12}pm"
+    return f"{local_dt.strftime('%a')} {time_str}"
+
+
+def format_weekly_reset(resets_at_str, fmt="auto"):
+    """Format weekly reset time.
+
+    Formats:
+      auto      — date when >24h, countdown when <24h (default)
+      countdown — always show countdown: '2d 5h' / '14h 22m' / '45m'
+      date      — always show date: 'Sat 5pm'
+      full      — both: 'Sat 5pm · 2d 5h'
+    """
+    if not resets_at_str:
+        return None
+    try:
+        safe = _sanitize(str(resets_at_str))
+        resets_at = datetime.fromisoformat(safe)
+        now = datetime.now(timezone.utc)
+        total_seconds = int((resets_at - now).total_seconds())
+        if total_seconds <= 0:
+            return "now"
+        if fmt == "countdown":
+            return _weekly_countdown(total_seconds)
+        if fmt == "date":
+            return _weekly_date(resets_at)
+        if fmt == "full":
+            return f"{_weekly_date(resets_at)} \u00b7 {_weekly_countdown(total_seconds)}"
+        # auto: date when >24h, countdown when <24h
+        if total_seconds < 86400:
+            return _weekly_countdown(total_seconds)
+        return _weekly_date(resets_at)
+    except (ValueError, TypeError):
+        return None
+
+
 def _get_history_path():
     """Return path to usage history file."""
     return get_state_dir() / "history.json"
@@ -1577,14 +1643,23 @@ def build_status_line(usage, plan, config=None, stdin_ctx=None):
         if seven:
             pct = seven.get("utilization") or 0
             bar = make_bar(pct, theme, plain=bar_plain, width=bw, bar_style=bstyle)
+            weekly_reset_str = ""
+            if show.get("weekly_timer", True):
+                wt_fmt = config.get("weekly_timer_format", DEFAULT_WEEKLY_TIMER_FORMAT)
+                if wt_fmt not in WEEKLY_TIMER_FORMATS:
+                    wt_fmt = DEFAULT_WEEKLY_TIMER_FORMAT
+                wt_prefix = _sanitize(str(config.get("weekly_timer_prefix", DEFAULT_WEEKLY_TIMER_PREFIX)))[:10]
+                wr = format_weekly_reset(seven.get("resets_at"), fmt=wt_fmt)
+                if wr:
+                    weekly_reset_str = f" {wt_prefix}{wr}"
             if layout == "compact":
-                parts.append(f"W {bar} {pct:.0f}%")
+                parts.append(f"W {bar} {pct:.0f}%{weekly_reset_str}")
             elif layout == "minimal":
-                parts.append(f"{bar} {pct:.0f}%")
+                parts.append(f"{bar} {pct:.0f}%{weekly_reset_str}")
             elif layout == "percent-first":
-                parts.append(f"{pct:.0f}% {bar}")
+                parts.append(f"{pct:.0f}% {bar}{weekly_reset_str}")
             else:
-                parts.append(f"Weekly {bar} {pct:.0f}%")
+                parts.append(f"Weekly {bar} {pct:.0f}%{weekly_reset_str}")
 
     # Extra usage (bonus/gifted credits)
     # Auto-shows when credits are gifted, unless user explicitly hid it
@@ -1772,7 +1847,7 @@ def cmd_themes_demo():
     utf8_print(f"\n{BOLD}Theme previews:{RESET}\n")
     demo_usage = {
         "five_hour": {"utilization": 42, "resets_at": None},
-        "seven_day": {"utilization": 67},
+        "seven_day": {"utilization": 67, "resets_at": None},
     }
     user_config = load_config()
     current = user_config.get("theme", "default")
@@ -1796,7 +1871,7 @@ def cmd_show_themes():
     utf8_print(f"\n{BOLD}Themes:{RESET}\n")
     demo_usage = {
         "five_hour": {"utilization": 42, "resets_at": None},
-        "seven_day": {"utilization": 67},
+        "seven_day": {"utilization": 67, "resets_at": None},
     }
     user_bar_style = current_config.get("bar_style", DEFAULT_BAR_STYLE)
     for name in THEMES:
@@ -1936,6 +2011,14 @@ def cmd_print_config():
     utf8_print(f"  Context:   {cf}")
     ed = config.get("extra_display", "auto")
     utf8_print(f"  Extra display: {ed}")
+    show = config.get("show", DEFAULT_SHOW)
+    wt_fmt = _sanitize(str(config.get("weekly_timer_format", DEFAULT_WEEKLY_TIMER_FORMAT)))
+    if wt_fmt not in WEEKLY_TIMER_FORMATS:
+        wt_fmt = DEFAULT_WEEKLY_TIMER_FORMAT
+    wt_pfx = _sanitize(str(config.get("weekly_timer_prefix", DEFAULT_WEEKLY_TIMER_PREFIX)))[:10]
+    wt_vis = show.get("weekly_timer", True)
+    wt_state = f"{GREEN}on{RESET}" if wt_vis else f"{RED}off{RESET}"
+    utf8_print(f"  Weekly timer:  {wt_state}  format={wt_fmt}  prefix=\"{wt_pfx}\"")
     anim = config.get("animate", False)
     anim_state = f"{GREEN}on{RESET}" if anim else f"{RED}off{RESET}"
     utf8_print(f"  Animation:    {anim_state}  ({'rainbow always moving' if anim else 'static'})")
@@ -1983,7 +2066,6 @@ def cmd_print_config():
                     utf8_print(f"  Claude Code:  {DIM}{local_ver} (check failed){RESET}")
         except Exception:
             utf8_print(f"  Claude Code:  {DIM}check failed{RESET}")
-    show = config.get("show", DEFAULT_SHOW)
 
     # Extra credits status — check the API
     utf8_print(f"\n  {BOLD}Extra Credits:{RESET}")
@@ -2270,6 +2352,55 @@ def main():
             utf8_print(f"Currency symbol: {BOLD}{val}{RESET}")
         else:
             utf8_print("Usage: --currency <symbol>  (e.g. \u00a3, $, \u20ac, \u00a5)")
+        return
+
+    if "--weekly-timer-format" in args:
+        idx = args.index("--weekly-timer-format")
+        if idx + 1 < len(args):
+            val = args[idx + 1].lower()
+            if val not in WEEKLY_TIMER_FORMATS:
+                utf8_print(f"Unknown format: {_sanitize(val)}")
+                utf8_print(f"Available: {', '.join(WEEKLY_TIMER_FORMATS)}")
+                return
+            config = load_config()
+            config["weekly_timer_format"] = val
+            save_config(config)
+            try:
+                os.remove(get_cache_path())
+            except OSError:
+                pass
+            descriptions = {
+                "auto": "date when >24h, countdown when <24h",
+                "countdown": "always show countdown (2d 5h / 14h 22m)",
+                "date": "always show date (Sat 5pm)",
+                "full": "both date and countdown (Sat 5pm \u00b7 2d 5h)",
+            }
+            utf8_print(f"Weekly timer format: {BOLD}{val}{RESET}  ({descriptions[val]})")
+        else:
+            utf8_print(f"Usage: --weekly-timer-format <mode>\n")
+            utf8_print(f"  auto       date when >24h, countdown when <24h (default)")
+            utf8_print(f"  countdown  always show countdown: 2d 5h / 14h 22m / 45m")
+            utf8_print(f"  date       always show date: Sat 5pm")
+            utf8_print(f"  full       both: Sat 5pm \u00b7 2d 5h")
+        return
+
+    if "--weekly-timer-prefix" in args:
+        idx = args.index("--weekly-timer-prefix")
+        if idx + 1 < len(args):
+            val = _sanitize(args[idx + 1])[:10]  # strip escapes, max 10 chars
+            config = load_config()
+            config["weekly_timer_prefix"] = val
+            save_config(config)
+            try:
+                os.remove(get_cache_path())
+            except OSError:
+                pass
+            if val:
+                utf8_print(f"Weekly timer prefix: {BOLD}{val}{RESET}")
+            else:
+                utf8_print(f"Weekly timer prefix: {DIM}(none){RESET}")
+        else:
+            utf8_print('Usage: --weekly-timer-prefix <text>  (e.g. "R:", "Resets:", "")')
         return
 
     if "--stats" in args:

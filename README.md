@@ -160,6 +160,32 @@ Session ━━━━━━━━ 5% 4h 07m | Weekly ━━━━━━━━ 6% 
 - **Hideable** — `--hide extra` to suppress, `--show extra` to bring back
 - **Currency** — defaults to `£`, change with `--currency $` or `--currency €`
 
+### Weekly Reset Timer
+
+Shows when your 7-day usage window resets, appended to the weekly bar:
+
+```
+Weekly ━━━━━━━━ 19% R:Sat 5pm     (more than 24h away)
+Weekly ━━━━━━━━ 19% R:14h 22m     (less than 24h — countdown)
+```
+
+Auto-switches between a date (`R:Sat 5pm`) and a countdown (`R:14h 22m`) at the 24-hour mark.
+
+```bash
+# Format modes
+python claude_status.py --weekly-timer-format auto        # date >24h, countdown <24h (default)
+python claude_status.py --weekly-timer-format countdown   # always countdown: 2d 5h / 14h 22m
+python claude_status.py --weekly-timer-format date        # always date: Sat 5pm
+python claude_status.py --weekly-timer-format full        # both: Sat 5pm · 2d 5h
+
+# Change the prefix (default: "R:")
+python claude_status.py --weekly-timer-prefix "Resets:"
+python claude_status.py --weekly-timer-prefix ""          # no prefix
+
+# Hide entirely
+python claude_status.py --hide weekly_timer
+```
+
 ### Visibility Toggles
 
 Show or hide individual parts of the status line:
@@ -175,7 +201,7 @@ python claude_status.py --show timer,plan
 python claude_status.py --config
 ```
 
-**Available parts:** `session`, `weekly`, `plan`, `timer`, `extra`, `update`, `claude_update`, `sparkline`, `runway`, `status_message`, `streak`, `model`, `context`
+**Available parts:** `session`, `weekly`, `weekly_timer`, `plan`, `timer`, `extra`, `update`, `claude_update`, `sparkline`, `runway`, `status_message`, `streak`, `model`, `context`
 
 ### `/pulse` Slash Command
 
@@ -326,9 +352,12 @@ Edit `config.json` directly or use the CLI flags:
   "layout": "standard",
   "context_format": "percent",
   "extra_display": "auto",
+  "weekly_timer_format": "auto",
+  "weekly_timer_prefix": "R:",
   "show": {
     "session": true,
     "weekly": true,
+    "weekly_timer": true,
     "plan": true,
     "timer": true,
     "extra": false,
@@ -362,6 +391,8 @@ Edit `config.json` directly or use the CLI flags:
 | `--layout <name>` | Set text layout (default: standard) |
 | `--currency <symbol>` | Set currency symbol for extra credits (default: £) |
 | `--extra-display <auto\|full\|amount>` | Extra credits display mode (default: auto) |
+| `--weekly-timer-format <mode>` | Weekly reset display: auto, countdown, date, full |
+| `--weekly-timer-prefix <text>` | Prefix before reset time (default: `R:`) |
 | `--update` | Pull the latest version from GitHub (shows changelog) |
 | `--config` | Print current configuration summary |
 

@@ -56,6 +56,19 @@ If $ARGUMENTS matches `extra-display <mode>` (where mode is `auto`, `full`, or `
   - `full`: "Extra display set to **full**. Shows progress bar with amount spent and limit."
   - `amount`: "Extra display set to **amount**. Shows just how much you've spent, no bar."
 
+If $ARGUMENTS matches `weekly-timer-format <mode>` or `reset-format <mode>` (where mode is `auto`, `countdown`, `date`, or `full`):
+-> Run `--weekly-timer-format <mode>` directly.
+-> Confirm with description:
+  - `auto`: "Weekly timer format set to **auto**. Shows date when >24h away, countdown when <24h."
+  - `countdown`: "Weekly timer format set to **countdown**. Always shows time remaining (e.g. 2d 5h)."
+  - `date`: "Weekly timer format set to **date**. Always shows the reset day (e.g. Sat 5pm)."
+  - `full`: "Weekly timer format set to **full**. Shows both date and countdown (e.g. Sat 5pm · 2d 5h)."
+
+If $ARGUMENTS matches `weekly-timer-prefix <text>` or `reset-prefix <text>`:
+-> Run `--weekly-timer-prefix <text>` directly.
+-> Confirm: "Weekly timer prefix set to **<text>**."
+-> If empty string, confirm: "Weekly timer prefix removed. Reset time will show without a prefix."
+
 If $ARGUMENTS is `update`:
 -> Run `python "[REPLACE_WITH_YOUR_PATH]/claude_status.py" --update` and show the output.
 -> After a successful update, remind the user to restart Claude Code to use the new version.
@@ -271,6 +284,7 @@ multiSelect: true
 Options:
   - "Session usage" — "5-hour usage block with progress bar and timer"
   - "Weekly usage" — "7-day rolling limit across all models"
+  - "Weekly reset timer" — "When the 7-day window resets (date or countdown)"
   - "Plan name" — "Shows Pro / Max 5x / Max 20x"
   - "Timer" — "Countdown until session resets"
 ```
