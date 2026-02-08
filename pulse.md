@@ -26,13 +26,6 @@ If $ARGUMENTS is exactly `show` (no parts after it), or `show all`, or `colors`,
 If $ARGUMENTS contains `hide <parts>` or `show <parts>` (with specific parts like extra, timer, etc.):
 -> Run the corresponding `--hide` or `--show` command directly.
 
-If $ARGUMENTS is `rainbow-bars on` or `rainbow-bars off`:
--> Run `--rainbow-bars on|off` directly.
-
-If $ARGUMENTS is `rainbow-mode on` or `rainbow-mode off`:
--> Run `--rainbow-mode on|off` directly.
--> Confirm: "Rainbow animation **<on/off>**. This applies the flowing rainbow colour effect to your current theme."
-
 If $ARGUMENTS is `animate on` or `animate off`:
 -> Run `--animate on|off` directly.
 
@@ -83,7 +76,7 @@ Question: "Pick a theme from the preview above"
 Header: "Theme"
 multiSelect: false
 Options:
-  - "rainbow" — "Animated full-spectrum colours with white shimmer"
+  - "rainbow" — "Full-spectrum rainbow colours across all bars"
   - "default" — "Classic green → yellow → red traffic-light"
   - "ocean" — "Cool cyan → blue → magenta"
   - "More themes..." — "See all 10 themes"
@@ -136,7 +129,7 @@ Header: "Text colour"
 multiSelect: false
 Options:
   - "<theme recommendation> (Recommended)" — "<reason from above>"
-  - "White" — "Neutral light grey — works with any theme and shows the shimmer"
+  - "White" — "Neutral light grey — works with any theme"
   - "Default" — "Your terminal's default text colour"
   - "<a contrasting option>" — pick one that contrasts with the theme: cyan, magenta, green, yellow, etc.
 ```
@@ -145,33 +138,33 @@ If they pick the recommended option for a specific theme, use `--text-color <col
 If they pick "White", use `--text-color white`.
 If they pick "Default", use `--text-color default`.
 
-**Step 5:** Ask about animation:
+**Step 5:** Ask about animation. The question depends on the chosen theme:
+
+If the chosen theme IS **rainbow**:
 
 ```
-Question: "Enable the white shimmer animation?"
-Header: "Shimmer"
+Question: "Enable the flowing rainbow animation?"
+Header: "Animation"
 multiSelect: false
 Options:
-  - "On (Recommended)" — "White highlight sweeps across while Claude is writing"
-  - "Off" — "Static colours, no animation"
+  - "On (Recommended)" — "Rainbow colours flow across the bar while Claude is active"
+  - "Off" — "Rainbow colours without the flowing effect"
 ```
 
-**Step 5b:** If the chosen theme is NOT rainbow, ask about rainbow animation:
+If the chosen theme is NOT rainbow:
 
 ```
 Question: "Enable rainbow animation on your bars?"
-Header: "Rainbow"
+Header: "Animation"
 multiSelect: false
 Options:
-  - "Off (Recommended)" — "Keep your theme's own colours on the bars"
+  - "Off (Recommended)" — "Keep your theme's own colours"
   - "On" — "Override bar colours with a flowing rainbow gradient"
 ```
 
-If they pick "On", run `--rainbow-mode on`. If "Off", run `--rainbow-mode off`.
+If they pick "On", run `--animate on`. If "Off", run `--animate off`.
 
-**Step 6:** Apply the animation setting with `--animate on|off`.
-
-**Step 6b:** Ask about bar size:
+**Step 6:** Ask about bar size:
 
 ```
 Question: "How wide should the progress bars be?"
@@ -233,7 +226,7 @@ The user can also pick "Other" and type any symbol (e.g. ¥, ₹, kr, CHF, etc.)
 Apply with `--currency <symbol>`.
 
 **Step 9:** Confirm everything:
-"All set! Your status line is now using **<theme>** with **<text colour>** text and shimmer **<on/off>**. It'll update on the next refresh (~30s) or restart Claude Code to see it immediately."
+"All set! Your status line is now using **<theme>** with **<text colour>** text and animation **<on/off>**. It'll update on the next refresh (~30s) or restart Claude Code to see it immediately."
 
 If credits were shown, also mention: "Your bonus credits will appear as **Extra ━━━━ <currency>used/<currency>limit**."
 
