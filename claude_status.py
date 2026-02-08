@@ -6,6 +6,7 @@ VERSION = "2.2.0"
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -250,8 +251,13 @@ def rainbow_colorize(text, color_all=True, shimmer=True):
         # Handle ANSI escape sequences
         if text[i] == "\033":
             j = i
-            while j < len(text) and text[j] != "m":
+            while j < len(text) and j - i < 20 and text[j] != "m":
                 j += 1
+            if j >= len(text) or text[j] != "m":
+                result.append(text[i])
+                i += 1
+                visible_idx += 1
+                continue
             seq = text[i : j + 1]
 
             if color_all:
@@ -345,6 +351,22 @@ def _secure_open_write(filepath):
         flags |= os.O_NOFOLLOW
     fd = os.open(str(filepath), flags, 0o600)
     return os.fdopen(fd, "w", encoding="utf-8")
+
+
+def _atomic_json_write(filepath, data, indent=2):
+    """Atomically write JSON with 0o600 permissions on Unix."""
+    filepath = Path(filepath)
+    tmp_path = filepath.with_suffix(".tmp")
+    try:
+        with _secure_open_write(tmp_path) as f:
+            json.dump(data, f, indent=indent)
+        os.replace(str(tmp_path), str(filepath))
+    except BaseException:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -446,8 +468,7 @@ def _cleanup_hooks():
             changed = True
 
     if changed:
-        with _secure_open_write(settings_path) as f:
-            json.dump(settings, f, indent=2)
+        _atomic_json_write(settings_path, settings)
 
     try:
         with _secure_open_write(marker) as f:
@@ -675,7 +696,8 @@ def _fetch_remote_version():
             for raw_line in resp:
                 line = raw_line.decode("utf-8", errors="replace")
                 if line.startswith("VERSION"):
-                    return line.split('"')[1]
+                    version = line.split('"')[1]
+                    return re.sub(r'[^a-zA-Z0-9.\-]', '', version) or None
     except Exception:
         pass
     return None
@@ -1862,13 +1884,17 @@ def install_status_line():
         try:
             with open(settings_path, "r", encoding="utf-8") as f:
                 settings = json.load(f)
-        except (json.JSONDecodeError, OSError):
-            pass
+        except json.JSONDecodeError:
+            print(f"Error: {settings_path} contains invalid JSON. Fix or remove it before installing.", file=sys.stderr)
+            return
+        except OSError as e:
+            print(f"Error: Cannot read {settings_path}: {e}", file=sys.stderr)
+            return
 
     # Status line command
     settings["statusLine"] = {
         "type": "command",
-        "command": f'{python_cmd} "{script_path}"',
+        "command": f'{python_cmd} {shlex.quote(str(script_path))}',
         "refresh": 150,
     }
 
@@ -1877,8 +1903,7 @@ def install_status_line():
     # Use --install-hooks for animate-while-working mode
 
     _secure_mkdir(settings_path.parent)
-    with _secure_open_write(settings_path) as f:
-        json.dump(settings, f, indent=2)
+    _atomic_json_write(settings_path, settings)
 
     utf8_print(f"Installed status line to {settings_path}")
     utf8_print(f"Command: {python_cmd} \"{script_path}\"")
@@ -2556,8 +2581,7 @@ def main():
     if stdin_ctx:
         persisted.update(stdin_ctx)
         try:
-            with _secure_open_write(stdin_ctx_path) as f:
-                json.dump(persisted, f)
+            _atomic_json_write(stdin_ctx_path, persisted)
         except OSError:
             pass
     stdin_ctx = persisted
