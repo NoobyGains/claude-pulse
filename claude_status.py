@@ -778,13 +778,15 @@ def read_cache(cache_path, ttl):
     return None
 
 
-def write_cache(cache_path, line, usage=None, plan=None):
+def write_cache(cache_path, line, usage=None, plan=None, stdin_ctx=None):
     try:
         data = {"timestamp": time.time(), "line": line}
         if usage is not None:
             data["usage"] = usage
         if plan is not None:
             data["plan"] = plan
+        if stdin_ctx:
+            data["stdin_ctx"] = stdin_ctx
         with _secure_open_write(cache_path) as f:
             json.dump(data, f)
     except OSError:
@@ -2127,9 +2129,19 @@ def main():
     cached = read_cache(cache_path, cache_ttl)
 
     if cached is not None:
-        if (animate or stdin_ctx) and "usage" in cached:
-            # Re-render: animation needs new frames, stdin_ctx has live context/model data
+        # Use cached stdin_ctx when current stdin is empty (prevents context flashing)
+        if not stdin_ctx and cached.get("stdin_ctx"):
+            stdin_ctx = cached["stdin_ctx"]
+        if "usage" in cached:
             line = build_status_line(cached["usage"], cached.get("plan", ""), config, stdin_ctx)
+            # Update cache with latest stdin_ctx so it persists
+            if stdin_ctx:
+                cached["stdin_ctx"] = stdin_ctx
+                try:
+                    with _secure_open_write(cache_path) as f:
+                        json.dump(cached, f)
+                except OSError:
+                    pass
         else:
             line = cached.get("line", "")
         line = append_update_indicator(line, config)
@@ -2153,7 +2165,7 @@ def main():
         usage = None
         line = "Usage unavailable"
 
-    write_cache(cache_path, line, usage, plan)
+    write_cache(cache_path, line, usage, plan, stdin_ctx)
     if usage is not None:
         _append_history(usage)
         _update_heatmap(usage)
