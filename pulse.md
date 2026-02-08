@@ -48,6 +48,14 @@ If $ARGUMENTS matches `bar-size <size>` or `bars <size>` (where size is `small`,
 -> Run `--bar-size <size>` directly.
 -> Confirm: "Bar size set to **<size>**. The status line will update on the next refresh."
 
+If $ARGUMENTS matches `bar-style <name>` or `style <name>` (where name is `classic`, `block`, `shade`, `pipe`, `dot`, `square`, or `star`):
+-> Run `--bar-style <name>` directly.
+-> Confirm: "Bar style set to **<name>**. The status line will update on the next refresh."
+
+If $ARGUMENTS matches `layout <name>` (where name is `standard`, `compact`, `minimal`, or `percent-first`):
+-> Run `--layout <name>` directly.
+-> Confirm: "Layout set to **<name>**. The status line will update on the next refresh."
+
 If $ARGUMENTS is `update`:
 -> Run `python "[REPLACE_WITH_YOUR_PATH]/claude_status.py" --update` and show the output.
 -> After a successful update, remind the user to restart Claude Code to use the new version.

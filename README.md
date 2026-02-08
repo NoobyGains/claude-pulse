@@ -233,6 +233,8 @@ All the CLI flags below also work as `/pulse` subcommands inside Claude Code:
 /pulse animate off      — disable shimmer animation
 /pulse rainbow-mode on  — enable rainbow animation on any theme
 /pulse bar-size large   — set progress bar width
+/pulse bar-style block  — set bar character style
+/pulse layout compact   — set text layout
 /pulse text-color cyan  — set text colour to cyan
 /pulse update           — pull the latest version from GitHub
 /pulse config           — see your current settings and credit status
@@ -348,6 +350,8 @@ Edit `config.json` directly or use the CLI flags:
   "text_color": "auto",
   "currency": "£",
   "bar_size": "medium",
+  "bar_style": "classic",
+  "layout": "standard",
   "show": {
     "session": true,
     "weekly": true,
@@ -376,8 +380,10 @@ Edit `config.json` directly or use the CLI flags:
 | `--animate on\|off` | Toggle the white shimmer animation (default: on) |
 | `--text-color <name>` | Set the text colour for labels/percentages (default: auto) |
 | `--bar-size <small\|medium\|large>` | Set progress bar width: 4, 8, or 12 chars (default: medium) |
+| `--bar-style <name>` | Set bar character style (default: classic) |
+| `--layout <name>` | Set text layout (default: standard) |
 | `--currency <symbol>` | Set currency symbol for extra credits (default: £) |
-| `--update` | Pull the latest version from GitHub |
+| `--update` | Pull the latest version from GitHub (shows changelog) |
 | `--config` | Print current configuration summary (includes version, credits, hooks) |
 
 Lower cache TTL values = more frequent API calls. Higher values = faster response but slightly staler data. Default of 30 seconds is a good balance.
@@ -399,6 +405,62 @@ Lower cache TTL values = more frequent API calls. Higher values = faster respons
 | Theme not applying | Clear the cache file after changing themes so the next render uses the new colours |
 | Animation doesn't stop when idle | Run `python claude_status.py --install` to install the lifecycle hooks, then restart Claude Code |
 | `↑ Pulse Update` showing | Run `/pulse update` in Claude Code, or `python claude_status.py --update` from the command line. To hide the notification: `--hide update` |
+
+## Extra Features
+
+### Bar Styles
+
+Change the visual appearance of the progress bars. The default `classic` style uses thin horizontal lines, but you can switch to thicker or more decorative characters:
+
+| Style | Filled | Empty | Look |
+|-------|--------|-------|------|
+| `classic` | ━ | ─ | Thin line (default) |
+| `block` | █ | ░ | Thick/chunky |
+| `shade` | ▓ | ░ | Medium shaded |
+| `pipe` | ┃ | ┊ | Vertical segments |
+| `dot` | ● | ○ | Round dots |
+| `square` | ■ | □ | Filled/hollow squares |
+| `star` | ★ | ☆ | Stars |
+
+```bash
+# Thin bars (default)
+python claude_status.py --bar-style classic
+
+# Thick, chunky bars
+python claude_status.py --bar-style block
+
+# Dot-style bars
+python claude_status.py --bar-style dot
+```
+
+Bar styles work with all themes, sizes, and animations. The shimmer effect automatically skips bar characters regardless of style.
+
+### Text Layouts
+
+Change how labels, bars, and percentages are arranged on the status line:
+
+| Layout | Example |
+|--------|---------|
+| `standard` | `Session ━━━━━━━━ 42% 3h 12m \| Weekly ━━━━━━━━ 67% \| Max 20x` |
+| `compact` | `S ━━━━━━━━ 42% 3h 12m \| W ━━━━━━━━ 67% \| Max 20x` |
+| `minimal` | `━━━━━━━━ 42% \| ━━━━━━━━ 67%` |
+| `percent-first` | `42% ━━━━━━━━ 3h 12m \| 67% ━━━━━━━━ \| Max 20x` |
+
+```bash
+# Single-letter labels — saves space
+python claude_status.py --layout compact
+
+# Bars and percentages only — no labels, no plan name
+python claude_status.py --layout minimal
+
+# Numbers first, then bars
+python claude_status.py --layout percent-first
+
+# Back to default
+python claude_status.py --layout standard
+```
+
+Layouts work with all themes, bar sizes, bar styles, and animations.
 
 ## License
 

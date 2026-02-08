@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Minimal Claude Code status line — fetches real usage data from Anthropic's OAuth API."""
 
-VERSION = "1.8.0"
+VERSION = "1.9.0"
 
 import json
 import math
@@ -20,6 +20,28 @@ BAR_SIZES = {"small": 4, "medium": 8, "large": 12}
 DEFAULT_BAR_SIZE = "medium"
 FILL = "\u2501"   # ━ (thin horizontal bar)
 EMPTY = "\u2500"   # ─ (thin line)
+
+# Bar styles — each maps to (filled_char, empty_char)
+BAR_STYLES = {
+    "classic": ("\u2501", "\u2500"),   # ━ ─
+    "block":   ("\u2588", "\u2591"),   # █ ░
+    "shade":   ("\u2593", "\u2591"),   # ▓ ░
+    "pipe":    ("\u2503", "\u250A"),   # ┃ ┊
+    "dot":     ("\u25CF", "\u25CB"),   # ● ○
+    "square":  ("\u25A0", "\u25A1"),   # ■ □
+    "star":    ("\u2605", "\u2606"),   # ★ ☆
+}
+DEFAULT_BAR_STYLE = "classic"
+
+# Precompute all bar characters for shimmer detection
+ALL_BAR_CHARS = set()
+for _f, _e in BAR_STYLES.values():
+    ALL_BAR_CHARS.add(_f)
+    ALL_BAR_CHARS.add(_e)
+
+# Text layouts — controls how labels, bars, and percentages are arranged
+LAYOUTS = ("standard", "compact", "minimal", "percent-first")
+DEFAULT_LAYOUT = "standard"
 
 # ANSI colour codes
 GREEN = "\033[32m"
@@ -350,7 +372,7 @@ def apply_shimmer(text):
 
         dist = abs(visible_idx - highlight_center)
         # Skip shimmer on bar characters — only animate text (labels, %, separators)
-        is_bar_char = text[i] in (FILL, EMPTY)
+        is_bar_char = text[i] in ALL_BAR_CHARS
         if not is_bar_char and dist < HIGHLIGHT_WIDTH:
             # White shimmer overlay — quadratic falloff
             blend = 1.0 - (dist / HIGHLIGHT_WIDTH)
@@ -409,6 +431,8 @@ def load_config():
     data.setdefault("animate", True)
     data.setdefault("text_color", "auto")
     data.setdefault("bar_size", DEFAULT_BAR_SIZE)
+    data.setdefault("bar_style", DEFAULT_BAR_STYLE)
+    data.setdefault("layout", DEFAULT_LAYOUT)
     show = data.get("show", {})
     for key, default in DEFAULT_SHOW.items():
         show.setdefault(key, default)
@@ -655,6 +679,9 @@ def cmd_update():
     else:
         utf8_print(f"  {BRIGHT_YELLOW}Update found! New changes available{RESET}")
 
+    # Capture local commit before pulling so we can show changelog after
+    pre_pull_commit = local
+
     # Run git pull
     utf8_print(f"  Pulling latest from GitHub...")
     try:
@@ -673,6 +700,20 @@ def cmd_update():
             if result.stdout.strip():
                 for ln in result.stdout.strip().split("\n"):
                     utf8_print(f"  {DIM}{ln}{RESET}")
+            # Show changelog — commits between old HEAD and new HEAD
+            if pre_pull_commit:
+                try:
+                    log_result = subprocess.run(
+                        ["git", "log", f"{pre_pull_commit}..HEAD", "--oneline", "--no-decorate", "-20"],
+                        capture_output=True, text=True, timeout=5,
+                        cwd=str(repo_dir),
+                    )
+                    if log_result.returncode == 0 and log_result.stdout.strip():
+                        utf8_print(f"\n  {BOLD}Changelog:{RESET}")
+                        for ln in log_result.stdout.strip().split("\n"):
+                            utf8_print(f"    {DIM}{ln}{RESET}")
+                except Exception:
+                    pass
             # Clear all caches so the update indicator disappears immediately
             state_dir = get_state_dir()
             for cache_name in ("update_check.json", "cache.json"):
@@ -769,18 +810,19 @@ def bar_colour(pct, theme):
     return theme["low"]
 
 
-def make_bar(pct, theme=None, plain=False, width=None):
-    """Build a thin coloured bar. plain=True returns characters only (no ANSI)."""
+def make_bar(pct, theme=None, plain=False, width=None, bar_style=None):
+    """Build a coloured bar. plain=True returns characters only (no ANSI)."""
     if theme is None:
         theme = THEMES["default"]
     if width is None:
         width = BAR_SIZES[DEFAULT_BAR_SIZE]
+    fill_char, empty_char = BAR_STYLES.get(bar_style or DEFAULT_BAR_STYLE, BAR_STYLES[DEFAULT_BAR_STYLE])
     filled = round(pct / 100 * width)
     filled = max(0, min(width, filled))
     if plain:
-        return f"{FILL * filled}{EMPTY * (width - filled)}"
+        return f"{fill_char * filled}{empty_char * (width - filled)}"
     colour = bar_colour(pct, theme)
-    return f"{colour}{FILL * filled}{DIM}{EMPTY * (width - filled)}{RESET}"
+    return f"{colour}{fill_char * filled}{DIM}{empty_char * (width - filled)}{RESET}"
 
 
 def format_reset_time(resets_at_str):
@@ -831,6 +873,8 @@ def build_status_line(usage, plan, config=None):
     show = config.get("show", DEFAULT_SHOW)
     bar_size = config.get("bar_size", DEFAULT_BAR_SIZE)
     bw = BAR_SIZES.get(bar_size, BAR_SIZES[DEFAULT_BAR_SIZE])
+    bstyle = config.get("bar_style", DEFAULT_BAR_STYLE)
+    layout = config.get("layout", DEFAULT_LAYOUT)
 
     # Terminal width clamping — prevent bars from causing line wrapping
     # Estimate: each section ≈ bw + 15 chars of text, up to 4 sections + separators
@@ -858,20 +902,42 @@ def build_status_line(usage, plan, config=None):
         five = usage.get("five_hour")
         if five:
             pct = five.get("utilization", 0)
-            bar = make_bar(pct, theme, plain=bar_plain, width=bw)
+            bar = make_bar(pct, theme, plain=bar_plain, width=bw, bar_style=bstyle)
             reset = format_reset_time(five.get("resets_at")) if show.get("timer", True) else None
             reset_str = f" {reset}" if reset else ""
-            parts.append(f"Session {bar} {pct:.0f}%{reset_str}")
+            if layout == "compact":
+                parts.append(f"S {bar} {pct:.0f}%{reset_str}")
+            elif layout == "minimal":
+                parts.append(f"{bar} {pct:.0f}%{reset_str}")
+            elif layout == "percent-first":
+                parts.append(f"{pct:.0f}% {bar}{reset_str}")
+            else:  # standard
+                parts.append(f"Session {bar} {pct:.0f}%{reset_str}")
         else:
-            parts.append(f"Session {make_bar(0, theme, plain=bar_plain, width=bw)} 0%")
+            bar = make_bar(0, theme, plain=bar_plain, width=bw, bar_style=bstyle)
+            if layout == "compact":
+                parts.append(f"S {bar} 0%")
+            elif layout == "minimal":
+                parts.append(f"{bar} 0%")
+            elif layout == "percent-first":
+                parts.append(f"0% {bar}")
+            else:
+                parts.append(f"Session {bar} 0%")
 
     # Weekly Limit (7-day all models)
     if show.get("weekly", True):
         seven = usage.get("seven_day")
         if seven:
             pct = seven.get("utilization", 0)
-            bar = make_bar(pct, theme, plain=bar_plain, width=bw)
-            parts.append(f"Weekly {bar} {pct:.0f}%")
+            bar = make_bar(pct, theme, plain=bar_plain, width=bw, bar_style=bstyle)
+            if layout == "compact":
+                parts.append(f"W {bar} {pct:.0f}%")
+            elif layout == "minimal":
+                parts.append(f"{bar} {pct:.0f}%")
+            elif layout == "percent-first":
+                parts.append(f"{pct:.0f}% {bar}")
+            else:
+                parts.append(f"Weekly {bar} {pct:.0f}%")
 
     # Extra usage (bonus/gifted credits)
     # Auto-shows when credits are gifted, unless user explicitly hid it
@@ -885,14 +951,24 @@ def build_status_line(usage, plan, config=None):
             pct = min(extra.get("utilization", 0), 100)
             used = extra.get("used_credits", 0) / 100  # API returns pence/cents
             limit = extra.get("monthly_limit", 0) / 100
-            bar = make_bar(pct, theme, plain=bar_plain, width=bw)
-            parts.append(f"Extra {bar} {currency}{used:.2f}/{currency}{limit:.2f}")
+            bar = make_bar(pct, theme, plain=bar_plain, width=bw, bar_style=bstyle)
+            if layout == "compact":
+                parts.append(f"E {bar} {currency}{used:.2f}/{currency}{limit:.2f}")
+            elif layout == "minimal":
+                parts.append(f"{bar} {currency}{used:.2f}")
+            elif layout == "percent-first":
+                parts.append(f"{currency}{used:.2f} {bar}")
+            else:
+                parts.append(f"Extra {bar} {currency}{used:.2f}/{currency}{limit:.2f}")
         elif extra_enabled_by_user:
-            # User explicitly enabled but no credits gifted
-            parts.append(f"Extra {make_bar(0, theme, plain=bar_plain)} none")
+            bar = make_bar(0, theme, plain=bar_plain, bar_style=bstyle)
+            if layout == "minimal":
+                parts.append(f"{bar} none")
+            else:
+                parts.append(f"Extra {bar} none")
 
-    # Plan name
-    if show.get("plan", True) and plan:
+    # Plan name (hidden in minimal layout)
+    if layout != "minimal" and show.get("plan", True) and plan:
         parts.append(plan)
 
     line = " | ".join(parts)
@@ -1053,9 +1129,10 @@ def cmd_themes_demo():
     user_config = load_config()
     current = user_config.get("theme", "default")
     user_bar_size = user_config.get("bar_size", DEFAULT_BAR_SIZE)
+    user_bar_style = user_config.get("bar_style", DEFAULT_BAR_STYLE)
     for name in THEMES:
         demo_tc = THEME_DEMO_TEXT.get(name, "white")
-        demo_config = {"theme": name, "bar_size": user_bar_size, "text_color": demo_tc, "show": {"session": True, "weekly": True, "plan": True, "timer": False, "extra": False}}
+        demo_config = {"theme": name, "bar_size": user_bar_size, "bar_style": user_bar_style, "text_color": demo_tc, "show": {"session": True, "weekly": True, "plan": True, "timer": False, "extra": False}}
         line = build_status_line(demo_usage, "Max 20x", demo_config)
         marker = " <<" if name == current else ""
         utf8_print(f"  {BOLD}{name:<10}{RESET} {line}{marker}")
@@ -1073,10 +1150,11 @@ def cmd_show_themes():
         "five_hour": {"utilization": 42, "resets_at": None},
         "seven_day": {"utilization": 67},
     }
+    user_bar_style = current_config.get("bar_style", DEFAULT_BAR_STYLE)
     for name in THEMES:
         # Use the accent colour so each theme looks distinct in the preview
         demo_tc = THEME_DEMO_TEXT.get(name, "white")
-        demo_config = {"theme": name, "bar_size": user_bar_size, "text_color": demo_tc, "show": {"session": True, "weekly": True, "plan": True, "timer": False, "extra": False}}
+        demo_config = {"theme": name, "bar_size": user_bar_size, "bar_style": user_bar_style, "text_color": demo_tc, "show": {"session": True, "weekly": True, "plan": True, "timer": False, "extra": False}}
         line = build_status_line(demo_usage, "Max 20x", demo_config)
         marker = f" {GREEN}<< current{RESET}" if name == current_theme else ""
         # Colour the theme name with its accent colour
@@ -1201,6 +1279,11 @@ def cmd_print_config():
     bs = config.get("bar_size", DEFAULT_BAR_SIZE)
     bw_display = BAR_SIZES.get(bs, BAR_SIZES[DEFAULT_BAR_SIZE])
     utf8_print(f"  Bar size:  {bs} ({bw_display} chars)")
+    bst = config.get("bar_style", DEFAULT_BAR_STYLE)
+    bst_chars = BAR_STYLES.get(bst, BAR_STYLES[DEFAULT_BAR_STYLE])
+    utf8_print(f"  Bar style: {bst} ({bst_chars[0]}{bst_chars[1]})")
+    ly = config.get("layout", DEFAULT_LAYOUT)
+    utf8_print(f"  Layout:    {ly}")
     rb = config.get("rainbow_bars", True)
     rb_state = f"{GREEN}on{RESET}" if rb else f"{RED}off{RESET}"
     utf8_print(f"  Rainbow bars: {rb_state}  (rainbow colours {'include' if rb else 'skip'} the progress bars)")
@@ -1467,6 +1550,52 @@ def main():
             for name, width in BAR_SIZES.items():
                 demo = f"{GREEN}{FILL * width}{RESET}"
                 utf8_print(f"  {name:<8} {demo}  ({width} chars)")
+        return
+
+    if "--bar-style" in args:
+        idx = args.index("--bar-style")
+        if idx + 1 < len(args):
+            val = args[idx + 1].lower()
+            if val not in BAR_STYLES:
+                utf8_print(f"Unknown style: {val}")
+                utf8_print(f"Available: {', '.join(BAR_STYLES.keys())}")
+                return
+            config = load_config()
+            config["bar_style"] = val
+            save_config(config)
+            try:
+                os.remove(get_cache_path())
+            except OSError:
+                pass
+            fill_ch, empty_ch = BAR_STYLES[val]
+            demo = f"{GREEN}{fill_ch * 4}{DIM}{empty_ch * 4}{RESET}"
+            utf8_print(f"Bar style: {BOLD}{val}{RESET}  {demo}")
+        else:
+            utf8_print(f"Usage: --bar-style <name>\n")
+            for name, (fc, ec) in BAR_STYLES.items():
+                demo = f"{GREEN}{fc * 4}{DIM}{ec * 4}{RESET}"
+                utf8_print(f"  {name:<10} {demo}")
+        return
+
+    if "--layout" in args:
+        idx = args.index("--layout")
+        if idx + 1 < len(args):
+            val = args[idx + 1].lower()
+            if val not in LAYOUTS:
+                utf8_print(f"Unknown layout: {val}")
+                utf8_print(f"Available: {', '.join(LAYOUTS)}")
+                return
+            config = load_config()
+            config["layout"] = val
+            save_config(config)
+            try:
+                os.remove(get_cache_path())
+            except OSError:
+                pass
+            utf8_print(f"Layout: {BOLD}{val}{RESET}")
+        else:
+            utf8_print(f"Usage: --layout <name>")
+            utf8_print(f"Available: {', '.join(LAYOUTS)}")
         return
 
     if "--currency" in args:
