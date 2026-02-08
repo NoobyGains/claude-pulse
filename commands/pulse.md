@@ -34,15 +34,9 @@ If $ARGUMENTS is exactly `show` (no parts after it), or `show all`, or `colors`,
 If $ARGUMENTS contains `hide <parts>` or `show <parts>` (with specific parts like extra, timer, etc.):
 -> Run the corresponding `--hide` or `--show` command directly.
 
-If $ARGUMENTS is `rainbow-bars on` or `rainbow-bars off`:
--> Run `--rainbow-bars on|off` directly.
-
-If $ARGUMENTS is `rainbow-mode on` or `rainbow-mode off`:
--> Run `--rainbow-mode on|off` directly.
--> Confirm: "Rainbow animation **<on/off>**. This applies the flowing rainbow colour effect to your current theme."
-
 If $ARGUMENTS is `animate on` or `animate off`:
 -> Run `--animate on|off` directly.
+-> Confirm: "Animation **<on/off>**. Rainbow colours will flow across your status bar while Claude is active."
 
 If $ARGUMENTS matches `text-color <name>` or `text-colour <name>`:
 -> Run `--text-color <name>` directly.
@@ -156,28 +150,15 @@ If they pick "Default", use `--text-color default`.
 **Step 5:** Ask about animation:
 
 ```
-Question: "Enable the white shimmer animation?"
-Header: "Shimmer"
+Question: "Enable rainbow animation?"
+Header: "Animation"
 multiSelect: false
 Options:
-  - "On (Recommended)" — "White highlight sweeps across while Claude is writing"
+  - "On (Recommended)" — "Rainbow colours scroll across the status bar while Claude is active"
   - "Off" — "Static colours, no animation"
 ```
 
-**Step 5b:** If the chosen theme is NOT rainbow, ask about rainbow animation:
-
-```
-Question: "Enable rainbow animation on your bars?"
-Header: "Rainbow"
-multiSelect: false
-Options:
-  - "Off (Recommended)" — "Keep your theme's own colours on the bars"
-  - "On" — "Override bar colours with a flowing rainbow gradient"
-```
-
-If they pick "On", run `--rainbow-mode on`. If "Off", run `--rainbow-mode off`.
-
-**Step 6:** Apply the animation setting with `--animate on|off`.
+Apply with `--animate on|off`. Animation = rainbow colours always flowing across the status bar. No hooks needed — it runs on every status line refresh.
 
 **Step 6b:** Ask about bar size:
 
@@ -192,6 +173,19 @@ Options:
 ```
 
 Apply with `--bar-size <small|medium|large>`.
+
+**Step 6c:** Ask about context window:
+
+```
+Question: "Show context window usage on the status bar?"
+Header: "Context"
+multiSelect: false
+Options:
+  - "On (Recommended)" — "Shows how full Claude's memory/context is with a progress bar"
+  - "Off" — "Hide context usage"
+```
+
+If "On", run `--show context`. If "Off", run `--hide context`.
 
 **Step 7:** Check extra credits status by running `python "SCRIPT_PATH" --config` silently and checking the "Extra Credits" section.
 
@@ -241,7 +235,7 @@ The user can also pick "Other" and type any symbol (e.g. ¥, ₹, kr, CHF, etc.)
 Apply with `--currency <symbol>`.
 
 **Step 9:** Confirm everything:
-"All set! Your status line is now using **<theme>** with **<text colour>** text and shimmer **<on/off>**. It'll update on the next refresh (~30s) or restart Claude Code to see it immediately."
+"All set! Your status line is now using **<theme>** with **<text colour>** text and animation **<on/off>**. It shows session usage, weekly usage, context window, and model name by default. It'll update on the next refresh or restart Claude Code to see it immediately."
 
 If credits were shown, also mention: "Your bonus credits will appear as **Extra ━━━━ <currency>used/<currency>limit**."
 
@@ -258,13 +252,13 @@ multiSelect: true
 Options:
   - "Session usage" — "5-hour usage block with progress bar and timer"
   - "Weekly usage" — "7-day rolling limit across all models"
-  - "Plan name" — "Shows Pro / Max 5x / Max 20x"
-  - "Timer" — "Countdown until session resets"
+  - "Context window" — "How full Claude's context/memory is"
+  - "Model name" — "Shows which model is active (Opus, Sonnet, etc.)"
 ```
 
 Then apply the appropriate `--show` and `--hide` commands based on what the user selected vs deselected.
 
-Mention: "You can also enable **extra usage** tracking (bonus/overflow credits) with `/claude-pulse:pulse show extra`."
+Mention: "You can also toggle **plan name**, **timer**, **extra credits**, and more with `/pulse show <part>` or `/pulse hide <part>`."
 
 ---
 

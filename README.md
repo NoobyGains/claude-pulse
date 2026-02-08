@@ -10,7 +10,7 @@
 <p align="center">
   <img src="rainbow.png" alt="Rainbow theme" width="500">
   <br>
-  <sub>Rainbow theme — animated colours that shift while Claude is writing, with a white shimmer sweep</sub>
+  <sub>Rainbow theme — animated colours that shift while Claude is writing</sub>
 </p>
 
 ---
@@ -22,8 +22,10 @@
 - **Session usage** — how much of your current 5-hour block you've used
 - **Time remaining** — countdown until your session resets
 - **Weekly usage** — your 7-day rolling usage across all models
+- **Context window** — how full Claude's memory/context is (with colour-coded bar)
+- **Model name** — which model is active (Opus 4.6, Sonnet 4.5, etc.)
 - **Plan tier** — auto-detected (Pro, Max 5x, Max 20x)
-- **Extra credits** — auto-shows when Claude gifts you bonus credits (e.g. to try a new model)
+- **Extra credits** — auto-shows when Claude gifts you bonus credits
 
 No guesswork. No scanning log files. It pulls the **exact same numbers** shown on [claude.ai/settings/usage](https://claude.ai/settings/usage) via Anthropic's OAuth API.
 
@@ -51,9 +53,11 @@ The bars change colour based on your usage level so you can tell at a glance how
 
 | Usage | Colour | Meaning |
 |-------|--------|---------|
-| 0–49% | Green | Plenty of headroom |
-| 50–79% | Yellow | Getting warm |
+| 0-49% | Green | Plenty of headroom |
+| 50-79% | Yellow | Getting warm |
 | 80%+ | Red | Close to the limit |
+
+This applies to all bars — session, weekly, context window, and extra credits.
 
 ### 10 Built-in Themes
 
@@ -61,50 +65,37 @@ The bars change colour based on your usage level so you can tell at a glance how
   <img src="themes.png" alt="All 10 themes" width="700">
 </p>
 
-Each theme uses accent colours for text and colour-coded progress bars that shift from **low** → **mid** → **high** based on your usage. The `rainbow` theme is animated — every character cycles through the full spectrum with a white shimmer highlight that sweeps across.
+Each theme uses accent colours for text and colour-coded progress bars that shift from **low** to **mid** to **high** based on your usage. The `rainbow` theme applies a full-spectrum colour gradient across the entire status line.
 
 Preview them live in Claude Code with `/pulse show`, or from the command line with `python claude_status.py --show-themes`.
 
-### White Shimmer Animation
+### Rainbow Animation
 
-All themes support a white shimmer effect — a bright highlight that sweeps across the text while Claude is writing. The shimmer:
+Turn on animation and rainbow colours flow across your status bar while Claude is active:
 
-- **Only affects text** — labels, percentages and separators shimmer; progress bars keep their colour-coded meaning
-- **Hooks into Claude's lifecycle** — animates when Claude is writing, cleanly reverts to static when idle (no frozen shimmer artifacts)
-- **Fast and clean** — wide 20-character highlight band sweeps every 2.5 seconds, bright white (RGB 210-255) that's always visible against the text
-
-The shimmer is **on by default**. Toggle it:
 ```bash
-# Disable shimmer animation
-python claude_status.py --animate off
-
-# Re-enable shimmer animation
+# Enable rainbow animation (works with any theme)
 python claude_status.py --animate on
+
+# Turn it off — static theme colours
+python claude_status.py --animate off
 ```
 
-### Animation Lifecycle Hooks
+Animation is purely refresh-based — no hooks, no background processes, no daemons. It works by rendering a new rainbow frame each time Claude Code refreshes the status line (~150ms while active). Animation is **off by default** — enable it via `/pulse` setup or `--animate on`.
 
-The `--install` command automatically sets up Claude Code hooks so the animation knows when to start and stop:
+### Context Window & Model Name
 
-- **`UserPromptSubmit`** hook — flags that Claude is processing (animation starts)
-- **`PreToolUse`** hook — re-flags processing before each tool call (keeps animation alive during tool execution)
-- **`Stop`** hook — clears the flag (animation stops, clean static display)
+See how full Claude's context/memory is and which model you're running, right in the status bar:
 
-This means:
-- While Claude is **thinking** → rainbow shifts, shimmer sweeps
-- While Claude is **using tools** (Explore, Bash, etc.) → animation continues
-- While Claude is **writing output** → animation continues
-- While Claude is **idle** → clean static colours, no frozen animation artifacts
-- **Backwards compatible** — without hooks, animation runs on every render (old behaviour)
-
-The hooks are installed automatically with `--install`. To add them separately:
-```bash
-python claude_status.py --install-hooks
 ```
+Session ━━━━━━━━ 12% 3h 40m | Weekly ━━━━━━━━ 12% | Context ━━━━━━━━ 42% | Max 20x | Opus 4.6
+```
+
+Both are **enabled by default**. The context bar uses the same colour-coded theme as your other bars. Context and model data appear after your first message in a session (Claude Code provides this data via stdin).
 
 ### Text Colour
 
-The labels and percentages outside the progress bars (e.g. "Session", "35%", "|") use a contrasting colour so the shimmer is clearly visible against the bars:
+The labels and percentages outside the progress bars use a configurable text colour:
 
 ```bash
 # Use the theme's recommended colour (default)
@@ -117,58 +108,15 @@ python claude_status.py --text-color magenta
 
 **Available colours:** `auto`, `white`, `bright_white`, `cyan`, `blue`, `green`, `yellow`, `magenta`, `red`, `orange`, `violet`, `pink`, `dim`, `default`, `none`
 
-| Theme | Default text colour | Why |
-|-------|-------------------|-----|
-| `default` | white | Contrasts with green/yellow/red bars |
-| `ocean` | white | Contrasts with cyan/blue/magenta bars |
-| `sunset` | white | Contrasts with yellow/orange/red bars |
-| `neon` | white | Contrasts with bright green/yellow/red bars |
-| `pride` | white | Contrasts with violet/green/pink bars |
-| `frost` | white | Contrasts with icy blue/steel bars |
-| `ember` | white | Contrasts with gold/orange/red bars |
-| `candy` | white | Contrasts with pink/purple/cyan bars |
-| `mono` | dim | Subtle contrast with white/bright bars |
-| `rainbow` | none | Rainbow handles its own colouring |
-
 Preview all themes and text colours live in Claude Code:
 ```
 /pulse show
-```
-This renders every theme as a real status line with coloured bars so you can compare them side-by-side. Press **Ctrl+O** to expand the preview.
-
-You can also preview from the command line:
-```bash
-python claude_status.py --show-themes
-python claude_status.py --show-colors
 ```
 
 Set a theme:
 ```bash
 python claude_status.py --theme ocean
 ```
-
-When using `rainbow`, you can choose whether the bars also get rainbow colours or keep their normal usage-based colours (green/yellow/red):
-```bash
-# Rainbow text only — bars stay green/yellow/red
-python claude_status.py --rainbow-bars off
-
-# Rainbow everything including bars (default)
-python claude_status.py --rainbow-bars on
-```
-
-### Rainbow Animation on Any Theme
-
-Love the rainbow animation but prefer ocean's or ember's bar colours? **Rainbow mode** applies the flowing rainbow colour effect to any theme:
-
-```bash
-# Enable rainbow animation on your current theme
-python claude_status.py --rainbow-mode on
-
-# Turn it off (bars use the theme's own colours)
-python claude_status.py --rainbow-mode off
-```
-
-This is independent of the `rainbow` theme — you can use `--theme ocean --rainbow-mode on` to get ocean bars with rainbow animation.
 
 ### Configurable Bar Size
 
@@ -193,18 +141,6 @@ Session ━━━━━━━━ 5% 4h 07m | Weekly ━━━━━━━━ 6% 
 - **Automatic** — appears when credits are active in your account, no setup needed
 - **Hideable** — `--hide extra` to suppress, `--show extra` to bring back
 - **Currency** — defaults to `£`, change with `--currency $` or `--currency €`
-- **Detailed in config** — `--config` shows credit status, used/limit amounts, and display state
-
-```bash
-# Set your currency symbol
-python claude_status.py --currency £
-
-# Hide extra credits (even when active)
-python claude_status.py --hide extra
-
-# Force show (even when no credits gifted)
-python claude_status.py --show extra
-```
 
 ### Visibility Toggles
 
@@ -221,7 +157,7 @@ python claude_status.py --show timer,plan
 python claude_status.py --config
 ```
 
-**Available parts:** `session`, `weekly`, `plan`, `timer`, `extra`, `update`
+**Available parts:** `session`, `weekly`, `plan`, `timer`, `extra`, `update`, `model`, `context`, `streak`
 
 ### `/pulse` Slash Command
 
@@ -233,8 +169,8 @@ All the CLI flags below also work as `/pulse` subcommands inside Claude Code:
 /pulse show extra       — show extra credits on the status line
 /pulse hide extra       — hide extra credits
 /pulse currency £       — set your currency symbol
-/pulse animate off      — disable shimmer animation
-/pulse rainbow-mode on  — enable rainbow animation on any theme
+/pulse animate on       — enable rainbow animation on any theme
+/pulse animate off      — disable animation (static colours)
 /pulse bar-size large   — set progress bar width
 /pulse bar-style block  — set bar character style
 /pulse layout compact   — set text layout
@@ -257,17 +193,12 @@ Or from the command line:
 python claude_status.py --update
 ```
 
-The update check is:
-- **Automatic** — no setup needed for git clone installs
-- **Silent** — never blocks the status line; skips quietly on network errors
-- **Lightweight** — one small GitHub API call per hour, result cached locally
-- **Optional** — hide the notification with `--hide update` if you want to stay on your current version
-
 ### Lightweight and fast
 
 - **Single Python file** — no dependencies, no pip install, just Python 3.6+
-- **60-second cache** — API is only called once every 60 seconds, cached responses return instantly. Configurable: set `cache_ttl_seconds` in your config to `30`, `60`, `80`, or `120`
+- **30-second cache** — API is only called once every 30 seconds, cached responses return instantly. Configurable: set `cache_ttl_seconds` in your config
 - **Zero config needed** — auto-detects your plan and credentials from Claude Code
+- **No hooks or background processes** — animation runs purely on the status line refresh cycle
 
 ### Auto-detected plan
 
@@ -307,7 +238,7 @@ cd claude-pulse
 python claude_status.py --install
 ```
 
-This adds the status line **and** animation lifecycle hooks to your `~/.claude/settings.json` automatically.
+This adds the status line command to your `~/.claude/settings.json`.
 
 #### 3. Restart Claude Code
 
@@ -336,8 +267,8 @@ Claude Code starts
     ↓
 Calls claude_status.py (passes session JSON via stdin)
     ↓
-Check cache (~60s TTL)
-    ├── Fresh? → Re-render with current animation state
+Check cache (~30s TTL)
+    ├── Fresh? → Re-render with current stdin context (model, context %)
     └── Stale? → Read OAuth token from ~/.claude/.credentials.json
                      ↓
                  GET https://api.anthropic.com/api/oauth/usage
@@ -346,12 +277,11 @@ Check cache (~60s TTL)
                      ↓
                  Cache result, print to stdout
 
-Animation hooks (automatic):
-    UserPromptSubmit → set "processing" flag  → animation ON
-    Stop             → clear flag             → animation OFF (clean static)
+Animation (when enabled):
+    Each refresh → rainbow_colorize() shifts the hue based on time.time()
+    Result: smooth flowing rainbow that moves while Claude refreshes (~150ms)
+    When idle: Claude Code stops refreshing → animation pauses naturally
 ```
-
-The status line updates whenever Claude Code's conversation updates (roughly every 300ms), but the API is only hit once every 60 seconds to keep things fast and respectful.
 
 ## Configuration
 
@@ -359,11 +289,9 @@ Edit `config.json` directly or use the CLI flags:
 
 ```json
 {
-  "cache_ttl_seconds": 60,
+  "cache_ttl_seconds": 30,
   "theme": "default",
-  "rainbow_bars": true,
-  "rainbow_mode": false,
-  "animate": true,
+  "animate": false,
   "text_color": "auto",
   "currency": "£",
   "bar_size": "medium",
@@ -375,7 +303,9 @@ Edit `config.json` directly or use the CLI flags:
     "plan": true,
     "timer": true,
     "extra": false,
-    "update": true
+    "update": true,
+    "model": true,
+    "context": true
   }
 }
 ```
@@ -384,24 +314,21 @@ Edit `config.json` directly or use the CLI flags:
 
 | Flag | Description |
 |------|-------------|
-| `--install` | Install status line + animation hooks into Claude Code settings |
-| `--install-hooks` | Install only the animation hooks (if already have status line) |
+| `--install` | Install status line into Claude Code settings |
 | `--show-all` | Preview all themes and text colours with live samples |
 | `--themes` | List all available themes with colour previews |
 | `--themes-demo` | Preview all themes with simulated status lines |
 | `--theme <name>` | Set the active theme |
 | `--show <parts>` | Enable comma-separated parts |
 | `--hide <parts>` | Disable comma-separated parts |
-| `--rainbow-bars on\|off` | Toggle whether rainbow colours the bars or just the text |
-| `--rainbow-mode on\|off` | Enable rainbow animation on any theme (default: off) |
-| `--animate on\|off` | Toggle the white shimmer animation (default: on) |
+| `--animate on\|off` | Toggle rainbow animation (default: off) |
 | `--text-color <name>` | Set the text colour for labels/percentages (default: auto) |
 | `--bar-size <small\|medium\|large>` | Set progress bar width: 4, 8, or 12 chars (default: medium) |
 | `--bar-style <name>` | Set bar character style (default: classic) |
 | `--layout <name>` | Set text layout (default: standard) |
 | `--currency <symbol>` | Set currency symbol for extra credits (default: £) |
 | `--update` | Pull the latest version from GitHub (shows changelog) |
-| `--config` | Print current configuration summary (includes version, credits, hooks) |
+| `--config` | Print current configuration summary |
 
 ### Cache TTL
 
@@ -409,18 +336,10 @@ The `cache_ttl_seconds` setting controls how often the API is called. Recommende
 
 | Value | API calls/hour | Best for |
 |-------|---------------|----------|
-| `30` | ~120 | Frequent updates, active sessions |
-| `60` | ~60 | **Default** — good balance |
+| `30` | ~120 | **Default** — frequent updates, active sessions |
+| `60` | ~60 | Good balance |
 | `80` | ~45 | Light usage |
 | `120` | ~30 | Minimal API calls |
-
-Set it in your config file (`~/.cache/claude-status/config.json` on Linux/Mac, `%LOCALAPPDATA%\claude-status\config.json` on Windows):
-
-```json
-{
-  "cache_ttl_seconds": 60
-}
-```
 
 Lower values = more frequent API calls. Higher values = faster response but slightly staler data.
 
@@ -439,14 +358,14 @@ Lower values = more frequent API calls. Higher values = faster response but slig
 | Shows wrong plan tier after upgrading | Log out (`claude /logout`) then log back in (`claude /login`) — your OAuth token needs to refresh to pick up the new subscription tier |
 | Stale percentages | Delete the cache: `~/.cache/claude-status/cache.json` (Linux/Mac) or `%LOCALAPPDATA%\claude-status\cache.json` (Windows) |
 | Theme not applying | Clear the cache file after changing themes so the next render uses the new colours |
-| Animation doesn't stop when idle | Run `python claude_status.py --install` to install the lifecycle hooks, then restart Claude Code |
+| Context/model not showing | Context and model appear after your first message — Claude Code provides this data via stdin once the session is active |
 | `↑ Pulse Update` showing | Run `/pulse update` in Claude Code, or `python claude_status.py --update` from the command line. To hide the notification: `--hide update` |
 
 ## Extra Features
 
 ### Bar Styles
 
-Change the visual appearance of the progress bars. The default `classic` style uses thin horizontal lines, but you can switch to thicker or more decorative characters:
+Change the visual appearance of the progress bars:
 
 | Style | Filled | Empty | Look |
 |-------|--------|-------|------|
@@ -459,21 +378,16 @@ Change the visual appearance of the progress bars. The default `classic` style u
 | `star` | ★ | ☆ | Stars |
 
 ```bash
-# Thin bars (default)
 python claude_status.py --bar-style classic
-
-# Thick, chunky bars
 python claude_status.py --bar-style block
-
-# Dot-style bars
 python claude_status.py --bar-style dot
 ```
 
-Bar styles work with all themes, sizes, and animations. The shimmer effect automatically skips bar characters regardless of style.
+Bar styles work with all themes, sizes, and animations.
 
 ### Text Layouts
 
-Change how labels, bars, and percentages are arranged on the status line:
+Change how labels, bars, and percentages are arranged:
 
 | Layout | Example |
 |--------|---------|
@@ -483,20 +397,25 @@ Change how labels, bars, and percentages are arranged on the status line:
 | `percent-first` | `42% ━━━━━━━━ 3h 12m \| 67% ━━━━━━━━ \| Max 20x` |
 
 ```bash
-# Single-letter labels — saves space
 python claude_status.py --layout compact
-
-# Bars and percentages only — no labels, no plan name
 python claude_status.py --layout minimal
-
-# Numbers first, then bars
 python claude_status.py --layout percent-first
-
-# Back to default
 python claude_status.py --layout standard
 ```
 
 Layouts work with all themes, bar sizes, bar styles, and animations.
+
+## Upgrading from v2.1.x
+
+v2.2.0 simplifies animation and removes hooks:
+
+- **Hooks are removed automatically** — the first run after upgrading cleans any claude-pulse hooks from your `settings.json`
+- **`rainbow_mode` and `rainbow_bars` settings removed** — replaced by a single `--animate on/off` toggle
+- **`--animate on`** = rainbow colours flow across the status bar (any theme)
+- **`--animate off`** = static theme colours (default)
+- **Context window and model name** now shown by default
+
+No action needed — the upgrade is automatic when you run `/pulse update`.
 
 ## License
 

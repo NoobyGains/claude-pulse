@@ -1,7 +1,7 @@
 {
   "name": "claude-pulse",
   "description": "Live usage status bar for Claude Code — session limits, weekly usage, 10 themes, shimmer animations, and auto-updates",
-  "version": "1.9.0",
+  "version": "2.2.0",
   "author": {
     "name": "PigeonDroid"
   },
@@ -9,27 +9,5 @@
   "repository": "https://github.com/NoobyGains/claude-pulse",
   "license": "MIT",
   "keywords": ["status", "usage", "themes", "status-bar", "monitoring", "pulse"],
-  "commands": "./commands/",
-  "hooks": {
-    "UserPromptSubmit": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python \"${CLAUDE_PLUGIN_ROOT}/claude_status.py\" --hook-start"
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python \"${CLAUDE_PLUGIN_ROOT}/claude_status.py\" --hook-stop"
-          }
-        ]
-      }
-    ]
-  }
+  "commands": "./commands/"
 }

@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Minimal Claude Code status line — fetches real usage data from Anthropic's OAuth API."""
 
-VERSION = "1.9.0"
+VERSION = "2.2.0"
 
 import json
-import math
 import os
 import shutil
 import subprocess
@@ -12,7 +11,7 @@ import sys
 import time
 import urllib.request
 import urllib.error
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 DEFAULT_CACHE_TTL = 60
@@ -92,6 +91,18 @@ PLAN_NAMES = {
     "default_claude_max_20x": "Max 20x",
 }
 
+MODEL_SHORT_NAMES = {
+    "claude-opus-4": "Opus",
+    "claude-sonnet-4": "Sonnet",
+    "claude-haiku-4": "Haiku",
+    "claude-opus-4-6": "Opus",
+    "claude-sonnet-4-5": "Sonnet",
+    "claude-haiku-4-5": "Haiku",
+    "claude-3-5-sonnet": "Sonnet",
+    "claude-3-5-haiku": "Haiku",
+    "claude-3-opus": "Opus",
+}
+
 # Named text colours for non-bar text (labels, percentages, separators)
 TEXT_COLORS = {
     "white": "\033[37m",
@@ -146,7 +157,18 @@ DEFAULT_SHOW = {
     "timer": True,
     "extra": False,
     "update": True,
+    "sparkline": False,
+    "runway": False,
+    "status_message": False,
+    "streak": False,
+    "model": True,
+    "context": True,
 }
+
+# Sparkline and history constants
+SPARKLINE_CHARS = "\u2581\u2582\u2583\u2584\u2585\u2586\u2587\u2588"
+SPARKLINE_DEFAULT_WIDTH = 8
+HISTORY_MAX_AGE = 86400  # 24 hours in seconds
 
 
 # ---------------------------------------------------------------------------
@@ -182,8 +204,8 @@ def hsv_to_rgb(h, s, v):
 def rainbow_colorize(text, color_all=True, shimmer=True):
     """Apply rainbow colouring — animated when processing, clean static when idle.
 
-    shimmer=True  — Claude is processing: hue drifts each frame + white glint sweep.
-    shimmer=False — Claude is idle: static rainbow gradient, no animation artifacts.
+    shimmer=True  — Claude is processing: hue drifts each frame (smooth gradient shift).
+    shimmer=False — Claude is idle: static rainbow gradient, no animation.
 
     color_all=True  — strip existing ANSI, rainbow every character.
     color_all=False — preserve ANSI-colored chars (bars), rainbow the rest.
@@ -191,43 +213,11 @@ def rainbow_colorize(text, color_all=True, shimmer=True):
     now = time.time()
 
     if shimmer:
-        # Rainbow hue drift — shifts the colour gradient each frame
-        # At 300ms refresh: 0.25 * 0.3 = 0.075 per frame ≈ 27° of hue wheel
-        hue_drift = now * 0.25
+        # Rainbow hue drift — shifts the entire gradient each frame
+        hue_drift = now * 0.8
     else:
         # Static mode — fixed hue offset so the rainbow looks clean when frozen
         hue_drift = 0.0
-
-    # Shimmer timing — fast wide sweep like Claude's "Crafting…" animation
-    CYCLE = 2.5            # total cycle length
-    GLINT_DURATION = 0.7   # short flash — ~2-3 frames at 300ms refresh
-    HIGHLIGHT_WIDTH = 20   # wide band — covers enough chars to look smooth between frames
-
-    phase = now % CYCLE
-    glint_active = shimmer and phase >= (CYCLE - GLINT_DURATION)
-
-    # Count visible characters (skip ANSI escapes)
-    visible_count = 0
-    idx = 0
-    while idx < len(text):
-        if text[idx] == "\033":
-            while idx < len(text) and text[idx] != "m":
-                idx += 1
-            idx += 1
-            continue
-        visible_count += 1
-        idx += 1
-
-    if visible_count == 0:
-        return text
-
-    # Shimmer position — sweeps across during the glint window
-    if glint_active:
-        sweep = (phase - (CYCLE - GLINT_DURATION)) / GLINT_DURATION  # 0.0 → 1.0
-        total_range = visible_count + HIGHLIGHT_WIDTH * 2
-        highlight_center = sweep * total_range - HIGHLIGHT_WIDTH
-    else:
-        highlight_center = -9999  # off-screen
 
     result = []
     visible_idx = 0
@@ -263,20 +253,6 @@ def rainbow_colorize(text, color_all=True, shimmer=True):
 
             # Vivid rainbow: high saturation and brightness
             r, g, b = hsv_to_rgb(hue, 0.92, 0.95)
-
-            # Shimmer: blend directly toward white in RGB space
-            # This produces a clean bright flash, not the muddy gray that
-            # HSV desaturation creates
-            dist = abs(visible_idx - highlight_center)
-            if glint_active and dist < HIGHLIGHT_WIDTH:
-                blend = 1.0 - (dist / HIGHLIGHT_WIDTH)
-                blend = blend * blend  # quadratic falloff for soft edges
-                # Blend from rainbow color toward bright white (210-255 range)
-                target = int(210 + blend * 45)
-                r = int(r + (target - r) * blend)
-                g = int(g + (target - g) * blend)
-                b = int(b + (target - b) * blend)
-
             result.append(f"\033[38;2;{r};{g};{b}m{text[i]}")
 
         visible_idx += 1
@@ -309,25 +285,18 @@ def apply_text_color(line, color_code):
 
 
 def apply_shimmer(text):
-    """Post-process any ANSI-coloured text to add a white shimmer glint.
+    """Post-process themed text with sweeping brightness waves.
 
-    Works on all themes — walks through the text, tracks the active ANSI
-    state, and overlays a white highlight in the shimmer zone, then restores
-    the original colour after each shimmer character.
+    2-3 bright bands sweep left-to-right across the full status line,
+    completing full passes so the animation is clearly visible.
 
-    Fast wide sweep like Claude's "Crafting…" animation.
-    72% of the time returns text unchanged (no glint visible).
+    Skips bar characters (only animates labels, percentages, separators).
     """
-    CYCLE = 2.5
-    GLINT_DURATION = 0.7
-    HIGHLIGHT_WIDTH = 20
+    SWEEP_SPEED = 30.0  # chars per second — full sweep in ~2s
+    BAND_WIDTH = 18     # how wide each bright band is (in characters)
+    NUM_WAVES = 2       # number of simultaneous bright bands
 
     now = time.time()
-    phase = now % CYCLE
-    glint_active = phase >= (CYCLE - GLINT_DURATION)
-
-    if not glint_active:
-        return text  # fast path — 75% of the time
 
     # Count visible characters
     visible_count = 0
@@ -344,10 +313,15 @@ def apply_shimmer(text):
     if visible_count == 0:
         return text
 
-    # Shimmer position
-    sweep = (phase - (CYCLE - GLINT_DURATION)) / GLINT_DURATION
-    total_range = visible_count + HIGHLIGHT_WIDTH * 2
-    highlight_center = sweep * total_range - HIGHLIGHT_WIDTH
+    # Sweep loop length — band travels from off-screen left to off-screen right
+    sweep_length = visible_count + BAND_WIDTH * 2
+
+    # Precompute wave center positions for each band
+    wave_centers = []
+    for w in range(NUM_WAVES):
+        offset = w * (sweep_length / NUM_WAVES)
+        pos = (now * SWEEP_SPEED + offset) % sweep_length - BAND_WIDTH
+        wave_centers.append(pos)
 
     result = []
     visible_idx = 0
@@ -370,14 +344,21 @@ def apply_shimmer(text):
             i = j + 1
             continue
 
-        dist = abs(visible_idx - highlight_center)
-        # Skip shimmer on bar characters — only animate text (labels, %, separators)
         is_bar_char = text[i] in ALL_BAR_CHARS
-        if not is_bar_char and dist < HIGHLIGHT_WIDTH:
-            # White shimmer overlay — quadratic falloff
-            blend = 1.0 - (dist / HIGHLIGHT_WIDTH)
-            blend = blend * blend
-            brightness = int(210 + blend * 45)  # 210 to 255 — always brighter than \033[37m (~187)
+        if not is_bar_char:
+            # Find the strongest wave influence on this character
+            best_wave = 0.0
+            for center in wave_centers:
+                dist = abs(visible_idx - center)
+                if dist < BAND_WIDTH:
+                    w = 1.0 - (dist / BAND_WIDTH)
+                    w = w * w  # smooth quadratic falloff
+                    if w > best_wave:
+                        best_wave = w
+
+            # Base brightness 140, peaks at 255 — always visible,
+            # bright bands clearly sweep across
+            brightness = int(140 + best_wave * 115)
             result.append(f"\033[38;2;{brightness};{brightness};{brightness}m")
             result.append(text[i])
             # Restore original ANSI state
@@ -450,12 +431,14 @@ def load_config():
         except (FileNotFoundError, json.JSONDecodeError):
             continue
 
+    # Clean up removed settings
+    data.pop("rainbow_bars", None)
+    data.pop("rainbow_mode", None)
+
     # Apply defaults
     data.setdefault("cache_ttl_seconds", DEFAULT_CACHE_TTL)
     data.setdefault("theme", "default")
-    data.setdefault("rainbow_bars", True)
-    data.setdefault("rainbow_mode", False)
-    data.setdefault("animate", True)
+    data.setdefault("animate", False)
     data.setdefault("text_color", "auto")
     data.setdefault("bar_size", DEFAULT_BAR_SIZE)
     data.setdefault("bar_style", DEFAULT_BAR_STYLE)
@@ -473,6 +456,55 @@ def save_config(config):
     save_data = {k: v for k, v in config.items() if not k.startswith("_")}
     with _secure_open_write(config_path) as f:
         json.dump(save_data, f, indent=2)
+
+
+def _cleanup_hooks():
+    """Remove any legacy claude-pulse hooks from settings.json.
+
+    v2.2.0 removed all hooks — animation is now purely refresh-based.
+    This runs once on upgrade and writes a marker to avoid repeat work.
+    """
+    state_dir = get_state_dir()
+    marker = state_dir / "hooks_cleaned"
+    if marker.exists():
+        return
+    settings_path = Path.home() / ".claude" / "settings.json"
+    try:
+        with open(settings_path, "r") as f:
+            settings = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        # No settings file or invalid — nothing to clean
+        try:
+            marker.touch()
+        except OSError:
+            pass
+        return
+
+    changed = False
+    script_name = "claude_status.py"
+    for hook_type in ("UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"):
+        hooks = settings.get("hooks", {}).get(hook_type, [])
+        if hooks:
+            filtered = [h for h in hooks if script_name not in h.get("command", "")]
+            if len(filtered) != len(hooks):
+                settings.setdefault("hooks", {})[hook_type] = filtered
+                changed = True
+
+    # Remove empty hook types and hooks key if empty
+    if "hooks" in settings:
+        settings["hooks"] = {k: v for k, v in settings["hooks"].items() if v}
+        if not settings["hooks"]:
+            del settings["hooks"]
+            changed = True
+
+    if changed:
+        with open(settings_path, "w") as f:
+            json.dump(settings, f, indent=2)
+
+    try:
+        marker.touch()
+    except OSError:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -495,65 +527,6 @@ def get_cache_path():
     return get_state_dir() / "cache.json"
 
 
-# ---------------------------------------------------------------------------
-# Animation state — hooks write this to signal processing start/stop
-# ---------------------------------------------------------------------------
-
-def get_animation_state_path():
-    return get_state_dir() / "animating"
-
-
-def hooks_installed():
-    """Check if animation hooks have ever been used (state file has been created before)."""
-    # The stop hook creates a "stopped" marker; the start hook creates the "animating" file.
-    # If neither has ever existed, hooks aren't installed.
-    state_dir = get_state_dir()
-    return (state_dir / "animating").exists() or (state_dir / "hooks_installed").exists()
-
-
-def is_claude_processing():
-    """Check if Claude is actively processing (set by hooks).
-
-    Returns True if:
-    - Hooks aren't installed (fallback: always animate, old behaviour)
-    - Hooks are installed AND the animating flag is set
-    """
-    if not hooks_installed():
-        return True  # No hooks → always animate (backwards compatible)
-    state_path = get_animation_state_path()
-    try:
-        if not state_path.exists():
-            return False
-        # Stale guard: if the flag is older than 5 minutes, assume it's orphaned
-        age = time.time() - state_path.stat().st_mtime
-        if age > 300:
-            try:
-                state_path.unlink()
-            except OSError:
-                pass
-            return False
-        return True
-    except OSError:
-        return False
-
-
-def set_processing(active):
-    """Write or remove the animation state flag."""
-    state_dir = get_state_dir()
-    state_path = get_animation_state_path()
-    marker = state_dir / "hooks_installed"
-    try:
-        # Mark that hooks are installed (so we know to check the flag)
-        if not marker.exists():
-            with _secure_open_write(marker) as f:
-                f.write("1")
-        if active:
-            with _secure_open_write(state_path) as f:
-                f.write("1")
-        else:
-            state_path.unlink(missing_ok=True)
-    except OSError:
-        pass
 
 
 # ---------------------------------------------------------------------------
@@ -707,6 +680,21 @@ def cmd_update():
         utf8_print(f"  {BRIGHT_YELLOW}Update found! v{VERSION} -> v{remote_version}{RESET}")
     else:
         utf8_print(f"  {BRIGHT_YELLOW}Update found! New changes available{RESET}")
+
+    # Ask for confirmation unless --confirm was passed
+    if "--confirm" not in sys.argv:
+        if sys.stdin.isatty():
+            try:
+                answer = input(f"  Apply update? [y/N] ").strip().lower()
+                if answer not in ("y", "yes"):
+                    utf8_print(f"  {DIM}Update cancelled.{RESET}")
+                    return
+            except (EOFError, KeyboardInterrupt):
+                utf8_print(f"\n  {DIM}Update cancelled.{RESET}")
+                return
+        else:
+            utf8_print(f"  {DIM}Non-interactive mode. Run with --update --confirm to apply.{RESET}")
+            return
 
     # Capture local commit before pulling so we can show changelog after
     pre_pull_commit = local
@@ -865,7 +853,9 @@ def make_bar(pct, theme=None, plain=False, width=None, bar_style=None):
     filled = round(pct / 100 * width)
     filled = max(0, min(width, filled))
     if plain:
-        return f"{fill_char * filled}{empty_char * (width - filled)}"
+        # Keep empty chars DIM so rainbow_colorize (color_all=False) preserves
+        # the distinction: filled chars get rainbow, empty chars stay dim
+        return f"{fill_char * filled}{DIM}{empty_char * (width - filled)}{RESET}"
     colour = bar_colour(pct, theme)
     return f"{colour}{fill_char * filled}{DIM}{empty_char * (width - filled)}{RESET}"
 
@@ -888,28 +878,519 @@ def format_reset_time(resets_at_str):
         return None
 
 
-def build_status_line(usage, plan, config=None):
+def _get_history_path():
+    """Return path to usage history file."""
+    return get_state_dir() / "history.json"
+
+
+def _read_history():
+    """Read usage history samples."""
+    try:
+        with open(_get_history_path(), "r") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+
+
+def _append_history(usage):
+    """Append a usage sample to history and prune old entries."""
+    five = usage.get("five_hour", {})
+    seven = usage.get("seven_day", {})
+    session_pct = five.get("utilization", 0)
+    weekly_pct = seven.get("utilization", 0)
+
+    samples = _read_history()
+    now = time.time()
+    samples.append({"t": now, "s": session_pct, "w": weekly_pct})
+
+    # Prune entries older than 24 hours
+    cutoff = now - HISTORY_MAX_AGE
+    samples = [s for s in samples if s.get("t", 0) > cutoff]
+
+    try:
+        with _secure_open_write(_get_history_path()) as f:
+            json.dump(samples, f)
+    except OSError:
+        pass
+
+
+def _render_sparkline(samples, key="s", width=8):
+    """Render a sparkline from usage samples."""
+    if not samples:
+        return ""
+    # Take the last `width` samples
+    recent = samples[-width:]
+    chars = []
+    for s in recent:
+        val = s.get(key, 0)
+        # Map 0-100 to index 0-6 (avoid █ at index 7 — it's in ALL_BAR_CHARS
+        # and would be skipped by apply_shimmer)
+        idx = min(6, max(0, int(val / 100 * 6.99)))
+        chars.append(SPARKLINE_CHARS[idx])
+    return "".join(chars)
+
+
+def _estimate_runway(samples, current_pct):
+    """Estimate time until 100% usage via linear regression over recent samples.
+
+    Returns a string like '~2h 15m' or '~45m', or None if insufficient data.
+    """
+    if len(samples) < 2 or current_pct >= 100:
+        return None
+
+    now = time.time()
+    # Use samples from the last 10 minutes
+    cutoff = now - 600
+    recent = [s for s in samples if s.get("t", 0) > cutoff]
+
+    if len(recent) < 2:
+        return None
+
+    # Simple linear regression: pct vs time
+    n = len(recent)
+    sum_t = sum(s["t"] for s in recent)
+    sum_s = sum(s.get("s", 0) for s in recent)
+    sum_ts = sum(s["t"] * s.get("s", 0) for s in recent)
+    sum_tt = sum(s["t"] ** 2 for s in recent)
+
+    denom = n * sum_tt - sum_t ** 2
+    if abs(denom) < 1e-10:
+        return None
+
+    slope = (n * sum_ts - sum_t * sum_s) / denom  # pct per second
+
+    if slope <= 0.001:
+        return None  # Usage is flat or declining
+
+    remaining = 100.0 - current_pct
+    seconds_to_full = remaining / slope
+
+    if seconds_to_full > 86400:  # More than 24 hours, not useful
+        return None
+
+    hours = int(seconds_to_full // 3600)
+    minutes = int((seconds_to_full % 3600) // 60)
+
+    if hours > 0:
+        return f"~{hours}h {minutes:02d}m"
+    return f"~{minutes}m"
+
+
+def _compute_velocity(samples):
+    """Compute usage velocity in pct/min from recent history samples."""
+    if len(samples) < 2:
+        return None
+    now = time.time()
+    recent = [s for s in samples if s.get("t", 0) > now - 300]  # last 5 min
+    if len(recent) < 2:
+        return None
+    dt = recent[-1]["t"] - recent[0]["t"]
+    if dt < 10:  # less than 10 seconds of data
+        return None
+    dp = recent[-1].get("s", 0) - recent[0].get("s", 0)
+    return (dp / dt) * 60  # pct per minute
+
+
+def _get_status_message(pct, velocity=None):
+    """Return a (message, severity) tuple based on usage percentage and velocity.
+
+    Severity: 'low', 'mid', 'high'
+    """
+    if pct >= 95:
+        return ("At the limit", "high")
+    if pct >= 80:
+        return ("Pace yourself", "high")
+    if pct >= 60:
+        if velocity is not None and velocity > 2.0:
+            return ("Running hot", "high")
+        return ("Steady pace", "mid")
+    if pct >= 30:
+        if velocity is not None and velocity > 2.0:
+            return ("In the flow", "mid")
+        return ("Cruising", "mid")
+    if pct >= 10:
+        return ("Warming up", "low")
+    return ("Fresh start", "low")
+
+
+# ---------------------------------------------------------------------------
+# Session stats & streaks
+# ---------------------------------------------------------------------------
+
+STREAK_MILESTONES = {
+    7: "Week!",
+    30: "Month!",
+    50: "Fifty!",
+    100: "Century!",
+    200: "200 club!",
+    365: "Year!",
+    500: "500!",
+    1000: "Legend!",
+}
+
+
+def _today_local():
+    """Return today's date as YYYY-MM-DD in local timezone."""
+    return datetime.now().strftime("%Y-%m-%d")
+
+
+def _get_stats_path():
+    """Return path to stats file."""
+    return get_state_dir() / "stats.json"
+
+
+def _load_stats():
+    """Load stats from disk with defaults."""
+    try:
+        with open(_get_stats_path(), "r") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {
+            "first_seen": _today_local(),
+            "total_sessions": 0,
+            "daily_dates": [],
+            "current_streak": 0,
+            "longest_streak": 0,
+            "last_date": "",
+        }
+
+
+def _save_stats(stats):
+    """Save stats to disk."""
+    try:
+        with _secure_open_write(_get_stats_path()) as f:
+            json.dump(stats, f, indent=2)
+    except OSError:
+        pass
+
+
+def _calculate_streak(daily_dates, today):
+    """Calculate current and longest streak from date strings.
+
+    Current streak counts consecutive days ending at today or yesterday.
+    Returns (current_streak, longest_streak).
+    """
+    if not daily_dates:
+        return (0, 0)
+
+    # Deduplicate and sort
+    unique = sorted(set(daily_dates))
+    dates = []
+    for d in unique:
+        try:
+            dates.append(datetime.strptime(d, "%Y-%m-%d").date())
+        except ValueError:
+            continue
+
+    if not dates:
+        return (0, 0)
+
+    try:
+        today_date = datetime.strptime(today, "%Y-%m-%d").date()
+    except ValueError:
+        return (0, 0)
+
+    # Calculate longest streak
+    longest = 1
+    run = 1
+    for i in range(1, len(dates)):
+        if (dates[i] - dates[i - 1]).days == 1:
+            run += 1
+            longest = max(longest, run)
+        else:
+            run = 1
+    longest = max(longest, run)
+
+    # Calculate current streak using ordinal day arithmetic
+    current_streak = 0
+    check_ord = today_date.toordinal()
+    for d in reversed(dates):
+        d_ord = d.toordinal()
+        if d_ord == check_ord:
+            current_streak += 1
+            check_ord -= 1
+        elif d_ord == check_ord + 1 and current_streak == 0:
+            # Today not logged yet, start from yesterday
+            current_streak = 1
+            check_ord = d_ord - 1
+        elif d_ord < check_ord:
+            break
+
+    return (current_streak, longest)
+
+
+def _check_milestone(total):
+    """Check if total sessions hit a milestone. Returns message or None."""
+    return STREAK_MILESTONES.get(total)
+
+
+def _update_stats():
+    """Update daily stats on fresh fetch. Returns (stats, milestone_or_None)."""
+    stats = _load_stats()
+    today = _today_local()
+
+    if stats.get("last_date") == today:
+        return (stats, None)  # Already updated today
+
+    if not stats.get("first_seen"):
+        stats["first_seen"] = today
+
+    daily_dates = stats.get("daily_dates", [])
+    if today not in daily_dates:
+        daily_dates.append(today)
+    stats["daily_dates"] = daily_dates
+
+    stats["total_sessions"] = stats.get("total_sessions", 0) + 1
+
+    current, longest = _calculate_streak(daily_dates, today)
+    stats["current_streak"] = current
+    stats["longest_streak"] = max(stats.get("longest_streak", 0), longest)
+    stats["last_date"] = today
+
+    milestone = _check_milestone(stats["total_sessions"])
+
+    _save_stats(stats)
+    return (stats, milestone)
+
+
+def _get_streak_display(config, stats):
+    """Return formatted streak string like '7d streak' or ''."""
+    show = config.get("show", DEFAULT_SHOW)
+    if not show.get("streak", True):
+        return ""
+    streak = stats.get("current_streak", 0)
+    if streak < 2:
+        return ""
+    style = config.get("streak_style", "text")
+    if style == "fire":
+        return f"\U0001f525{streak}"
+    return f"{streak}d streak"
+
+
+def cmd_stats():
+    """Show full session stats summary."""
+    stats = _load_stats()
+    today = _today_local()
+    current, longest = _calculate_streak(stats.get("daily_dates", []), today)
+
+    utf8_print(f"\n{BOLD}claude-pulse stats{RESET}\n")
+    utf8_print(f"  First seen:     {stats.get('first_seen', 'unknown')}")
+    utf8_print(f"  Total sessions: {stats.get('total_sessions', 0)}")
+    utf8_print(f"  Days active:    {len(set(stats.get('daily_dates', [])))}")
+    utf8_print(f"  Current streak: {current}d")
+    utf8_print(f"  Longest streak: {max(stats.get('longest_streak', 0), longest)}d")
+
+    milestone = _check_milestone(stats.get("total_sessions", 0))
+    if milestone:
+        utf8_print(f"  Milestone:      {BRIGHT_YELLOW}{milestone}{RESET}")
+    utf8_print("")
+
+
+def _parse_stdin_context(raw_stdin):
+    """Parse Claude Code's stdin JSON for session context.
+
+    Extracts model name, context window usage, and cost.
+    Returns dict with available keys, or empty dict on error.
+    """
+    if not raw_stdin or not raw_stdin.strip():
+        return {}
+    try:
+        data = json.loads(raw_stdin)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+
+    result = {}
+
+    # Model name
+    try:
+        model = data.get("data", data).get("model", {})
+        display_name = model.get("display_name", "")
+        if display_name:
+            # Strip "Claude " prefix: "Claude Opus 4.6" → "Opus 4.6"
+            short = display_name.replace("Claude ", "").strip()
+            result["model_name"] = short if short else display_name
+        else:
+            model_id = model.get("id", "")
+            if model_id:
+                result["model_name"] = MODEL_SHORT_NAMES.get(model_id, model_id.split("-")[-1].title())
+    except (AttributeError, KeyError):
+        pass
+
+    # Context window usage
+    try:
+        ctx = data.get("data", data).get("context_window", {})
+        used_pct = ctx.get("used_percentage")
+        if used_pct is not None:
+            result["context_pct"] = float(used_pct)
+    except (AttributeError, KeyError, ValueError, TypeError):
+        pass
+
+    # Cost
+    try:
+        cost = data.get("data", data).get("cost", {})
+        total = cost.get("total_cost_usd")
+        if total is not None:
+            result["cost_usd"] = float(total)
+    except (AttributeError, KeyError, ValueError, TypeError):
+        pass
+
+    return result
+
+
+def _get_heatmap_path():
+    """Return path to heatmap data file."""
+    return get_state_dir() / "heatmap.json"
+
+
+def _update_heatmap(usage):
+    """Update the activity heatmap with current usage data."""
+    five = usage.get("five_hour", {})
+    seven = usage.get("seven_day", {})
+    session_pct = five.get("utilization", 0)
+    weekly_pct = seven.get("utilization", 0)
+
+    # Load existing heatmap
+    try:
+        with open(_get_heatmap_path(), "r") as f:
+            heatmap = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        heatmap = {}
+
+    hours = heatmap.get("hours", {})
+
+    # Current hour key in UTC: YYYY-MM-DDTHH
+    now = datetime.now(timezone.utc)
+    hour_key = now.strftime("%Y-%m-%dT%H")
+
+    # Update entry for current hour — track peak session_pct
+    entry = hours.get(hour_key, {"session_pct": 0, "weekly_pct": 0, "samples": 0})
+    entry["session_pct"] = max(entry.get("session_pct", 0), session_pct)
+    entry["weekly_pct"] = max(entry.get("weekly_pct", 0), weekly_pct)
+    entry["samples"] = entry.get("samples", 0) + 1
+    hours[hour_key] = entry
+
+    # Prune entries older than 28 days (672 hours)
+    cutoff = now - timedelta(days=28)
+    cutoff_key = cutoff.strftime("%Y-%m-%dT%H")
+    hours = {k: v for k, v in hours.items() if k >= cutoff_key}
+
+    heatmap["hours"] = hours
+
+    try:
+        with _secure_open_write(_get_heatmap_path()) as f:
+            json.dump(heatmap, f)
+    except OSError:
+        pass
+
+
+def _heatmap_intensity(pct):
+    """Return intensity level 0-4 from usage percentage."""
+    if pct <= 0:
+        return 0
+    if pct <= 25:
+        return 1
+    if pct <= 50:
+        return 2
+    if pct <= 75:
+        return 3
+    return 4
+
+
+def _render_heatmap(config=None):
+    """Render a 7-row x 24-col activity heatmap from stored data.
+
+    Rows = days of week (Mon-Sun), cols = hours (0-23).
+    Returns a multi-line string.
+    """
+    if config is None:
+        config = load_config()
+
+    theme_name = config.get("theme", "default")
+    theme = get_theme_colours(theme_name)
+
+    intensity_chars = ["\u00b7", "\u2591", "\u2592", "\u2593", "\u2588"]  # ·, ░, ▒, ▓, █
+    intensity_colors = ["", theme["low"], theme["low"], theme["mid"], theme["high"]]
+
+    # Load heatmap data
+    try:
+        with open(_get_heatmap_path(), "r") as f:
+            heatmap = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        heatmap = {}
+
+    hours_data = heatmap.get("hours", {})
+
+    # Build a 7x24 grid (Mon=0 .. Sun=6, hours 0-23)
+    # Use the last 7 days from today
+    now = datetime.now(timezone.utc)
+    grid = [[0] * 24 for _ in range(7)]
+
+    for day_offset in range(7):
+        day = now - timedelta(days=(6 - day_offset))
+        weekday = day.weekday()  # Mon=0, Sun=6
+        for hour in range(24):
+            key = day.strftime("%Y-%m-%dT") + f"{hour:02d}"
+            entry = hours_data.get(key, {})
+            pct = entry.get("session_pct", 0)
+            grid[weekday][hour] = _heatmap_intensity(pct)
+
+    day_labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    lines = []
+
+    # Hour labels header
+    header = "     "
+    for h in range(24):
+        if h % 6 == 0:
+            header += f"{h:<3}"
+        else:
+            header += "   "
+    lines.append(header.rstrip())
+
+    # Grid rows
+    for weekday in range(7):
+        row = f" {day_labels[weekday]} "
+        for hour in range(24):
+            level = grid[weekday][hour]
+            ch = intensity_chars[level]
+            color = intensity_colors[level]
+            if color:
+                row += f"{color}{ch}{RESET}  "
+            else:
+                row += f"{DIM}{ch}{RESET}  "
+        lines.append(row.rstrip())
+
+    return "\n".join(lines)
+
+
+def cmd_heatmap():
+    """Display the activity heatmap."""
+    config = load_config()
+    utf8_print(f"\n{BOLD}Activity Heatmap (last 7 days){RESET}\n")
+    heatmap = _render_heatmap(config)
+    utf8_print(heatmap)
+
+    # Legend
+    theme_name = config.get("theme", "default")
+    theme = get_theme_colours(theme_name)
+    utf8_print(f"\n  Legend: {DIM}\u00b7{RESET} none  {theme['low']}\u2591{RESET} low  {theme['low']}\u2592{RESET} med  {theme['mid']}\u2593{RESET} high  {theme['high']}\u2588{RESET} peak")
+    utf8_print("")
+
+
+def build_status_line(usage, plan, config=None, stdin_ctx=None):
     if config is None:
         config = load_config()
 
     theme_name = config.get("theme", "default")
     is_rainbow_theme = theme_name == "rainbow"
-    rainbow_mode = config.get("rainbow_mode", False)
-    rainbow_bars = config.get("rainbow_bars", True)
+    animate = config.get("animate", False)
 
     # Rainbow rendering applies when:
-    # 1. Theme is "rainbow" (classic behaviour), OR
-    # 2. rainbow_mode is enabled (rainbow animation on any theme)
-    use_rainbow = is_rainbow_theme or rainbow_mode
+    # 1. Theme is "rainbow", OR
+    # 2. animate is on (rainbow animation overlay on any theme)
+    use_rainbow = is_rainbow_theme or animate
 
-    # When rainbow + bars: build plain text, rainbow everything
-    # When rainbow - bars: build bars with theme colours, rainbow text only
-    # Otherwise: normal themed rendering
-    if use_rainbow and rainbow_bars:
+    if use_rainbow:
         bar_plain = True
-        theme = get_theme_colours(theme_name) if not is_rainbow_theme else THEMES["default"]
-    elif use_rainbow:
-        bar_plain = False
         theme = get_theme_colours(theme_name) if not is_rainbow_theme else THEMES["default"]
     else:
         bar_plain = False
@@ -957,7 +1438,30 @@ def build_status_line(usage, plan, config=None):
             elif layout == "percent-first":
                 parts.append(f"{pct:.0f}% {bar}{reset_str}")
             else:  # standard
-                parts.append(f"Session {bar} {pct:.0f}%{reset_str}")
+                # Load history once for sparkline, runway, and smart messages
+                history = _read_history() if show.get("sparkline", True) or show.get("runway", True) or show.get("status_message", True) else []
+                # Smart status message replaces "Session" label
+                label = "Session"
+                if show.get("status_message", True):
+                    velocity = _compute_velocity(history)
+                    msg, _ = _get_status_message(pct, velocity)
+                    label = msg
+                # Sparkline
+                spark_str = ""
+                if show.get("sparkline", True):
+                    spark = _render_sparkline(history)
+                    if spark:
+                        spark_str = f" {spark}"
+                # Runway
+                runway_str = ""
+                if show.get("runway", True):
+                    runway = _estimate_runway(history, pct)
+                    if runway:
+                        runway_str = f" {runway}"
+                # Separate timer from runway/sparkline with · when both present
+                if reset_str and (runway_str or spark_str):
+                    reset_str = f" \u00b7{reset}"
+                parts.append(f"{label} {bar} {pct:.0f}%{spark_str}{runway_str}{reset_str}")
         else:
             bar = make_bar(0, theme, plain=bar_plain, width=bw, bar_style=bstyle)
             if layout == "compact":
@@ -1012,28 +1516,47 @@ def build_status_line(usage, plan, config=None):
             else:
                 parts.append(f"Extra {bar} none")
 
+    # Context window usage from stdin context
+    if stdin_ctx and show.get("context", True):
+        ctx_pct = stdin_ctx.get("context_pct")
+        if ctx_pct is not None:
+            ctx_bar = make_bar(ctx_pct, theme, plain=bar_plain, width=bw, bar_style=bstyle)
+            if layout == "compact":
+                parts.append(f"C {ctx_bar} {ctx_pct:.0f}%")
+            elif layout == "minimal":
+                parts.append(f"{ctx_bar} {ctx_pct:.0f}%")
+            else:
+                parts.append(f"Context {ctx_bar} {ctx_pct:.0f}%")
+
     # Plan name (hidden in minimal layout)
     if layout != "minimal" and show.get("plan", True) and plan:
         parts.append(plan)
 
+    # Streak display
+    if show.get("streak", True):
+        try:
+            stats = _load_stats()
+            sd = _get_streak_display(config, stats)
+            if sd:
+                parts.append(sd)
+        except Exception:
+            pass
+
+    # Model name from stdin context
+    if stdin_ctx and show.get("model", True):
+        model = stdin_ctx.get("model_name")
+        if model:
+            parts.append(model)
+
     line = " | ".join(parts)
 
-    animate = config.get("animate", True)
-    # Only animate when Claude is actively processing (hooks set this flag)
-    # Falls back to always-animate if hooks aren't installed (flag missing = process)
-    processing = is_claude_processing()
-    should_animate = animate and processing
-
+    # Animation: on = rainbow always moving, off = static theme colours
     if use_rainbow:
-        line = rainbow_colorize(line, color_all=rainbow_bars, shimmer=should_animate)
+        line = rainbow_colorize(line, color_all=False, shimmer=animate)
     else:
-        # Apply text colour to labels/percentages/separators
         text_color_code = resolve_text_color(config)
         if text_color_code:
             line = apply_text_color(line, text_color_code)
-        # Shimmer overlays white on the now-coloured text
-        if should_animate:
-            line = apply_shimmer(line)
 
     return line
 
@@ -1042,9 +1565,23 @@ def build_status_line(usage, plan, config=None):
 # Install
 # ---------------------------------------------------------------------------
 
+def _get_python_cmd():
+    """Return the Python command to use in hooks/settings.
+
+    Uses sys.executable to ensure we match whatever Python is running this script.
+    On Linux this is typically 'python3', on Windows 'python'.
+    """
+    exe = sys.executable
+    # If the executable path contains spaces, quote it
+    if " " in exe:
+        return f'"{exe}"'
+    return exe
+
+
 def install_status_line():
     settings_path = Path.home() / ".claude" / "settings.json"
     script_path = Path(__file__).resolve()
+    python_cmd = _get_python_cmd()
 
     settings = {}
     if settings_path.exists():
@@ -1057,98 +1594,22 @@ def install_status_line():
     # Status line command
     settings["statusLine"] = {
         "type": "command",
-        "command": f'python "{script_path}"',
+        "command": f'{python_cmd} "{script_path}"',
+        "refresh": 150,
     }
 
-    # Animation lifecycle hooks — animate only while Claude is writing
-    _install_hooks_into(settings, script_path)
+    # No hooks installed here — static status bar by default.
+    # Use --animate on for always-on animation (installs hooks automatically)
+    # Use --install-hooks for animate-while-working mode
 
     _secure_mkdir(settings_path.parent)
     with _secure_open_write(settings_path) as f:
         json.dump(settings, f, indent=2)
 
-    print(f"Installed status line + animation hooks to {settings_path}")
-    print(f"Command: python \"{script_path}\"")
+    print(f"Installed status line to {settings_path}")
+    print(f"Command: {python_cmd} \"{script_path}\"")
     print("Restart Claude Code to see the status line.")
-
-
-def _install_hooks_into(settings, script_path):
-    """Wire animation lifecycle hooks into a settings dict (no file I/O)."""
-    hooks = settings.get("hooks", {})
-
-    start_hook = {
-        "type": "command",
-        "command": f'python "{script_path}" --hook-start',
-    }
-    stop_hook = {
-        "type": "command",
-        "command": f'python "{script_path}" --hook-stop',
-    }
-
-    # Add to UserPromptSubmit — fires when the user presses Enter
-    submit_hooks = hooks.get("UserPromptSubmit", [])
-    our_cmd = f'python "{script_path}" --hook-start'
-    already = any(
-        h.get("hooks", [{}])[0].get("command", "") == our_cmd
-        if isinstance(h, dict) and "hooks" in h else False
-        for h in submit_hooks
-    )
-    if not already:
-        submit_hooks.append({"hooks": [start_hook]})
-    hooks["UserPromptSubmit"] = submit_hooks
-
-    # Add to PreToolUse — fires before each tool call, keeps animation alive
-    # during the agentic loop (model → tool → model → tool → ...)
-    pretool_hooks = hooks.get("PreToolUse", [])
-    already_pretool = any(
-        h.get("hooks", [{}])[0].get("command", "") == our_cmd
-        if isinstance(h, dict) and "hooks" in h else False
-        for h in pretool_hooks
-    )
-    if not already_pretool:
-        pretool_hooks.append({"hooks": [start_hook]})
-    hooks["PreToolUse"] = pretool_hooks
-
-    # Add to Stop — fires when Claude finishes responding
-    stop_hooks = hooks.get("Stop", [])
-    our_cmd_stop = f'python "{script_path}" --hook-stop'
-    already_stop = any(
-        h.get("hooks", [{}])[0].get("command", "") == our_cmd_stop
-        if isinstance(h, dict) and "hooks" in h else False
-        for h in stop_hooks
-    )
-    if not already_stop:
-        stop_hooks.append({"hooks": [stop_hook]})
-    hooks["Stop"] = stop_hooks
-
-    settings["hooks"] = hooks
-
-
-def install_hooks():
-    """Install animation lifecycle hooks into Claude Code settings (standalone)."""
-    settings_path = Path.home() / ".claude" / "settings.json"
-    script_path = Path(__file__).resolve()
-
-    settings = {}
-    if settings_path.exists():
-        try:
-            with open(settings_path, "r") as f:
-                settings = json.load(f)
-        except (json.JSONDecodeError, OSError):
-            pass
-
-    _install_hooks_into(settings, script_path)
-
-    with _secure_open_write(settings_path) as f:
-        json.dump(settings, f, indent=2)
-
-    utf8_print(f"{BOLD}Animation hooks installed!{RESET}")
-    utf8_print(f"  UserPromptSubmit → --hook-start (animation ON)")
-    utf8_print(f"  PreToolUse       → --hook-start (animation ON — keeps alive during tools)")
-    utf8_print(f"  Stop             → --hook-stop  (animation OFF)")
-    utf8_print(f"  Settings: {settings_path}")
-    utf8_print(f"\nRestart Claude Code for hooks to take effect.")
-    utf8_print(f"The shimmer will now animate while Claude is thinking and using tools.")
+    print("Tip: use --animate on for always-on rainbow animation.")
 
 
 # ---------------------------------------------------------------------------
@@ -1190,7 +1651,7 @@ def cmd_themes_demo():
     user_bar_style = user_config.get("bar_style", DEFAULT_BAR_STYLE)
     for name in THEMES:
         demo_tc = THEME_DEMO_TEXT.get(name, "white")
-        demo_config = {"theme": name, "bar_size": user_bar_size, "bar_style": user_bar_style, "text_color": demo_tc, "show": {"session": True, "weekly": True, "plan": True, "timer": False, "extra": False}}
+        demo_config = {"theme": name, "bar_size": user_bar_size, "bar_style": user_bar_style, "text_color": demo_tc, "show": {"session": True, "weekly": True, "plan": True, "timer": False, "extra": False, "sparkline": False, "runway": False, "status_message": False, "streak": False, "model": False, "context": False}}
         line = build_status_line(demo_usage, "Max 20x", demo_config)
         marker = " <<" if name == current else ""
         utf8_print(f"  {BOLD}{name:<10}{RESET} {line}{marker}")
@@ -1212,7 +1673,7 @@ def cmd_show_themes():
     for name in THEMES:
         # Use the accent colour so each theme looks distinct in the preview
         demo_tc = THEME_DEMO_TEXT.get(name, "white")
-        demo_config = {"theme": name, "bar_size": user_bar_size, "bar_style": user_bar_style, "text_color": demo_tc, "show": {"session": True, "weekly": True, "plan": True, "timer": False, "extra": False}}
+        demo_config = {"theme": name, "bar_size": user_bar_size, "bar_style": user_bar_style, "text_color": demo_tc, "show": {"session": True, "weekly": True, "plan": True, "timer": False, "extra": False, "sparkline": False, "runway": False, "status_message": False, "streak": False, "model": False, "context": False}}
         line = build_status_line(demo_usage, "Max 20x", demo_config)
         marker = f" {GREEN}<< current{RESET}" if name == current_theme else ""
         # Colour the theme name with its accent colour
@@ -1342,15 +1803,9 @@ def cmd_print_config():
     utf8_print(f"  Bar style: {bst} ({bst_chars[0]}{bst_chars[1]})")
     ly = config.get("layout", DEFAULT_LAYOUT)
     utf8_print(f"  Layout:    {ly}")
-    rb = config.get("rainbow_bars", True)
-    rb_state = f"{GREEN}on{RESET}" if rb else f"{RED}off{RESET}"
-    utf8_print(f"  Rainbow bars: {rb_state}  (rainbow colours {'include' if rb else 'skip'} the progress bars)")
-    rm = config.get("rainbow_mode", False)
-    rm_state = f"{GREEN}on{RESET}" if rm else f"{RED}off{RESET}"
-    utf8_print(f"  Rainbow mode: {rm_state}  (rainbow animation {'on any theme' if rm else 'only when theme is rainbow'})")
-    anim = config.get("animate", True)
+    anim = config.get("animate", False)
     anim_state = f"{GREEN}on{RESET}" if anim else f"{RED}off{RESET}"
-    utf8_print(f"  Animation:    {anim_state}  (white shimmer {'sweeps across' if anim else 'disabled'} while Claude is writing)")
+    utf8_print(f"  Animation:    {anim_state}  ({'rainbow always moving' if anim else 'static'})")
     tc = config.get("text_color", "auto")
     if tc == "auto":
         resolved = THEME_TEXT_DEFAULTS.get(theme_name, "white")
@@ -1359,13 +1814,6 @@ def cmd_print_config():
     else:
         tc_code = TEXT_COLORS.get(tc, "")
         utf8_print(f"  Text colour:  {tc_code}{tc}{RESET}")
-    has_hooks = hooks_installed()
-    hook_state = f"{GREEN}installed{RESET}" if has_hooks else f"{DIM}not installed{RESET}"
-    utf8_print(f"  Hooks:        {hook_state}  (animation {'only while Claude writes' if has_hooks else 'always on — run --install-hooks'})")
-    if has_hooks:
-        processing = is_claude_processing()
-        proc_state = f"{GREEN}processing{RESET}" if processing else f"{DIM}idle{RESET}"
-        utf8_print(f"  Status:       {proc_state}")
     # Update check
     local = get_local_commit()
     if local:
@@ -1421,21 +1869,8 @@ def cmd_print_config():
 def main():
     args = sys.argv[1:]
 
-    # Hook commands — called by Claude Code lifecycle hooks (fast, no output)
-    if "--hook-start" in args:
-        set_processing(True)
-        return
-
-    if "--hook-stop" in args:
-        set_processing(False)
-        return
-
     if "--update" in args:
         cmd_update()
-        return
-
-    if "--install-hooks" in args:
-        install_hooks()
         return
 
     if "--install" in args:
@@ -1486,55 +1921,6 @@ def main():
             print("Usage: --hide <parts>  (comma-separated: session,weekly,plan,timer,extra,update)")
         return
 
-    if "--rainbow-bars" in args:
-        idx = args.index("--rainbow-bars")
-        if idx + 1 < len(args):
-            val = args[idx + 1].lower()
-            if val in ("on", "true", "yes", "1"):
-                rb = True
-            elif val in ("off", "false", "no", "0"):
-                rb = False
-            else:
-                print(f"Unknown value: {val}  (use on or off)")
-                return
-            config = load_config()
-            config["rainbow_bars"] = rb
-            save_config(config)
-            try:
-                os.remove(get_cache_path())
-            except OSError:
-                pass
-            state = f"{GREEN}on{RESET}" if rb else f"{RED}off{RESET}"
-            utf8_print(f"Rainbow bars: {state}")
-        else:
-            print("Usage: --rainbow-bars on|off")
-        return
-
-    if "--rainbow-mode" in args:
-        idx = args.index("--rainbow-mode")
-        if idx + 1 < len(args):
-            val = args[idx + 1].lower()
-            if val in ("on", "true", "yes", "1"):
-                rm = True
-            elif val in ("off", "false", "no", "0"):
-                rm = False
-            else:
-                print(f"Unknown value: {val}  (use on or off)")
-                return
-            config = load_config()
-            config["rainbow_mode"] = rm
-            save_config(config)
-            try:
-                os.remove(get_cache_path())
-            except OSError:
-                pass
-            state = f"{GREEN}on{RESET}" if rm else f"{RED}off{RESET}"
-            theme = config.get("theme", "default")
-            utf8_print(f"Rainbow animation: {state}  (theme: {theme})")
-        else:
-            print("Usage: --rainbow-mode on|off")
-        return
-
     if "--text-color" in args:
         idx = args.index("--text-color")
         if idx + 1 < len(args):
@@ -1579,8 +1965,10 @@ def main():
                 os.remove(get_cache_path())
             except OSError:
                 pass
-            state = f"{GREEN}on{RESET}" if anim else f"{RED}off{RESET}"
-            utf8_print(f"Animation: {state}")
+            if anim:
+                utf8_print(f"Animation: {GREEN}on{RESET}  (rainbow always moving)")
+            else:
+                utf8_print(f"Animation: {RED}off{RESET}  (static)")
         else:
             print("Usage: --animate on|off")
         return
@@ -1672,6 +2060,47 @@ def main():
             utf8_print("Usage: --currency <symbol>  (e.g. \u00a3, $, \u20ac, \u00a5)")
         return
 
+    if "--stats" in args:
+        cmd_stats()
+        return
+
+    if "--streak-style" in args:
+        idx = args.index("--streak-style")
+        if idx + 1 < len(args):
+            val = args[idx + 1].lower()
+            if val not in ("fire", "text"):
+                utf8_print(f"Unknown streak style: {val}  (use fire or text)")
+                return
+            config = load_config()
+            config["streak_style"] = val
+            save_config(config)
+            utf8_print(f"Streak style: {BOLD}{val}{RESET}")
+        else:
+            utf8_print("Usage: --streak-style fire|text")
+        return
+
+    if "--debug-stdin" in args:
+        raw = ""
+        try:
+            raw = sys.stdin.read(65536)
+        except Exception:
+            pass
+        debug_path = get_state_dir() / "stdin_debug.json"
+        try:
+            with _secure_open_write(debug_path) as f:
+                f.write(raw if raw else "{}")
+        except OSError:
+            pass
+        utf8_print(f"Stdin debug written to: {debug_path}")
+        if raw.strip():
+            ctx = _parse_stdin_context(raw)
+            utf8_print(f"Parsed context: {json.dumps(ctx, indent=2)}")
+        return
+
+    if "--heatmap" in args:
+        cmd_heatmap()
+        return
+
     if "--config" in args:
         cmd_print_config()
         return
@@ -1679,22 +2108,28 @@ def main():
     # Normal status line mode
     config = load_config()
     cache_ttl = config.get("cache_ttl_seconds", DEFAULT_CACHE_TTL)
-    animate = config.get("animate", True)
+    animate = config.get("animate", False)
 
+    # One-time cleanup of legacy hooks from pre-v2.2.0
     try:
-        sys.stdin.read(65536)
+        _cleanup_hooks()
     except Exception:
         pass
+
+    raw_stdin = ""
+    try:
+        raw_stdin = sys.stdin.read(65536)
+    except Exception:
+        pass
+    stdin_ctx = _parse_stdin_context(raw_stdin)
 
     cache_path = get_cache_path()
     cached = read_cache(cache_path, cache_ttl)
 
     if cached is not None:
-        if animate and "usage" in cached:
-            # Always re-render from cached data — this ensures:
-            # - During processing: fresh animation frame (hue drift + shimmer)
-            # - After stop: clean static render (no frozen shimmer artifacts)
-            line = build_status_line(cached["usage"], cached.get("plan", ""), config)
+        if (animate or stdin_ctx) and "usage" in cached:
+            # Re-render: animation needs new frames, stdin_ctx has live context/model data
+            line = build_status_line(cached["usage"], cached.get("plan", ""), config, stdin_ctx)
         else:
             line = cached.get("line", "")
         line = append_update_indicator(line, config)
@@ -1710,7 +2145,7 @@ def main():
 
     try:
         usage = fetch_usage(token)
-        line = build_status_line(usage, plan, config)
+        line = build_status_line(usage, plan, config, stdin_ctx)
     except urllib.error.HTTPError as e:
         usage = None
         line = f"API error: {e.code}"
@@ -1719,6 +2154,15 @@ def main():
         line = "Usage unavailable"
 
     write_cache(cache_path, line, usage, plan)
+    if usage is not None:
+        _append_history(usage)
+        _update_heatmap(usage)
+        try:
+            stats, milestone = _update_stats()
+            if milestone:
+                line = line + f" {BRIGHT_YELLOW}{milestone}{RESET}"
+        except Exception:
+            pass
     line = append_update_indicator(line, config)
     sys.stdout.buffer.write((line + RESET + "\n").encode("utf-8"))
 
