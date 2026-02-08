@@ -2162,6 +2162,8 @@ def main():
             except OSError:
                 pass
             utf8_print(f"Context format: {BOLD}{val}{RESET}")
+            if val == "tokens":
+                utf8_print(f"{DIM}  Window size is reported by Claude Code (typically 200k){RESET}")
         else:
             utf8_print("Usage: --context-format percent|tokens")
         return
