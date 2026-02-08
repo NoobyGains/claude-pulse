@@ -169,7 +169,7 @@ python claude_status.py --show timer,plan
 python claude_status.py --config
 ```
 
-**Available parts:** `session`, `weekly`, `plan`, `timer`, `extra`, `update`, `model`, `context`, `streak`
+**Available parts:** `session`, `weekly`, `plan`, `timer`, `extra`, `update`, `sparkline`, `runway`, `status_message`, `streak`, `model`, `context`
 
 ### `/pulse` Slash Command
 
@@ -309,6 +309,8 @@ Edit `config.json` directly or use the CLI flags:
   "bar_size": "medium",
   "bar_style": "classic",
   "layout": "standard",
+  "context_format": "percent",
+  "extra_display": "auto",
   "show": {
     "session": true,
     "weekly": true,
@@ -316,6 +318,10 @@ Edit `config.json` directly or use the CLI flags:
     "timer": true,
     "extra": false,
     "update": true,
+    "sparkline": false,
+    "runway": false,
+    "status_message": false,
+    "streak": false,
     "model": true,
     "context": true
   }

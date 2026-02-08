@@ -420,6 +420,11 @@ def _secure_open_write(filepath):
     if filepath.is_symlink():
         filepath.unlink()
     if sys.platform == "win32":
+        # Verify resolved path matches expected path (catch junction/symlink re-creation)
+        resolved = filepath.resolve()
+        expected = filepath.parent.resolve() / filepath.name
+        if resolved != expected:
+            raise OSError(f"Path resolves unexpectedly: {resolved}")
         return open(filepath, "w", encoding="utf-8")
     flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
     if hasattr(os, "O_NOFOLLOW"):
@@ -503,7 +508,8 @@ def _cleanup_hooks():
     except (FileNotFoundError, json.JSONDecodeError):
         # No settings file or invalid — nothing to clean
         try:
-            marker.touch()
+            with _secure_open_write(marker) as f:
+                pass
         except OSError:
             pass
         return
@@ -530,7 +536,8 @@ def _cleanup_hooks():
             json.dump(settings, f, indent=2)
 
     try:
-        marker.touch()
+        with _secure_open_write(marker) as f:
+            pass
     except OSError:
         pass
 
@@ -563,6 +570,7 @@ def get_cache_path():
 
 UPDATE_CHECK_TTL = 3600  # check at most once per hour
 GITHUB_REPO = "NoobyGains/claude-pulse"
+_GIT_PATH = shutil.which("git") or "git"  # resolve once at import time
 
 
 def get_local_commit():
@@ -570,7 +578,7 @@ def get_local_commit():
     repo_dir = Path(__file__).resolve().parent
     try:
         result = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
+            [_GIT_PATH, "rev-parse", "HEAD"],
             capture_output=True, text=True, timeout=5,
             cwd=str(repo_dir),
         )
@@ -590,7 +598,7 @@ def get_remote_commit():
             "User-Agent": "claude-pulse-update-checker",
         })
         with urllib.request.urlopen(req, timeout=3) as resp:
-            return resp.read().decode().strip()
+            return resp.read(1024).decode().strip()  # SHA is ~40 bytes
     except Exception:
         return None
 
@@ -697,7 +705,7 @@ def cmd_update():
     # Verify the git remote points to the expected repository
     try:
         origin_result = subprocess.run(
-            ["git", "remote", "get-url", "origin"],
+            [_GIT_PATH, "remote", "get-url", "origin"],
             capture_output=True, text=True, timeout=5,
             cwd=str(repo_dir),
         )
@@ -754,7 +762,7 @@ def cmd_update():
     utf8_print(f"  Pulling latest from GitHub...")
     try:
         result = subprocess.run(
-            ["git", "pull", "origin", "master"],
+            [_GIT_PATH, "pull", "origin", "master"],
             capture_output=True, text=True, timeout=30,
             cwd=str(repo_dir),
         )
@@ -766,7 +774,7 @@ def cmd_update():
                 utf8_print(f"  Rolling back to previous commit ({pre_pull_commit[:8]})...")
                 try:
                     subprocess.run(
-                        ["git", "reset", "--hard", pre_pull_commit],
+                        [_GIT_PATH, "reset", "--hard", pre_pull_commit],
                         capture_output=True, text=True, timeout=10,
                         cwd=str(repo_dir),
                     )
@@ -787,7 +795,7 @@ def cmd_update():
             if pre_pull_commit:
                 try:
                     log_result = subprocess.run(
-                        ["git", "log", f"{pre_pull_commit}..HEAD", "--oneline", "--no-decorate", "-20"],
+                        [_GIT_PATH, "log", f"{pre_pull_commit}..HEAD", "--oneline", "--no-decorate", "-20"],
                         capture_output=True, text=True, timeout=5,
                         cwd=str(repo_dir),
                     )
@@ -904,7 +912,7 @@ def fetch_usage(token):
         },
     )
     with urllib.request.urlopen(req, timeout=5) as resp:
-        return json.loads(resp.read())
+        return json.loads(resp.read(1_000_000))  # 1 MB max
 
 
 # ---------------------------------------------------------------------------
@@ -1296,7 +1304,7 @@ def _parse_stdin_context(raw_stdin):
     # Model name
     try:
         model = data.get("data", data).get("model", {})
-        display_name = model.get("display_name", "")
+        display_name = _sanitize(model.get("display_name", ""))
         if display_name:
             # Strip "Claude " prefix: "Claude Opus 4.6" → "Opus 4.6"
             short = display_name.replace("Claude ", "").strip()
@@ -1594,7 +1602,7 @@ def build_status_line(usage, plan, config=None, stdin_ctx=None):
     extra_explicitly_hidden = config.get("extra_hidden", False)
     extra_has_credits = extra and extra.get("is_enabled") and (extra.get("monthly_limit") or 0) > 0
     if extra_enabled_by_user or (extra_has_credits and not extra_explicitly_hidden):
-        currency = config.get("currency", "\u00a3")
+        currency = _sanitize(config.get("currency", "\u00a3"))[:5]
         if extra and extra.get("is_enabled"):
             pct = min(extra.get("utilization") or 0, 100)
             used = (extra.get("used_credits") or 0) / 100  # API returns pence/cents
@@ -1660,7 +1668,7 @@ def build_status_line(usage, plan, config=None, stdin_ctx=None):
 
     # Plan name (hidden in minimal layout)
     if layout != "minimal" and show.get("plan", True) and plan:
-        parts.append(plan)
+        parts.append(_sanitize(plan))
 
     # Streak display
     if show.get("streak", True):
@@ -1736,10 +1744,10 @@ def install_status_line():
     with _secure_open_write(settings_path) as f:
         json.dump(settings, f, indent=2)
 
-    print(f"Installed status line to {settings_path}")
-    print(f"Command: {python_cmd} \"{script_path}\"")
-    print("Restart Claude Code to see the status line.")
-    print("Tip: use --animate on for always-on rainbow animation.")
+    utf8_print(f"Installed status line to {settings_path}")
+    utf8_print(f"Command: {python_cmd} \"{script_path}\"")
+    utf8_print("Restart Claude Code to see the status line.")
+    utf8_print("Tip: use --animate on for always-on rainbow animation.")
 
 
 # ---------------------------------------------------------------------------
@@ -1881,7 +1889,7 @@ def cmd_show(parts_str):
     valid = set(DEFAULT_SHOW.keys())
     for part in parts:
         if part not in valid:
-            print(f"Unknown part: {part} (valid: {', '.join(sorted(valid))})")
+            utf8_print(f"Unknown part: {part} (valid: {', '.join(sorted(valid))})")
             return
     for part in parts:
         config["show"][part] = True
@@ -1889,7 +1897,7 @@ def cmd_show(parts_str):
         if part == "extra":
             config.pop("extra_hidden", None)
     save_config(config)
-    print(f"Enabled: {', '.join(parts)}")
+    utf8_print(f"Enabled: {', '.join(parts)}")
 
 
 def cmd_hide(parts_str):
@@ -1899,7 +1907,7 @@ def cmd_hide(parts_str):
     valid = set(DEFAULT_SHOW.keys())
     for part in parts:
         if part not in valid:
-            print(f"Unknown part: {part} (valid: {', '.join(sorted(valid))})")
+            utf8_print(f"Unknown part: {part} (valid: {', '.join(sorted(valid))})")
             return
     for part in parts:
         config["show"][part] = False
@@ -1907,7 +1915,7 @@ def cmd_hide(parts_str):
         if part == "extra":
             config["extra_hidden"] = True
     save_config(config)
-    print(f"Disabled: {', '.join(parts)}")
+    utf8_print(f"Disabled: {', '.join(parts)}")
 
 
 def cmd_print_config():
@@ -2040,7 +2048,7 @@ def main():
         if idx + 1 < len(args):
             cmd_set_theme(args[idx + 1])
         else:
-            print("Usage: --theme <name>")
+            utf8_print("Usage: --theme <name>")
         return
 
     if "--show" in args:
@@ -2048,7 +2056,7 @@ def main():
         if idx + 1 < len(args):
             cmd_show(args[idx + 1])
         else:
-            print("Usage: --show <parts>  (comma-separated: session,weekly,plan,timer,extra,update)")
+            utf8_print("Usage: --show <parts>  (comma-separated: session,weekly,plan,timer,extra,update)")
         return
 
     if "--hide" in args:
@@ -2056,7 +2064,7 @@ def main():
         if idx + 1 < len(args):
             cmd_hide(args[idx + 1])
         else:
-            print("Usage: --hide <parts>  (comma-separated: session,weekly,plan,timer,extra,update)")
+            utf8_print("Usage: --hide <parts>  (comma-separated: session,weekly,plan,timer,extra,update)")
         return
 
     if "--text-color" in args:
@@ -2094,7 +2102,7 @@ def main():
             elif val in ("off", "false", "no", "0"):
                 anim = False
             else:
-                print(f"Unknown value: {val}  (use on or off)")
+                utf8_print(f"Unknown value: {val}  (use on or off)")
                 return
             config = load_config()
             config["animate"] = anim
@@ -2108,7 +2116,7 @@ def main():
             else:
                 utf8_print(f"Animation: {RED}off{RESET}  (static)")
         else:
-            print("Usage: --animate on|off")
+            utf8_print("Usage: --animate on|off")
         return
 
     if "--bar-size" in args:
@@ -2234,7 +2242,7 @@ def main():
     if "--currency" in args:
         idx = args.index("--currency")
         if idx + 1 < len(args):
-            val = args[idx + 1]
+            val = _sanitize(args[idx + 1])[:5]  # strip escapes, max 5 chars
             config = load_config()
             config["currency"] = val
             save_config(config)
@@ -2268,6 +2276,9 @@ def main():
 
     if "--debug-stdin" in args:
         raw = ""
+        if sys.stdin.isatty():
+            utf8_print("No stdin data (interactive terminal). Pipe data or use from Claude Code.")
+            return
         try:
             raw = sys.stdin.read(65536)
         except Exception:
@@ -2315,11 +2326,13 @@ def main():
     # survives across refreshes that don't receive stdin data from Claude Code.
     # Merge new data into persisted data so partial updates (e.g. model but
     # no context_pct during thinking) don't wipe previously known fields.
+    _STDIN_CTX_KEYS = {"model_name", "context_pct", "context_used", "context_limit", "cost_usd"}
     stdin_ctx_path = get_state_dir() / "stdin_ctx.json"
     persisted = {}
     try:
         with open(str(stdin_ctx_path), "r", encoding="utf-8") as f:
-            persisted = json.load(f)
+            raw_persisted = json.load(f)
+            persisted = {k: v for k, v in raw_persisted.items() if k in _STDIN_CTX_KEYS}
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         pass
     if stdin_ctx:
