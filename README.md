@@ -440,9 +440,7 @@ MIT License. See [LICENSE](LICENSE) for details.
 
 If claude-pulse is useful to you, consider buying me a coffee:
 
-<a href="https://buymeacoffee.com/noobygains">
-  <img src="https://img.buymeacoffee.com/button-api/?text=Buy me a coffee&emoji=☕&slug=noobygains&button_colour=FFDD00&font_colour=000000&font_family=Cookie&outline_colour=000000&coffee_colour=ffffff" />
-</a>
+[![Buy Me A Coffee](https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png)](https://buymeacoffee.com/noobygains)
 
 ---
 
