@@ -85,7 +85,7 @@ Question: "Pick a theme from the preview above"
 Header: "Theme"
 multiSelect: false
 Options:
-  - "rainbow" — "Animated full-spectrum colours with white shimmer"
+  - "rainbow" — "Full-spectrum colours that flow across the status bar"
   - "default" — "Classic green → yellow → red traffic-light"
   - "ocean" — "Cool cyan → blue → magenta"
   - "More themes..." — "See all 10 themes"
@@ -138,7 +138,7 @@ Header: "Text colour"
 multiSelect: false
 Options:
   - "<theme recommendation> (Recommended)" — "<reason from above>"
-  - "White" — "Neutral light grey — works with any theme and shows the shimmer"
+  - "White" — "Neutral light grey — works with any theme"
   - "Default" — "Your terminal's default text colour"
   - "<a contrasting option>" — pick one that contrasts with the theme: cyan, magenta, green, yellow, etc.
 ```
@@ -150,17 +150,17 @@ If they pick "Default", use `--text-color default`.
 **Step 5:** Ask about animation:
 
 ```
-Question: "Enable rainbow animation?"
+Question: "Enable rainbow animation on the status bar?"
 Header: "Animation"
 multiSelect: false
 Options:
-  - "On (Recommended)" — "Rainbow colours scroll across the status bar while Claude is active"
-  - "Off" — "Static colours, no animation"
+  - "Off (Recommended)" — "Static theme colours, clean and simple"
+  - "On" — "Rainbow colours flow across the status bar while Claude is active"
 ```
 
-Apply with `--animate on|off`. Animation = rainbow colours always flowing across the status bar. No hooks needed — it runs on every status line refresh.
+Apply with `--animate on|off`. Animation overlays rainbow colours on any theme. It runs on every status line refresh — no hooks or background processes.
 
-**Step 6b:** Ask about bar size:
+**Step 6:** Ask about bar size:
 
 ```
 Question: "How wide should the progress bars be?"
@@ -174,7 +174,7 @@ Options:
 
 Apply with `--bar-size <small|medium|large>`.
 
-**Step 6c:** Ask about context window:
+**Step 7:** Ask about context window:
 
 ```
 Question: "Show context window usage on the status bar?"
@@ -187,7 +187,7 @@ Options:
 
 If "On", run `--show context`. If "Off", run `--hide context`.
 
-**Step 7:** Check extra credits status by running `python "SCRIPT_PATH" --config` silently and checking the "Extra Credits" section.
+**Step 8:** Check extra credits status by running `python "SCRIPT_PATH" --config` silently and checking the "Extra Credits" section.
 
 If credits are **active** (Status: active), ask:
 
@@ -218,7 +218,7 @@ Options:
 
 If "Dynamic", no command needed (default). If "Hide", run `--hide extra`.
 
-**Step 8:** Ask about currency (only if they chose "Dynamic" or "Always show"):
+**Step 9:** Ask about currency (only if they chose "Dynamic" or "Always show"):
 
 ```
 Question: "What currency symbol for your extra credits?"
@@ -234,8 +234,8 @@ The user can also pick "Other" and type any symbol (e.g. ¥, ₹, kr, CHF, etc.)
 
 Apply with `--currency <symbol>`.
 
-**Step 9:** Confirm everything:
-"All set! Your status line is now using **<theme>** with **<text colour>** text and animation **<on/off>**. It shows session usage, weekly usage, context window, and model name by default. It'll update on the next refresh or restart Claude Code to see it immediately."
+**Step 10:** Confirm everything:
+"All set! Your status line is now using **<theme>** with **<text colour>** text and animation **<on/off>**. It shows session usage, weekly usage, context window, model name, and plan tier by default. It'll update on the next refresh or restart Claude Code to see it immediately."
 
 If credits were shown, also mention: "Your bonus credits will appear as **Extra ━━━━ <currency>used/<currency>limit**."
 
