@@ -24,7 +24,7 @@
 <p align="center">
   <img src="assets/claude-update.gif" alt="Claude Code update notification demo" width="700">
   <br>
-  <sub>Claude Code update indicator — appears when your CLI is outdated (just a notification, run <code>claude update</code> yourself)</sub>
+  <sub>Claude Code update indicator — appears when a Claude Code update is available (just a notification, run <code>claude update</code> yourself)</sub>
 </p>
 
 ---
@@ -213,7 +213,7 @@ python claude_status.py --update
 
 ### Claude Code Update Indicator
 
-claude-pulse also checks if your Claude Code CLI is outdated by querying the npm registry once per hour (cached, 3-second timeout). If a newer version is available, a bright yellow `↑ Claude Update` indicator appears alongside your status line.
+claude-pulse also checks if a Claude Code update is available by querying the npm registry once per hour (cached, 3-second timeout). If a newer version is available, a bright yellow `↑ Claude Update` indicator appears alongside your status line.
 
 - **Notification only** — this is just an indicator; `/pulse update` has no effect on Claude Code
 - **Automatic** — checks `claude --version` against the latest npm release
