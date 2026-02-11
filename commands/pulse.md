@@ -62,6 +62,12 @@ If $ARGUMENTS matches `layout <name>` (where name is `standard`, `compact`, `min
 -> Run `--layout <name>` directly.
 -> Confirm: "Layout set to **<name>**. The status line will update on the next refresh."
 
+If $ARGUMENTS matches `preset <name>` or `minimal` or `default preset`:
+-> If $ARGUMENTS is just `minimal`, run `python "SCRIPT_PATH" --preset minimal`
+-> Otherwise extract the preset name and run `--preset <name>`
+-> Show the output including the preview line.
+-> Explain: "This preset configures bar size, layout, and visibility in one step. Use `/pulse default preset` to restore defaults."
+
 If $ARGUMENTS is `update`:
 -> Run `python "SCRIPT_PATH" --update` and show the output.
 -> After a successful update, remind the user to restart Claude Code to use the new version.

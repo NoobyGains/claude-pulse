@@ -190,6 +190,36 @@ DEFAULT_SHOW = {
     "weekly_timer": True,
 }
 
+# Presets — one-command config bundles
+PRESETS = {
+    "minimal": {
+        "description": "Compact bar that leaves room for Claude Code notifications",
+        "config": {
+            "bar_size": "small",
+            "layout": "compact",
+            "max_width": 60,
+        },
+        "show_overrides": {
+            "plan": False,
+            "model": False,
+            "context": False,
+            "sparkline": False,
+            "runway": False,
+            "status_message": False,
+            "streak": False,
+        },
+    },
+    "default": {
+        "description": "Standard layout with all sections visible",
+        "config": {
+            "bar_size": DEFAULT_BAR_SIZE,
+            "layout": DEFAULT_LAYOUT,
+            "max_width": DEFAULT_MAX_WIDTH_PCT,
+        },
+        "show_overrides": dict(DEFAULT_SHOW),
+    },
+}
+
 # Sparkline and history constants
 SPARKLINE_CHARS = "\u2581\u2582\u2583\u2584\u2585\u2586\u2587\u2588"
 HISTORY_MAX_AGE = 86400  # 24 hours in seconds
@@ -1887,6 +1917,35 @@ def build_status_line(usage, plan, config=None, stdin_ctx=None):
         if text_color_code:
             line = apply_text_color(line, text_color_code)
 
+    # Final truncation — clip visible characters to effective terminal width
+    # so the line never spills into Claude Code's side notification area
+    try:
+        term_width = shutil.get_terminal_size((120, 24)).columns
+        max_width_pct = config.get("max_width", DEFAULT_MAX_WIDTH_PCT)
+        if not (isinstance(max_width_pct, int) and 20 <= max_width_pct <= 100):
+            max_width_pct = DEFAULT_MAX_WIDTH_PCT
+        max_visible = (term_width * max_width_pct) // 100
+        visible_count = 0
+        cut = None
+        i = 0
+        while i < len(line):
+            if line[i] == "\033":
+                # Skip ANSI escape sequence
+                j = i + 1
+                while j < len(line) and j < i + 25 and line[j] not in "ABCDEFGHJKSTfmnsulh":
+                    j += 1
+                i = j + 1 if j < len(line) else j
+                continue
+            visible_count += 1
+            if visible_count > max_visible:
+                cut = i
+                break
+            i += 1
+        if cut is not None:
+            line = line[:cut] + RESET
+    except Exception:
+        pass
+
     return line
 
 
@@ -2108,6 +2167,41 @@ def cmd_hide(parts_str):
     utf8_print(f"Disabled: {', '.join(parts)}")
 
 
+def cmd_preset(name):
+    """Apply a named preset configuration."""
+    if name not in PRESETS:
+        utf8_print(f"Unknown preset: {_sanitize(name)}")
+        utf8_print(f"\nAvailable presets:")
+        for pname, pdata in PRESETS.items():
+            utf8_print(f"  {BOLD}{pname:<10}{RESET} {pdata['description']}")
+        return
+    preset = PRESETS[name]
+    config = load_config()
+    # Apply config overrides (bar_size, layout, max_width, etc.)
+    for key, val in preset["config"].items():
+        config[key] = val
+    # Apply show/hide overrides — preserve update and claude_update
+    for key, val in preset["show_overrides"].items():
+        config["show"][key] = val
+    # Always keep update notifications on
+    config["show"]["update"] = True
+    config["show"]["claude_update"] = True
+    save_config(config)
+    try:
+        os.remove(get_cache_path())
+    except OSError:
+        pass
+    utf8_print(f"Preset {BOLD}{name}{RESET} applied!")
+    utf8_print(f"  {preset['description']}")
+    # Show a preview
+    demo_usage = {
+        "five_hour": {"utilization": 42, "resets_at": None},
+        "seven_day": {"utilization": 67, "resets_at": None},
+    }
+    line = build_status_line(demo_usage, "Max 20x", config)
+    utf8_print(f"  Preview: {line}")
+
+
 def cmd_print_config():
     """Print the current configuration summary."""
     config = load_config()
@@ -2246,6 +2340,16 @@ def main():
 
     if "--install" in args:
         install_status_line()
+        return
+
+    if "--preset" in args:
+        idx = args.index("--preset")
+        if idx + 1 < len(args):
+            cmd_preset(args[idx + 1].lower())
+        else:
+            utf8_print("Usage: --preset <name>\n")
+            for pname, pdata in PRESETS.items():
+                utf8_print(f"  {BOLD}{pname:<10}{RESET} {pdata['description']}")
         return
 
     if "--show-all" in args:

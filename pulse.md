@@ -73,6 +73,12 @@ If $ARGUMENTS matches `weekly-timer-prefix <text>` or `reset-prefix <text>`:
 -> Confirm: "Weekly timer prefix set to **<text>**."
 -> If empty string, confirm: "Weekly timer prefix removed. Reset time will show without a prefix."
 
+If $ARGUMENTS matches `preset <name>` or `minimal` or `default preset`:
+-> If $ARGUMENTS is just `minimal`, run `python "[REPLACE_WITH_YOUR_PATH]/claude_status.py" --preset minimal`
+-> Otherwise extract the preset name and run `--preset <name>`
+-> Show the output including the preview line.
+-> Explain: "This preset configures bar size, layout, and visibility in one step. Use `/pulse default preset` to restore defaults."
+
 If $ARGUMENTS is `update`:
 -> Run `python "[REPLACE_WITH_YOUR_PATH]/claude_status.py" --update` and show the output.
 -> After a successful update, remind the user to restart Claude Code to use the new version.
