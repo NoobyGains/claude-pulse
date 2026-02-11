@@ -1,11 +1,10 @@
 {
   "cache_ttl_seconds": 60,
   "theme": "default",
-  "rainbow_bars": true,
   "show": {
     "session": true,
     "weekly": true,
-    "plan": true,
+    "plan": false,
     "timer": true,
     "extra": false
   }
