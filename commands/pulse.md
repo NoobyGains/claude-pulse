@@ -46,9 +46,13 @@ If $ARGUMENTS matches `currency <symbol>` (e.g. `currency £`, `currency €`, `
 -> Run `--currency <symbol>` directly.
 -> Confirm: "Currency set to **<symbol>**. Extra usage will display as <symbol>amount."
 
-If $ARGUMENTS matches `bar-size <size>` or `bars <size>` (where size is `small`, `medium`, or `large`):
+If $ARGUMENTS matches `bar-size <size>` or `bars <size>` (where size is `small`, `small-medium`, `medium`, `medium-large`, or `large`):
 -> Run `--bar-size <size>` directly.
 -> Confirm: "Bar size set to **<size>**. The status line will update on the next refresh."
+
+If $ARGUMENTS matches `max-width <number>` (where number is 20–100):
+-> Run `--max-width <number>` directly.
+-> Confirm: "Max width set to **<number>%** of terminal. The status line will update on the next refresh."
 
 If $ARGUMENTS matches `bar-style <name>` or `style <name>` (where name is `classic`, `block`, `shade`, `pipe`, `dot`, `square`, or `star`):
 -> Run `--bar-style <name>` directly.
@@ -169,10 +173,12 @@ multiSelect: false
 Options:
   - "Medium (Recommended)" — "8 characters — balanced default"
   - "Small" — "4 characters — compact, more room for text"
+  - "Small-Medium" — "6 characters — between compact and balanced"
+  - "Medium-Large" — "10 characters — slightly wider than default"
   - "Large" — "12 characters — wide bars, more visual detail"
 ```
 
-Apply with `--bar-size <small|medium|large>`.
+Apply with `--bar-size <small|small-medium|medium|medium-large|large>`.
 
 **Step 7:** Ask about context window:
 
