@@ -150,6 +150,28 @@ python claude_status.py --bar-size large          # ━━━━━━━━━�
 
 The bars automatically clamp to your terminal width so they never wrap to the next line.
 
+### Presets
+
+Apply a full configuration in one command. Useful when Claude Code notifications (MCP errors, migration notices) overlap with the status bar:
+
+```bash
+python claude_status.py --preset minimal    # compact bar, hides plan/model/context
+python claude_status.py --preset default    # restore standard layout
+```
+
+Or via the slash command:
+```
+/pulse minimal
+/pulse default preset
+```
+
+| Preset | What it does |
+|--------|-------------|
+| `minimal` | Small bars, compact labels (S/W), hides plan + model + context, 60% max width |
+| `default` | Standard bars, full labels, all sections visible, 80% max width |
+
+The `minimal` preset is recommended if your terminal is narrow or Claude Code frequently shows notifications beside the status line.
+
 ### Extra Credits (Auto-detected)
 
 When Claude gifts you bonus credits (e.g. to try a new model), they **automatically appear** on your status line:
@@ -390,6 +412,7 @@ Edit `config.json` directly or use the CLI flags:
 | `--hide <parts>` | Disable comma-separated parts |
 | `--animate on\|off` | Toggle rainbow animation (default: off) |
 | `--text-color <name>` | Set the text colour for labels/percentages (default: auto) |
+| `--preset <name>` | Apply a preset config bundle: `minimal`, `default` |
 | `--bar-size <size>` | Set progress bar width: 4–12 chars (default: medium) |
 | `--max-width <20-100>` | Max status line width as % of terminal (default: 80) |
 | `--bar-style <name>` | Set bar character style (default: classic) |
@@ -466,7 +489,7 @@ Change how labels, bars, and percentages are arranged:
 | Layout | Example |
 |--------|---------|
 | `standard` | `Session ━━━━━━━━ 42% 3h 12m \| Weekly ━━━━━━━━ 67% \| Max 20x` |
-| `compact` | `S ━━━━━━━━ 42% 3h 12m \| W ━━━━━━━━ 67% \| Max 20x` |
+| `compact` | `D ━━━━━━━━ 42% 3h 12m \| W ━━━━━━━━ 67% \| Max 20x` |
 | `minimal` | `━━━━━━━━ 42% \| ━━━━━━━━ 67%` |
 | `percent-first` | `42% ━━━━━━━━ 3h 12m \| 67% ━━━━━━━━ \| Max 20x` |
 
