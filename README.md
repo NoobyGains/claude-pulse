@@ -138,12 +138,14 @@ python claude_status.py --theme ocean
 
 ### Configurable Bar Size
 
-Choose how wide the progress bars appear — small (4 chars), medium (8 chars, default), or large (12 chars):
+Choose how wide the progress bars appear — from small (4 chars) to large (12 chars), with medium (8 chars) as default:
 
 ```bash
-python claude_status.py --bar-size small    # ━━━━
-python claude_status.py --bar-size medium   # ━━━━━━━━
-python claude_status.py --bar-size large    # ━━━━━━━━━━━━
+python claude_status.py --bar-size small          # ━━━━
+python claude_status.py --bar-size small-medium   # ━━━━━━
+python claude_status.py --bar-size medium         # ━━━━━━━━
+python claude_status.py --bar-size medium-large   # ━━━━━━━━━━
+python claude_status.py --bar-size large          # ━━━━━━━━━━━━
 ```
 
 The bars automatically clamp to your terminal width so they never wrap to the next line.
@@ -386,7 +388,8 @@ Edit `config.json` directly or use the CLI flags:
 | `--hide <parts>` | Disable comma-separated parts |
 | `--animate on\|off` | Toggle rainbow animation (default: off) |
 | `--text-color <name>` | Set the text colour for labels/percentages (default: auto) |
-| `--bar-size <small\|medium\|large>` | Set progress bar width: 4, 8, or 12 chars (default: medium) |
+| `--bar-size <size>` | Set progress bar width: 4–12 chars (default: medium) |
+| `--max-width <20-100>` | Max status line width as % of terminal (default: 80) |
 | `--bar-style <name>` | Set bar character style (default: classic) |
 | `--layout <name>` | Set text layout (default: standard) |
 | `--currency <symbol>` | Set currency symbol for extra credits (default: £) |
