@@ -18,7 +18,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 DEFAULT_CACHE_TTL = 60
-BAR_SIZES = {"small": 4, "medium": 8, "large": 12}
+BAR_SIZES = {"small": 4, "small-medium": 6, "medium": 8, "medium-large": 10, "large": 12}
 DEFAULT_BAR_SIZE = "medium"
 FILL = "\u2501"   # ━ (thin horizontal bar)
 EMPTY = "\u2500"   # ─ (thin line)
