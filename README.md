@@ -289,13 +289,15 @@ cd claude-pulse
 
 ```bash
 python claude_status.py --install
+
+# Or: python3 claude_status.py --install
 ```
 
 This adds the status line command to your `~/.claude/settings.json`.
 
 #### 3. Restart Claude Code
 
-Close and reopen Claude Code. The status bar appears at the bottom of your terminal.
+You may need to close and reopen Claude Code. The status bar appears at the bottom of your terminal.
 
 That's it. No virtual environments, no dependencies, no build steps.
 
@@ -305,7 +307,7 @@ Copy the pulse command file to your Claude Code commands directory:
 
 ```bash
 # Linux/Mac
-cp pulse.md ~/.claude/commands/pulse.md
+mkdir -p ~/.claude/commands && cp pulse.md ~/.claude/commands/pulse.md
 
 # Windows
 copy pulse.md %USERPROFILE%\.claude\commands\pulse.md
