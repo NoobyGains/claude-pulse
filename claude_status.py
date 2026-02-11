@@ -176,7 +176,7 @@ THEME_TEXT_DEFAULTS = {
 DEFAULT_SHOW = {
     "session": True,
     "weekly": True,
-    "plan": True,
+    "plan": False,
     "timer": True,
     "extra": False,
     "update": True,
@@ -210,11 +210,18 @@ PRESETS = {
         },
     },
     "default": {
-        "description": "Standard layout with all sections visible",
+        "description": "Factory reset — all settings back to defaults",
         "config": {
+            "theme": "default",
+            "text_color": "auto",
+            "animate": False,
             "bar_size": DEFAULT_BAR_SIZE,
+            "bar_style": DEFAULT_BAR_STYLE,
             "layout": DEFAULT_LAYOUT,
             "max_width": DEFAULT_MAX_WIDTH_PCT,
+            "context_format": "percent",
+            "extra_display": "auto",
+            "currency": "\u00a3",
         },
         "show_overrides": dict(DEFAULT_SHOW),
     },
