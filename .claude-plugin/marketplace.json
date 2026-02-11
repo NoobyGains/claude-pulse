@@ -9,7 +9,7 @@
   "plugins": [
     {
       "name": "claude-pulse",
-      "source": ".",
+      "source": "./",
       "description": "Live usage status bar — session limits, weekly usage, 10 themes, shimmer animations, and auto-updates",
       "version": "1.9.0",
       "homepage": "https://github.com/NoobyGains/claude-pulse"
