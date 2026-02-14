@@ -593,20 +593,22 @@ def check_for_update():
     state_dir = get_state_dir()
     update_cache = state_dir / "update_check.json"
 
-    # Read cached result
+    # Get local commit first so we can validate cache
+    local = get_local_commit()
+    if not local:
+        return None  # not a git install, skip silently
+
+    # Read cached result — skip if local version changed (e.g. after update)
     try:
         with open(update_cache, "r", encoding="utf-8") as f:
             cached = json.load(f)
-        if time.time() - cached.get("timestamp", 0) < UPDATE_CHECK_TTL:
+        if (time.time() - cached.get("timestamp", 0) < UPDATE_CHECK_TTL
+                and cached.get("local") == local[:8]):
             return cached.get("update_available", False)
     except (FileNotFoundError, json.JSONDecodeError, KeyError):
         pass
 
     # Perform the check
-    local = get_local_commit()
-    if not local:
-        return None  # not a git install, skip silently
-
     remote = get_remote_commit()
     if not remote:
         return None  # network error, skip silently
@@ -653,16 +655,7 @@ def check_claude_code_update():
     state_dir = get_state_dir()
     update_cache = state_dir / "claude_code_update.json"
 
-    # Read cached result
-    try:
-        with open(update_cache, "r", encoding="utf-8") as f:
-            cached = json.load(f)
-        if time.time() - cached.get("timestamp", 0) < UPDATE_CHECK_TTL:
-            return cached.get("update_available", False)
-    except (FileNotFoundError, json.JSONDecodeError, KeyError):
-        pass
-
-    # Get installed version
+    # Get installed version first so we can validate cache
     try:
         result = subprocess.run(
             [_CLAUDE_PATH, "--version"],
@@ -674,6 +667,16 @@ def check_claude_code_update():
         local_version = result.stdout.strip().split()[0]
     except Exception:
         return None
+
+    # Read cached result — skip if local version changed (e.g. after claude update)
+    try:
+        with open(update_cache, "r", encoding="utf-8") as f:
+            cached = json.load(f)
+        if (time.time() - cached.get("timestamp", 0) < UPDATE_CHECK_TTL
+                and cached.get("local") == _sanitize(local_version)):
+            return cached.get("update_available", False)
+    except (FileNotFoundError, json.JSONDecodeError, KeyError):
+        pass
 
     # Get latest version from npm registry
     try:
@@ -1924,8 +1927,15 @@ def build_status_line(usage, plan, config=None, stdin_ctx=None):
         if text_color_code:
             line = apply_text_color(line, text_color_code)
 
-    # Final truncation — clip visible characters to effective terminal width
-    # so the line never spills into Claude Code's side notification area
+    return line
+
+
+def _truncate_line(line, config):
+    """Clip visible characters to effective terminal width.
+
+    Applied as the very last step before output so the line never spills
+    into Claude Code's side notification area or wraps to the next line.
+    """
     try:
         term_width = shutil.get_terminal_size((120, 24)).columns
         max_width_pct = config.get("max_width", DEFAULT_MAX_WIDTH_PCT)
@@ -1952,7 +1962,6 @@ def build_status_line(usage, plan, config=None, stdin_ctx=None):
             line = line[:cut] + RESET
     except Exception:
         pass
-
     return line
 
 
@@ -2761,6 +2770,7 @@ def main():
             line = cached.get("line", "")
         line = append_update_indicator(line, config)
         line = append_claude_update_indicator(line, config)
+        line = _truncate_line(line, config)
         sys.stdout.buffer.write((line + RESET + "\n").encode("utf-8"))
         return
 
@@ -2833,6 +2843,7 @@ def main():
             pass
     line = append_update_indicator(line, config)
     line = append_claude_update_indicator(line, config)
+    line = _truncate_line(line, config)
     sys.stdout.buffer.write((line + RESET + "\n").encode("utf-8"))
 
 
