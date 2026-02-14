@@ -552,6 +552,42 @@ _GIT_PATH = shutil.which("git") or "git"  # resolve once at import time
 _CLAUDE_PATH = shutil.which("claude")  # resolve once at import time
 
 
+def _detect_status_bar_conflict():
+    """Detect conditions where Claude Code's status bar is too crowded for pulse.
+
+    When Claude Code migrates from npm to native installer, it shows a long
+    notification that fills the entire status bar area, causing pulse output
+    to wrap.  Suppress output until the user resolves the migration.
+    """
+    if not _CLAUDE_PATH:
+        return False
+    try:
+        if sys.platform == "win32":
+            appdata = os.environ.get("APPDATA", "")
+            if not appdata:
+                return False
+            npm_prefix = os.path.normcase(os.path.join(appdata, "npm"))
+            # If running from npm, there's no migration notification
+            if os.path.normcase(_CLAUDE_PATH).startswith(npm_prefix + os.sep):
+                return False
+            # Native installer active — check for stale npm package
+            npm_pkg = os.path.join(appdata, "npm", "node_modules",
+                                   "@anthropic-ai", "claude-code")
+            return os.path.isdir(npm_pkg)
+        elif sys.platform == "darwin":
+            for prefix in ("/usr/local", "/opt/homebrew"):
+                npm_pkg = os.path.join(prefix, "lib", "node_modules",
+                                       "@anthropic-ai", "claude-code")
+                if os.path.isdir(npm_pkg):
+                    npm_bin = prefix + "/bin/"
+                    if _CLAUDE_PATH.startswith(npm_bin):
+                        return False  # running from npm, no conflict
+                    return True
+    except Exception:
+        pass
+    return False
+
+
 def get_local_commit():
     """Get the local git HEAD commit hash (short). Returns None on failure."""
     repo_dir = Path(__file__).resolve().parent
@@ -2724,6 +2760,11 @@ def main():
     config = load_config()
     cache_ttl = config.get("cache_ttl_seconds", DEFAULT_CACHE_TTL)
     animate = config.get("animate", False)
+
+    # Suppress output when Claude Code's status bar is filled by a notification
+    # (e.g. npm → native installer migration) that would cause wrapping
+    if _detect_status_bar_conflict():
+        return
 
     # One-time cleanup of legacy hooks from pre-v2.2.0
     try:
