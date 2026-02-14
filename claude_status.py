@@ -558,19 +558,17 @@ def _detect_status_bar_conflict():
     When Claude Code migrates from npm to native installer, it shows a long
     notification that fills the entire status bar area, causing pulse output
     to wrap.  Suppress output until the user resolves the migration.
+
+    Recent npm versions also show this notification to encourage migration,
+    so we check for the npm package presence regardless of which binary
+    ``shutil.which("claude")`` resolves to (the npm shim may shadow the
+    native binary on PATH).
     """
-    if not _CLAUDE_PATH:
-        return False
     try:
         if sys.platform == "win32":
             appdata = os.environ.get("APPDATA", "")
             if not appdata:
                 return False
-            npm_prefix = os.path.normcase(os.path.join(appdata, "npm"))
-            # If running from npm, there's no migration notification
-            if os.path.normcase(_CLAUDE_PATH).startswith(npm_prefix + os.sep):
-                return False
-            # Native installer active — check for stale npm package
             npm_pkg = os.path.join(appdata, "npm", "node_modules",
                                    "@anthropic-ai", "claude-code")
             return os.path.isdir(npm_pkg)
@@ -579,9 +577,6 @@ def _detect_status_bar_conflict():
                 npm_pkg = os.path.join(prefix, "lib", "node_modules",
                                        "@anthropic-ai", "claude-code")
                 if os.path.isdir(npm_pkg):
-                    npm_bin = prefix + "/bin/"
-                    if _CLAUDE_PATH.startswith(npm_bin):
-                        return False  # running from npm, no conflict
                     return True
     except Exception:
         pass
