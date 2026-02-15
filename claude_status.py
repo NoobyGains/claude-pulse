@@ -417,17 +417,35 @@ def _atomic_json_write(filepath, data, indent=2):
 # ---------------------------------------------------------------------------
 
 def get_config_path():
-    """Return path to user config — stored alongside cache, outside the repo."""
+    """Return path to user config — stored under XDG_CONFIG_HOME, outside the repo."""
     if sys.platform == "win32":
         base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
     else:
-        base = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
+        base = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
     config_dir = base / "claude-status"
     _secure_mkdir(config_dir)
     return config_dir / "config.json"
 
 
+def _migrate_config_from_cache():
+    """One-time migration: move config.json from ~/.cache to ~/.config."""
+    new_path = get_config_path()
+    if new_path.exists():
+        return  # already migrated or user created config at new location
+    # Build the old path (XDG_CACHE_HOME based)
+    if sys.platform == "win32":
+        return  # Windows uses LOCALAPPDATA for both; no migration needed
+    old_base = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
+    old_path = old_base / "claude-status" / "config.json"
+    if old_path.exists():
+        try:
+            shutil.move(str(old_path), str(new_path))
+        except OSError:
+            pass
+
+
 def load_config():
+    _migrate_config_from_cache()
     user_path = get_config_path()
     repo_path = Path(__file__).parent / "config.json"
 
@@ -2227,12 +2245,9 @@ def cmd_preset(name):
     # Apply config overrides (bar_size, layout, max_width, etc.)
     for key, val in preset["config"].items():
         config[key] = val
-    # Apply show/hide overrides — preserve update and claude_update
+    # Apply show/hide overrides — respect user preferences for update notifications
     for key, val in preset["show_overrides"].items():
         config["show"][key] = val
-    # Always keep update notifications on
-    config["show"]["update"] = True
-    config["show"]["claude_update"] = True
     save_config(config)
     try:
         os.remove(get_cache_path())
