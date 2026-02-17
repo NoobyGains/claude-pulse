@@ -36,11 +36,27 @@ BAR_STYLES = {
 }
 DEFAULT_BAR_STYLE = "classic"
 
+# Gradient bar styles — each maps to (gradient_string, empty_char).
+# gradient_string: chars from empty to full; gives (len - 1) sub-levels per position.
+# empty_char: visible placeholder for unfilled slots (rendered DIM).
+BAR_GRADIENT_STYLES = {
+    "braille": ("\u28C0\u28C4\u28E4\u28E6\u28F6\u28F7\u28FF", "\u28C0"),
+    #  gradient: ⣀     ⣄     ⣤     ⣦     ⣶     ⣷     ⣿   empty: ⣀
+}
+
+# Auto-register gradient styles into BAR_STYLES (last char = filled, empty_char)
+for _gname, (_gchars, _gempty) in BAR_GRADIENT_STYLES.items():
+    BAR_STYLES[_gname] = (_gchars[-1], _gempty)
+
 # Precompute all bar characters for rainbow detection
 ALL_BAR_CHARS = set()
 for _f, _e in BAR_STYLES.values():
     ALL_BAR_CHARS.add(_f)
     ALL_BAR_CHARS.add(_e)
+for _gchars, _gempty in BAR_GRADIENT_STYLES.values():
+    for _gc in _gchars:
+        ALL_BAR_CHARS.add(_gc)
+
 
 # Text layouts — controls how labels, bars, and percentages are arranged
 LAYOUTS = ("standard", "compact", "minimal", "percent-first")
@@ -1150,8 +1166,30 @@ def make_bar(pct, theme=None, plain=False, width=None, bar_style=None):
         theme = THEMES["default"]
     if width is None:
         width = BAR_SIZES[DEFAULT_BAR_SIZE]
-    fill_char, empty_char = BAR_STYLES.get(bar_style or DEFAULT_BAR_STYLE, BAR_STYLES[DEFAULT_BAR_STYLE])
+    style = bar_style or DEFAULT_BAR_STYLE
     pct = pct or 0
+
+    # Gradient styles: sub-character fill granularity
+    gradient_data = BAR_GRADIENT_STYLES.get(style)
+    if gradient_data is not None:
+        gradient, empty_char = gradient_data
+        levels = len(gradient) - 1  # sub-levels per char (e.g. 6 for braille)
+        total_steps = width * levels
+        filled_steps = round(pct / 100 * total_steps)
+        filled_steps = max(0, min(total_steps, filled_steps))
+        full = filled_steps // levels
+        partial = filled_steps % levels
+        empty = width - full - (1 if partial else 0)
+        bar_fill = gradient[-1] * full
+        bar_partial = gradient[partial] if partial else ""
+        bar_empty = empty_char * empty
+        if plain:
+            return f"{bar_fill}{bar_partial}{DIM}{bar_empty}{RESET}"
+        colour = bar_colour(pct, theme)
+        return f"{colour}{bar_fill}{bar_partial}{DIM}{bar_empty}{RESET}"
+
+    # Standard binary fill
+    fill_char, empty_char = BAR_STYLES.get(style, BAR_STYLES[DEFAULT_BAR_STYLE])
     filled = round(pct / 100 * width)
     filled = max(0, min(width, filled))
     if plain:
@@ -2295,7 +2333,11 @@ def cmd_print_config():
     utf8_print(f"  Max width: {mw}% of terminal")
     bst = config.get("bar_style", DEFAULT_BAR_STYLE)
     bst_chars = BAR_STYLES.get(bst, BAR_STYLES[DEFAULT_BAR_STYLE])
-    utf8_print(f"  Bar style: {bst} ({bst_chars[0]}{bst_chars[1]})")
+    if bst in BAR_GRADIENT_STYLES:
+        _g = BAR_GRADIENT_STYLES[bst][0]
+        utf8_print(f"  Bar style: {bst} ({_g[0]}..{_g[-1]})")
+    else:
+        utf8_print(f"  Bar style: {bst} ({bst_chars[0]}{bst_chars[1]})")
     ly = config.get("layout", DEFAULT_LAYOUT)
     utf8_print(f"  Layout:    {ly}")
     cf = config.get("context_format", "percent")
@@ -2586,12 +2628,28 @@ def main():
             except OSError:
                 pass
             fill_ch, empty_ch = BAR_STYLES[val]
-            demo = f"{GREEN}{fill_ch * 4}{DIM}{empty_ch * 4}{RESET}"
+            _grad_data = BAR_GRADIENT_STYLES.get(val)
+            if _grad_data:
+                _grad = _grad_data[0]
+                n = len(_grad)
+                colored = "".join(_grad[n - 1 - i * (n - 1) // 7] for i in range(4))
+                dimmed = "".join(_grad[n - 1 - (i + 4) * (n - 1) // 7] for i in range(4))
+                demo = f"{GREEN}{colored}{DIM}{dimmed}{RESET}"
+            else:
+                demo = f"{GREEN}{fill_ch * 4}{DIM}{empty_ch * 4}{RESET}"
             utf8_print(f"Bar style: {BOLD}{val}{RESET}  {demo}")
         else:
             utf8_print(f"Usage: --bar-style <name>\n")
             for name, (fc, ec) in BAR_STYLES.items():
-                demo = f"{GREEN}{fc * 4}{DIM}{ec * 4}{RESET}"
+                _grad_data = BAR_GRADIENT_STYLES.get(name)
+                if _grad_data:
+                    _grad = _grad_data[0]
+                    n = len(_grad)
+                    colored = "".join(_grad[n - 1 - i * (n - 1) // 7] for i in range(4))
+                    dimmed = "".join(_grad[n - 1 - (i + 4) * (n - 1) // 7] for i in range(4))
+                    demo = f"{GREEN}{colored}{DIM}{dimmed}{RESET}"
+                else:
+                    demo = f"{GREEN}{fc * 4}{DIM}{ec * 4}{RESET}"
                 utf8_print(f"  {name:<10} {demo}")
         return
 

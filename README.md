@@ -473,11 +473,12 @@ Change the visual appearance of the progress bars:
 | `dot` | ● | ○ | Round dots |
 | `square` | ■ | □ | Filled/hollow squares |
 | `star` | ★ | ☆ | Stars |
+| `braille` | ⣿ | ⣀ | Smooth gradient (7 levels per char) |
 
 ```bash
 python claude_status.py --bar-style classic
 python claude_status.py --bar-style block
-python claude_status.py --bar-style dot
+python claude_status.py --bar-style braille
 ```
 
 Bar styles work with all themes, sizes, and animations.

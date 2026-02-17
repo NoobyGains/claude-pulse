@@ -54,7 +54,7 @@ If $ARGUMENTS matches `max-width <number>` (where number is 20–100):
 -> Run `--max-width <number>` directly.
 -> Confirm: "Max width set to **<number>%** of terminal. The status line will update on the next refresh."
 
-If $ARGUMENTS matches `bar-style <name>` or `style <name>` (where name is `classic`, `block`, `shade`, `pipe`, `dot`, `square`, or `star`):
+If $ARGUMENTS matches `bar-style <name>` or `style <name>` (where name is `classic`, `block`, `shade`, `pipe`, `dot`, `square`, `star`, or `braille`):
 -> Run `--bar-style <name>` directly.
 -> Confirm: "Bar style set to **<name>**. The status line will update on the next refresh."
 
