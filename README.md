@@ -202,6 +202,10 @@ python claude_status.py --weekly-timer-format countdown   # always countdown: 2d
 python claude_status.py --weekly-timer-format date        # always date: Sat 5pm
 python claude_status.py --weekly-timer-format full        # both: Sat 5pm · 2d 5h
 
+# Clock format (default: 12h)
+python claude_status.py --clock-format 12h               # am/pm: Sat 5pm (default)
+python claude_status.py --clock-format 24h               # 24-hour: Sat 17:00
+
 # Change the prefix (default: "R:")
 python claude_status.py --weekly-timer-prefix "Resets:"
 python claude_status.py --weekly-timer-prefix ""          # no prefix
@@ -241,6 +245,7 @@ All the CLI flags below also work as `/pulse` subcommands inside Claude Code:
 /pulse animate off      — disable animation (static colours)
 /pulse bar-size large   — set progress bar width
 /pulse bar-style block  — set bar character style
+/pulse clock-format 24h — set 24-hour clock for weekly reset
 /pulse layout compact   — set text layout
 /pulse text-color cyan  — set text colour to cyan
 /pulse update           — pull the latest version from GitHub
@@ -380,6 +385,7 @@ Edit `config.json` directly or use the CLI flags:
   "extra_display": "auto",
   "weekly_timer_format": "auto",
   "weekly_timer_prefix": "R:",
+  "clock_format": "12h",
   "show": {
     "session": true,
     "weekly": true,
@@ -421,6 +427,7 @@ Edit `config.json` directly or use the CLI flags:
 | `--extra-display <auto\|full\|amount>` | Extra credits display mode (default: auto) |
 | `--weekly-timer-format <mode>` | Weekly reset display: auto, countdown, date, full |
 | `--weekly-timer-prefix <text>` | Prefix before reset time (default: `R:`) |
+| `--clock-format <12h\|24h>` | Clock format for weekly reset time (default: 12h) |
 | `--update` | Pull the latest version from GitHub (shows changelog) |
 | `--config` | Print current configuration summary |
 
