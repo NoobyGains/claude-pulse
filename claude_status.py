@@ -192,6 +192,8 @@ THEME_TEXT_DEFAULTS = {
 DEFAULT_SHOW = {
     "session": True,
     "weekly": True,
+    "opus": True,
+    "sonnet": True,
     "plan": False,
     "timer": True,
     "extra": False,
@@ -636,7 +638,7 @@ def get_local_commit():
 def get_remote_commit():
     """Fetch the latest commit hash from GitHub API. Returns None on failure."""
     try:
-        url = f"https://api.github.com/repos/{GITHUB_REPO}/commits/master"
+        url = f"https://api.github.com/repos/{GITHUB_REPO}/commits/main"
         req = urllib.request.Request(url, headers={
             "Accept": "application/vnd.github.sha",
             "User-Agent": "claude-pulse-update-checker",
@@ -802,9 +804,9 @@ def _read_version_from_file(script_path):
 
 
 def _fetch_remote_version():
-    """Fetch the VERSION string from the latest master on GitHub. Returns None on failure."""
+    """Fetch the VERSION string from the latest main on GitHub. Returns None on failure."""
     try:
-        url = f"https://raw.githubusercontent.com/{GITHUB_REPO}/master/claude_status.py"
+        url = f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/claude_status.py"
         req = urllib.request.Request(url, headers={"User-Agent": "claude-pulse-update-checker"})
         with urllib.request.urlopen(req, timeout=5) as resp:
             for raw_line in resp:
@@ -895,7 +897,7 @@ def cmd_update():
     utf8_print(f"  Pulling latest from GitHub...")
     try:
         result = subprocess.run(
-            [_GIT_PATH, "pull", "origin", "master"],
+            [_GIT_PATH, "pull", "origin", "main"],
             capture_output=True, text=True, timeout=30,
             cwd=str(repo_dir),
         )
@@ -970,7 +972,7 @@ def read_cache(cache_path, ttl):
     return None
 
 
-_USAGE_CACHE_KEYS = {"five_hour", "seven_day", "extra_usage"}
+_USAGE_CACHE_KEYS = {"five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet", "extra_usage"}
 
 def write_cache(cache_path, line, usage=None, plan=None):
     try:
@@ -1924,6 +1926,36 @@ def build_status_line(usage, plan, config=None, stdin_ctx=None):
                 parts.append(f"{pct:.0f}% {bar}{weekly_reset_str}")
             else:
                 parts.append(f"Weekly {bar} {pct:.0f}%{weekly_reset_str}")
+
+    # Opus weekly limit (separate per-model cap)
+    if show.get("opus", True):
+        opus = usage.get("seven_day_opus")
+        if opus and opus.get("utilization") is not None:
+            pct = opus.get("utilization") or 0
+            bar = make_bar(pct, theme, plain=bar_plain, width=bw, bar_style=bstyle)
+            if layout == "compact":
+                parts.append(f"O {bar} {pct:.0f}%")
+            elif layout == "minimal":
+                parts.append(f"{bar} {pct:.0f}%")
+            elif layout == "percent-first":
+                parts.append(f"{pct:.0f}% {bar}")
+            else:
+                parts.append(f"Opus {bar} {pct:.0f}%")
+
+    # Sonnet weekly limit (separate per-model cap)
+    if show.get("sonnet", True):
+        sonnet = usage.get("seven_day_sonnet")
+        if sonnet and sonnet.get("utilization") is not None:
+            pct = sonnet.get("utilization") or 0
+            bar = make_bar(pct, theme, plain=bar_plain, width=bw, bar_style=bstyle)
+            if layout == "compact":
+                parts.append(f"S {bar} {pct:.0f}%")
+            elif layout == "minimal":
+                parts.append(f"{bar} {pct:.0f}%")
+            elif layout == "percent-first":
+                parts.append(f"{pct:.0f}% {bar}")
+            else:
+                parts.append(f"Sonnet {bar} {pct:.0f}%")
 
     # Extra usage (bonus/gifted credits)
     # Auto-shows when credits are gifted, unless user explicitly hid it

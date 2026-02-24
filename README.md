@@ -40,6 +40,7 @@
 - **Session usage** — how much of your current 5-hour block you've used
 - **Time remaining** — countdown until your session resets
 - **Weekly usage** — your 7-day rolling usage across all models
+- **Opus / Sonnet usage** — per-model weekly limits (auto-shows when you have usage)
 - **Context window** — how full Claude's memory/context is (with colour-coded bar)
 - **Model name** — which model is active (Opus 4.6, Sonnet 4.5, etc.)
 - **Plan tier** — auto-detected (Pro, Max 5x, Max 20x)
@@ -75,7 +76,7 @@ The bars change colour based on your usage level so you can tell at a glance how
 | 50-79% | Yellow | Getting warm |
 | 80%+ | Red | Close to the limit |
 
-This applies to all bars — session, weekly, context window, and extra credits.
+This applies to all bars — session, weekly, opus, sonnet, context window, and extra credits.
 
 ### 10 Built-in Themes
 
@@ -229,7 +230,7 @@ python claude_status.py --show timer,plan
 python claude_status.py --config
 ```
 
-**Available parts:** `session`, `weekly`, `weekly_timer`, `plan`, `timer`, `extra`, `update`, `claude_update`, `sparkline`, `runway`, `status_message`, `streak`, `model`, `context`
+**Available parts:** `session`, `weekly`, `opus`, `sonnet`, `weekly_timer`, `plan`, `timer`, `extra`, `update`, `claude_update`, `sparkline`, `runway`, `status_message`, `streak`, `model`, `context`
 
 ### `/pulse` Slash Command
 
@@ -293,9 +294,32 @@ If you upgrade your plan, just restart Claude Code and it picks up the new tier 
 
 ## Installation
 
-### Option A — Plugin Marketplace
+### Option A — One-liner install (recommended)
 
-> **Coming soon** — claude-pulse has been submitted to the Claude Code Plugin Directory and is pending review. Once accepted, you'll be able to install with the commands below. For now, use **Option B** (manual install).
+```bash
+# Linux/macOS (curl)
+curl -fsSL https://raw.githubusercontent.com/NoobyGains/claude-pulse/main/install.sh | sh
+
+# Linux/macOS (wget)
+wget -qO- https://raw.githubusercontent.com/NoobyGains/claude-pulse/main/install.sh | sh
+
+# Windows PowerShell
+irm https://raw.githubusercontent.com/NoobyGains/claude-pulse/main/install.ps1 | iex
+```
+
+The installer will:
+
+- Clone (or update) `claude-pulse` into `~/.claude-pulse`
+- Run `claude_status.py --install` to configure your status line
+- Install the `/pulse` slash command into `~/.claude/commands/`
+
+Then restart Claude Code and run `/pulse` to configure themes.
+
+> **No git?** The installer falls back to downloading the files directly via curl/wget.
+
+### Option B — Plugin Marketplace
+
+> **Coming soon** — claude-pulse has been submitted to the Claude Code Plugin Directory and is pending review. Once accepted, you'll be able to install with the commands below.
 
 ```
 /plugin marketplace add NoobyGains/claude-pulse
@@ -305,7 +329,7 @@ If you upgrade your plan, just restart Claude Code and it picks up the new tier 
 
 Restart Claude Code. Done! Use `/claude-pulse:pulse` to configure themes.
 
-### Option B — Manual Install (recommended for now)
+### Option C — Manual Install
 
 #### 1. Clone the repo
 
