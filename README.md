@@ -43,6 +43,8 @@
 - **Opus / Sonnet usage** — per-model weekly limits (auto-shows when you have usage)
 - **Context window** — how full Claude's memory/context is (with colour-coded bar)
 - **Model name** — which model is active (Opus 4.6, Sonnet 4.5, etc.)
+- **Effort level** — shows low/med/high/max when Claude Code sets it (v2.1.68+)
+- **Worktree branch** — shows the active worktree branch name (v2.1.69+)
 - **Plan tier** — auto-detected (Pro, Max 5x, Max 20x)
 - **Extra credits** — auto-shows when you have credits enabled in https://claude.ai/settings/usage
 
@@ -100,7 +102,7 @@ python claude_status.py --animate on
 python claude_status.py --animate off
 ```
 
-Animation is purely refresh-based — no hooks, no background processes, no daemons. It works by rendering a new rainbow frame each time Claude Code refreshes the status line (~150ms while active). Animation is **off by default** — enable it via `/pulse` setup or `--animate on`.
+The animation uses Claude Code's **ultrathink rainbow palette** — the same 7-colour spectrum (red, orange, yellow, green, blue, indigo, violet) with smooth interpolation and a breathing shimmer effect. It's purely refresh-based — no hooks, no background processes, no daemons. Each status line refresh renders a new frame (~150ms while active). Animation is **off by default** — enable it via `/pulse` setup or `--animate on`.
 
 ### Context Window & Model Name
 
@@ -111,6 +113,26 @@ Session ━━━━━━━━ 12% 3h 40m | Weekly ━━━━━━━━ 12
 ```
 
 Both are **enabled by default**. The context bar uses the same colour-coded theme as your other bars. Context and model data appear after your first message in a session (Claude Code provides this data via stdin).
+
+### Effort Level
+
+Shows the current reasoning effort level (low/med/high/max) when set by Claude Code v2.1.68+:
+
+```
+Session ━━━━━━━━ 12% 3h 40m | Weekly ━━━━━━━━ 12% | Context ━━━━━━━━ 42% | Max 20x | Opus 4.6 | high
+```
+
+Enabled by default. Hide with `--hide effort`, show with `--show effort`.
+
+### Worktree Branch
+
+When using Claude Code worktrees (v2.1.69+), the active branch name appears on the status line:
+
+```
+Session ━━━━━━━━ 12% 3h 40m | Weekly ━━━━━━━━ 12% | Context ━━━━━━━━ 42% | Max 20x | Opus 4.6 | feature-branch
+```
+
+Enabled by default. Hide with `--hide worktree`, show with `--show worktree`.
 
 ### Text Colour
 
@@ -230,7 +252,7 @@ python claude_status.py --show timer,plan
 python claude_status.py --config
 ```
 
-**Available parts:** `session`, `weekly`, `opus`, `sonnet`, `weekly_timer`, `plan`, `timer`, `extra`, `update`, `claude_update`, `sparkline`, `runway`, `status_message`, `streak`, `model`, `context`
+**Available parts:** `session`, `weekly`, `opus`, `sonnet`, `weekly_timer`, `plan`, `timer`, `extra`, `update`, `claude_update`, `sparkline`, `runway`, `status_message`, `streak`, `model`, `context`, `effort`, `worktree`
 
 ### `/pulse` Slash Command
 
@@ -280,6 +302,7 @@ claude-pulse also checks if a Claude Code update is available by querying the np
 
 - **Single Python file** — no dependencies, no pip install, just Python 3.6+
 - **30-second cache** — API is only called once every 30 seconds, cached responses return instantly. Configurable: set `cache_ttl_seconds` in your config
+- **Rate-limit resilient** — if the API returns 429 (rate limited), pulse falls back to stale cached data instead of showing an error
 - **Zero config needed** — auto-detects your plan and credentials from Claude Code
 - **No hooks or background processes** — animation runs purely on the status line refresh cycle
 
@@ -424,7 +447,9 @@ Edit `config.json` directly or use the CLI flags:
     "status_message": false,
     "streak": false,
     "model": true,
-    "context": true
+    "context": true,
+    "effort": true,
+    "worktree": true
   }
 }
 ```
@@ -481,6 +506,7 @@ No API key required — claude-pulse uses your existing Claude Code login (OAuth
 | Problem | Solution |
 |---------|----------|
 | Status line doesn't appear | Run `python claude_status.py --install` and restart Claude Code |
+| No output at all (blank) | If you migrated Claude Code from npm to native installer, run `/pulse update` to get the fix. Old npm files in `%APPDATA%\npm\node_modules\@anthropic-ai\claude-code` were causing silent suppression |
 | Status line missing on Windows (v2.1.47+) | Re-run `python claude_status.py --install` — recent Claude Code versions require `$HOME` and forward slashes in paths. The installer now handles this automatically. See [#27057](https://github.com/anthropics/claude-code/issues/27057) |
 | Shows "No credentials found" | Make sure you're logged in to Claude Code (`claude /login`) |
 | Shows wrong plan tier after upgrading | Log out (`claude /logout`) then log back in (`claude /login`) — your OAuth token needs to refresh to pick up the new subscription tier |
