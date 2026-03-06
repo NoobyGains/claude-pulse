@@ -315,6 +315,8 @@ DEFAULT_SHOW = {
     "context": True,
     "claude_update": True,
     "weekly_timer": True,
+    "effort": True,
+    "worktree": True,
 }
 
 # Presets — one-command config bundles
@@ -1802,6 +1804,19 @@ def _parse_stdin_context(raw_stdin):
     except (AttributeError, KeyError, ValueError, TypeError):
         pass
 
+    # Worktree (v2.1.69+)
+    try:
+        wt = data.get("data", data).get("worktree", {})
+        if wt:
+            branch = _sanitize(wt.get("branch", ""))
+            name = _sanitize(wt.get("name", ""))
+            if branch:
+                result["worktree_branch"] = branch
+            elif name:
+                result["worktree_branch"] = name
+    except (AttributeError, KeyError):
+        pass
+
     return result
 
 
@@ -2198,6 +2213,21 @@ def build_status_line(usage, plan, config=None, stdin_ctx=None):
         model = stdin_ctx.get("model_name")
         if model:
             parts.append(model)
+
+    # Effort level from env var (set by Claude Code v2.1.68+)
+    if show.get("effort", True):
+        effort = os.environ.get("CLAUDE_CODE_EFFORT_LEVEL", "")
+        if effort and effort != "unset":
+            effort = _sanitize(effort)
+            # Compact labels: "low" "med" "high" "max"
+            effort_short = {"medium": "med"}.get(effort, effort)
+            parts.append(effort_short)
+
+    # Worktree branch from stdin context (v2.1.69+)
+    if stdin_ctx and show.get("worktree", True):
+        wt_branch = stdin_ctx.get("worktree_branch")
+        if wt_branch:
+            parts.append(wt_branch)
 
     line = " | ".join(parts)
 
@@ -3105,7 +3135,7 @@ def main():
     # survives across refreshes that don't receive stdin data from Claude Code.
     # Merge new data into persisted data so partial updates (e.g. model but
     # no context_pct during thinking) don't wipe previously known fields.
-    _STDIN_CTX_KEYS = {"model_name", "context_pct", "context_used", "context_limit", "cost_usd"}
+    _STDIN_CTX_KEYS = {"model_name", "context_pct", "context_used", "context_limit", "cost_usd", "worktree_branch"}
     stdin_ctx_path = get_state_dir() / "stdin_ctx.json"
     persisted = {}
     try:
