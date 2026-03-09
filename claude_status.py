@@ -3242,6 +3242,9 @@ def main():
                 line = line + f" {BRIGHT_YELLOW}{milestone}{RESET}"
         except Exception:
             pass
+    else:
+        # Cache error lines so we don't hammer the API on every refresh
+        write_cache(cache_path, line)
     line = append_update_indicator(line, config)
     line = append_claude_update_indicator(line, config)
     line = _truncate_line(line, config)
