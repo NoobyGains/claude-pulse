@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Minimal Claude Code status line — fetches real usage data from Anthropic's OAuth API."""
 
-VERSION = "2.2.1"
+VERSION = "2.2.2"
 
 import json
 import os
@@ -1143,7 +1143,7 @@ def write_cache(cache_path, line, usage=None, plan=None):
 # SECURITY: OAuth tokens are ONLY sent to these Anthropic-owned domains.
 # They are never written to cache/state files, never logged, and never
 # sent anywhere else. The _authorized_request() guard enforces this.
-_TOKEN_ALLOWED_DOMAINS = frozenset({"api.anthropic.com", "console.anthropic.com"})
+_TOKEN_ALLOWED_DOMAINS = frozenset({"api.anthropic.com", "console.anthropic.com", "platform.claude.com"})
 
 
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -1175,6 +1175,7 @@ def _authorized_request(url, token, headers=None, data=None, method=None, timeou
     hdrs = dict(headers) if headers else {}
     if token:
         hdrs["Authorization"] = f"Bearer {token}"
+    hdrs.setdefault("User-Agent", f"claude-code/{VERSION}")
     req = urllib.request.Request(url, headers=hdrs, data=data, method=method)
     return _safe_opener.open(req, timeout=timeout)
 
@@ -1230,7 +1231,7 @@ def _refresh_oauth_token(refresh_token):
             "refresh_token": refresh_token,
         }).encode("utf-8")
         with _authorized_request(
-            "https://console.anthropic.com/v1/oauth/token",
+            "https://platform.claude.com/v1/oauth/token",
             None,  # no Bearer token — this uses the refresh token in the body
             data=body,
             headers={"Content-Type": "application/json", "Accept": "application/json"},
