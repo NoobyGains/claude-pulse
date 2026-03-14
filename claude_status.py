@@ -1363,6 +1363,22 @@ def make_bar(pct, theme=None, plain=False, width=None, bar_style=None):
     return f"{colour}{fill_char * filled}{DIM}{empty_char * (width - filled)}{RESET}"
 
 
+def _calc_pace_pct(resets_at_str, window_seconds):
+    """Return expected usage % based on elapsed time in the window, or None."""
+    if not resets_at_str:
+        return None
+    try:
+        resets_at = datetime.fromisoformat(resets_at_str)
+        now = datetime.now(timezone.utc)
+        remaining = (resets_at - now).total_seconds()
+        elapsed = window_seconds - remaining
+        if elapsed <= 0 or window_seconds <= 0:
+            return None
+        return min(100.0, max(0.0, (elapsed / window_seconds) * 100))
+    except Exception:
+        return None
+
+
 def format_reset_time(resets_at_str):
     if not resets_at_str:
         return None
@@ -2035,12 +2051,14 @@ def build_status_line(usage, plan, config=None, stdin_ctx=None):
             bar = make_bar(pct, theme, plain=bar_plain, width=bw, bar_style=bstyle)
             reset = format_reset_time(five.get("resets_at")) if show.get("timer", True) else None
             reset_str = f" {reset}" if reset else ""
+            pace = _calc_pace_pct(five.get("resets_at"), 18000)
+            pace_str = f" ({pace:.0f}%)" if pace is not None else ""
             if layout == "compact":
-                parts.append(f"S {bar} {pct:.0f}%{reset_str}")
+                parts.append(f"S {bar} {pct:.0f}%{pace_str}{reset_str}")
             elif layout == "minimal":
-                parts.append(f"{bar} {pct:.0f}%{reset_str}")
+                parts.append(f"{bar} {pct:.0f}%{pace_str}{reset_str}")
             elif layout == "percent-first":
-                parts.append(f"{pct:.0f}% {bar}{reset_str}")
+                parts.append(f"{pct:.0f}%{pace_str} {bar}{reset_str}")
             else:  # standard
                 # Load history once for sparkline, runway, and smart messages
                 history = _read_history() if show.get("sparkline", True) or show.get("runway", True) or show.get("status_message", True) else []
@@ -2065,7 +2083,7 @@ def build_status_line(usage, plan, config=None, stdin_ctx=None):
                 # Separate timer from runway/sparkline with · when both present
                 if reset_str and (runway_str or spark_str):
                     reset_str = f" \u00b7{reset}"
-                parts.append(f"{label} {bar} {pct:.0f}%{spark_str}{runway_str}{reset_str}")
+                parts.append(f"{label} {bar} {pct:.0f}%{pace_str}{spark_str}{runway_str}{reset_str}")
         else:
             bar = make_bar(0, theme, plain=bar_plain, width=bw, bar_style=bstyle)
             if layout == "compact":
@@ -2095,14 +2113,16 @@ def build_status_line(usage, plan, config=None, stdin_ctx=None):
                 wr = format_weekly_reset(seven.get("resets_at"), fmt=wt_fmt, clock=wt_clock)
                 if wr:
                     weekly_reset_str = f" {wt_prefix}{wr}"
+            pace = _calc_pace_pct(seven.get("resets_at"), 604800)
+            pace_str = f" ({pace:.0f}%)" if pace is not None else ""
             if layout == "compact":
-                parts.append(f"W {bar} {pct:.0f}%{weekly_reset_str}")
+                parts.append(f"W {bar} {pct:.0f}%{pace_str}{weekly_reset_str}")
             elif layout == "minimal":
-                parts.append(f"{bar} {pct:.0f}%{weekly_reset_str}")
+                parts.append(f"{bar} {pct:.0f}%{pace_str}{weekly_reset_str}")
             elif layout == "percent-first":
-                parts.append(f"{pct:.0f}% {bar}{weekly_reset_str}")
+                parts.append(f"{pct:.0f}%{pace_str} {bar}{weekly_reset_str}")
             else:
-                parts.append(f"Weekly {bar} {pct:.0f}%{weekly_reset_str}")
+                parts.append(f"Weekly {bar} {pct:.0f}%{pace_str}{weekly_reset_str}")
 
     # Opus weekly limit (separate per-model cap)
     if show.get("opus", True):
@@ -2125,14 +2145,16 @@ def build_status_line(usage, plan, config=None, stdin_ctx=None):
         if sonnet and sonnet.get("utilization") is not None:
             pct = sonnet.get("utilization") or 0
             bar = make_bar(pct, theme, plain=bar_plain, width=bw, bar_style=bstyle)
+            pace = _calc_pace_pct(sonnet.get("resets_at"), 604800)
+            pace_str = f" ({pace:.0f}%)" if pace is not None else ""
             if layout == "compact":
-                parts.append(f"S {bar} {pct:.0f}%")
+                parts.append(f"S {bar} {pct:.0f}%{pace_str}")
             elif layout == "minimal":
-                parts.append(f"{bar} {pct:.0f}%")
+                parts.append(f"{bar} {pct:.0f}%{pace_str}")
             elif layout == "percent-first":
-                parts.append(f"{pct:.0f}% {bar}")
+                parts.append(f"{pct:.0f}%{pace_str} {bar}")
             else:
-                parts.append(f"Sonnet {bar} {pct:.0f}%")
+                parts.append(f"Sonnet {bar} {pct:.0f}%{pace_str}")
 
     # Extra usage (bonus/gifted credits)
     # Auto-shows when credits are gifted, unless user explicitly hid it
