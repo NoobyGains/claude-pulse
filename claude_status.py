@@ -317,6 +317,7 @@ DEFAULT_SHOW = {
     "weekly_timer": True,
     "effort": True,
     "worktree": True,
+    "pace": False,
 }
 
 # Presets — one-command config bundles
@@ -2051,8 +2052,11 @@ def build_status_line(usage, plan, config=None, stdin_ctx=None):
             bar = make_bar(pct, theme, plain=bar_plain, width=bw, bar_style=bstyle)
             reset = format_reset_time(five.get("resets_at")) if show.get("timer", True) else None
             reset_str = f" {reset}" if reset else ""
-            pace = _calc_pace_pct(five.get("resets_at"), 18000)
-            pace_str = f" ({pace:.0f}%)" if pace is not None else ""
+            pace_str = ""
+            if show.get("pace"):
+                pace = _calc_pace_pct(five.get("resets_at"), 18000)
+                if pace is not None:
+                    pace_str = f" ({pace:.0f}%)"
             if layout == "compact":
                 parts.append(f"S {bar} {pct:.0f}%{pace_str}{reset_str}")
             elif layout == "minimal":
@@ -2113,8 +2117,11 @@ def build_status_line(usage, plan, config=None, stdin_ctx=None):
                 wr = format_weekly_reset(seven.get("resets_at"), fmt=wt_fmt, clock=wt_clock)
                 if wr:
                     weekly_reset_str = f" {wt_prefix}{wr}"
-            pace = _calc_pace_pct(seven.get("resets_at"), 604800)
-            pace_str = f" ({pace:.0f}%)" if pace is not None else ""
+            pace_str = ""
+            if show.get("pace"):
+                pace = _calc_pace_pct(seven.get("resets_at"), 604800)
+                if pace is not None:
+                    pace_str = f" ({pace:.0f}%)"
             if layout == "compact":
                 parts.append(f"W {bar} {pct:.0f}%{pace_str}{weekly_reset_str}")
             elif layout == "minimal":
@@ -2145,8 +2152,11 @@ def build_status_line(usage, plan, config=None, stdin_ctx=None):
         if sonnet and sonnet.get("utilization") is not None:
             pct = sonnet.get("utilization") or 0
             bar = make_bar(pct, theme, plain=bar_plain, width=bw, bar_style=bstyle)
-            pace = _calc_pace_pct(sonnet.get("resets_at"), 604800)
-            pace_str = f" ({pace:.0f}%)" if pace is not None else ""
+            pace_str = ""
+            if show.get("pace"):
+                pace = _calc_pace_pct(sonnet.get("resets_at"), 604800)
+                if pace is not None:
+                    pace_str = f" ({pace:.0f}%)"
             if layout == "compact":
                 parts.append(f"S {bar} {pct:.0f}%{pace_str}")
             elif layout == "minimal":
