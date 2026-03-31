@@ -148,23 +148,23 @@ Use `/pulse` in Claude Code for an interactive setup wizard, or configure direct
 ## How It Works
 
 ```
-┌─────────────────────────────────────────────────┐
-│  Claude Code                                     │
-│  Pipes JSON via stdin on every status refresh     │
-│  (model, context %, cost, rate_limits)            │
-├─────────────────────────────────────────────────┤
-│  claude_status.py                                │
-│  Reads stdin → builds ANSI status line → stdout   │
-│  No API calls needed (v2.1.80+)                   │
-├─────────────────────────────────────────────────┤
-│  PostToolUse Hook (optional)                     │
-│  Updates tool count, heartbeat, git branch        │
-│  on every tool call                               │
-├─────────────────────────────────────────────────┤
-│  Cache Layer                                     │
-│  Exchange rates (24h) · hook state (30s)          │
-│  Animation state · usage history                  │
-└─────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────┐
+│  Claude Code                                  │
+│  Pipes JSON via stdin on every status refresh │
+│  (model, context %, cost, rate_limits)        │
+├───────────────────────────────────────────────┤
+│  claude_status.py                             │
+│  Reads stdin → builds ANSI status line        │
+│  No API calls needed (v2.1.80+)              │
+├───────────────────────────────────────────────┤
+│  PostToolUse Hook (optional)                  │
+│  Updates tool count, heartbeat, git branch    │
+│  on every tool call                           │
+├───────────────────────────────────────────────┤
+│  Cache Layer                                  │
+│  Exchange rates (24h) · hook state (5m)       │
+│  Animation state · usage history              │
+└───────────────────────────────────────────────┘
 ```
 
 **Data flow:** Claude Code sends session JSON via stdin → claude-pulse reads rate limits directly (no API) → renders colourised ANSI status line → Claude Code displays it.
