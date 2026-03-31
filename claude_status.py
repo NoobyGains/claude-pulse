@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Minimal Claude Code status line — fetches real usage data from Anthropic's OAuth API."""
 
-VERSION = "2.2.2"
+VERSION = "3.0.0"
 
 import json
 import math
