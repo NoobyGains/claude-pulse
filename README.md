@@ -42,7 +42,7 @@ A single-file Python status bar for Claude Code that shows everything you need a
 </p>
 
 ```
-Session ━━━───────── 27% 2h 53m | Weekly ━━━━━━━━━─── 73% R:Fri 3pm | Context ━━━━──────── 35% | $38.75 | In Peak ⚡2x 2h 54m left (1pm-7pm) | Opus 4.6 | [\] 320 tools 51m | main
+Session ━━━───────── 27% 2h 53m | Weekly ━━━━━━━━━─── 73% R:Fri 3pm | Context ━━━━──────── 35% | $38.75 | +142 -37 | In Peak ⚡2x 2h 54m left (1pm-7pm) | Opus 4.6 | [\] 320 tools 51m | main
 ```
 
 ## Features
@@ -59,12 +59,23 @@ Session ━━━───────── 27% 2h 53m | Weekly ━━━━━
 | **10 themes** | default, ocean, sunset, mono, neon, pride, frost, ember, candy, rainbow |
 | **5 animation modes** | off, rainbow, pulse, glow, shift — each visually distinct |
 | **8 bar styles** | classic, block, shade, pipe, dot, square, star, braille |
+| **Lines changed** | Shows `+42 -7` in green/red — lines added and removed this session, read from stdin |
+| **Widget priorities** | Every widget has a priority number — reorder them with `--priority model=5,cost=15` |
 | **Focus timer** | Built-in focus timer — `--focus start 25` shows countdown in the status bar |
 | **Auto-updates** | Notifies when a new version of claude-pulse or Claude Code is available |
 | **Staleness indicator** | Shows data age when cached data is old |
 | **Zero API calls** | Reads rate limits directly from Claude Code's stdin (v2.1.80+) — no OAuth, no rate limiting |
 
 ## Quick Start
+
+### Plugin marketplace (recommended)
+
+```
+/plugin marketplace add NoobyGains/claude-pulse
+/plugin install claude-pulse
+```
+
+Then run `/pulse` to configure. Restart Claude Code.
 
 ### One-liner install
 
@@ -125,7 +136,12 @@ Use `/pulse` in Claude Code for an interactive setup wizard, or configure direct
 # Clock
 --clock-format 12h         # 12h or 24h
 
+# Widget priority (lower = leftmost)
+--priority                 # Show all widget priorities
+--priority model=5,cost=15 # Move model first, cost after session
+
 # Toggle features
+--show lines               # Show +N/-N lines changed
 --show burn_rate           # Show usage velocity (↑3%/hr)
 --show git_drift           # Show commits ahead/behind
 --show files_changed       # Show modified file count
