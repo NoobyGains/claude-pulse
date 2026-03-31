@@ -155,7 +155,7 @@ Use `/pulse` in Claude Code for an interactive setup wizard, or configure direct
 ├───────────────────────────────────────────────┤
 │  claude_status.py                             │
 │  Reads stdin → builds ANSI status line        │
-│  No API calls needed (v2.1.80+)              │
+│  No API calls needed (v2.1.80+)               │
 ├───────────────────────────────────────────────┤
 │  PostToolUse Hook (optional)                  │
 │  Updates tool count, heartbeat, git branch    │
