@@ -4,14 +4,14 @@
     "name": "PigeonDroid"
   },
   "metadata": {
-    "description": "Live usage status bar for Claude Code — session limits, weekly usage, themes, and animations"
+    "description": "Live usage status bar for Claude Code — session limits, weekly usage, lines changed, widget priorities, 10 themes, and zero API calls"
   },
   "plugins": [
     {
       "name": "claude-pulse",
       "source": "./",
-      "description": "Live usage status bar — session limits, weekly usage, 10 themes, shimmer animations, and auto-updates",
-      "version": "1.9.0",
+      "description": "Real-time usage monitor with 20+ widgets, priority ordering, +N/-N code changes, 10 themes, shimmer animations, and zero API calls for usage data",
+      "version": "3.0.0",
       "homepage": "https://github.com/NoobyGains/claude-pulse"
     }
   ]

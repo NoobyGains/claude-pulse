@@ -1,13 +1,13 @@
 {
   "name": "claude-pulse",
-  "description": "Live usage status bar for Claude Code — session limits, weekly usage, 10 themes, shimmer animations, and auto-updates",
-  "version": "2.2.0",
+  "description": "Live usage status bar for Claude Code — session limits, weekly usage, lines changed, 10 themes, widget priorities, shimmer animations, and zero API calls",
+  "version": "3.0.0",
   "author": {
     "name": "PigeonDroid"
   },
   "homepage": "https://github.com/NoobyGains/claude-pulse",
   "repository": "https://github.com/NoobyGains/claude-pulse",
   "license": "MIT",
-  "keywords": ["status", "usage", "themes", "status-bar", "monitoring", "pulse"],
+  "keywords": ["status", "usage", "themes", "status-bar", "monitoring", "pulse", "widgets"],
   "commands": "./commands/"
 }

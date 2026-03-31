@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Claude Code status line — reads usage data from Claude Code's stdin and displays real-time bars."""
 
-VERSION = "3.0.0"
+VERSION = "3.1.0"
 
 import json
 import math
@@ -345,6 +345,16 @@ THEME_TEXT_DEFAULTS = {
     "rainbow": "none",
 }
 
+# Widget priorities — lower number = rendered first (leftmost).
+# Users can override via config["widget_priority"] = {"session": 1, "weekly": 2, ...}
+WIDGET_PRIORITY = {
+    "session": 10, "weekly": 20, "opus": 30, "sonnet": 40, "extra": 50,
+    "context": 60, "cost": 70, "lines": 75, "peak": 80, "plan": 90,
+    "streak": 100, "model": 110, "effort": 120, "worktree": 130,
+    "heartbeat": 140, "activity": 150, "last_tool": 160, "branch": 170,
+    "sessions": 180, "pomodoro": 190, "git_drift": 200, "files_changed": 210,
+}
+
 DEFAULT_SHOW = {
     # Core bars — always visible
     "session": True,
@@ -371,6 +381,7 @@ DEFAULT_SHOW = {
     "pomodoro": True,
     "context_warning": True,
     "staleness": True,
+    "lines": True,
     # Hidden by default — opt-in with --show
     "burn_rate": False,
     "sessions": False,
@@ -2520,12 +2531,17 @@ def _parse_stdin_context(raw_stdin):
     except (AttributeError, KeyError, ValueError, TypeError):
         pass
 
-    # Cost
+    # Cost and lines changed
     try:
         cost = data.get("data", data).get("cost", {})
         total = cost.get("total_cost_usd")
         if total is not None:
             result["cost_usd"] = float(total)
+        lines_added = cost.get("total_lines_added")
+        lines_removed = cost.get("total_lines_removed")
+        if lines_added is not None or lines_removed is not None:
+            result["lines_added"] = int(lines_added or 0)
+            result["lines_removed"] = int(lines_removed or 0)
     except (AttributeError, KeyError, ValueError, TypeError):
         pass
 
@@ -3029,7 +3045,11 @@ def build_status_line(usage, plan, config=None, stdin_ctx=None, cache_age=None):
     except Exception:
         pass  # if width detection/clamping fails, use configured bar size
 
-    parts = []
+    parts = []  # list of (priority, text) tuples — sorted before joining
+    _wpri = dict(WIDGET_PRIORITY)
+    _wpri.update(config.get("widget_priority", {}))
+    def _pri(widget_id):
+        return _wpri.get(widget_id, 999)
 
     # Current Session (5-hour block)
     if show.get("session", True):
@@ -3049,12 +3069,13 @@ def build_status_line(usage, plan, config=None, stdin_ctx=None, cache_age=None):
                 pace = _calc_pace_pct(five.get("resets_at"), 18000)
                 if pace is not None:
                     pace_str = f" ({pace:.0f}%)"
+            _s = _pri("session")
             if layout == "compact":
-                parts.append(f"S {bar} {pct:.0f}%{pace_str}{reset_str}")
+                parts.append((_s, f"S {bar} {pct:.0f}%{pace_str}{reset_str}"))
             elif layout == "minimal":
-                parts.append(f"{bar} {pct:.0f}%{pace_str}{reset_str}")
+                parts.append((_s, f"{bar} {pct:.0f}%{pace_str}{reset_str}"))
             elif layout == "percent-first":
-                parts.append(f"{pct:.0f}%{pace_str} {bar}{reset_str}")
+                parts.append((_s, f"{pct:.0f}%{pace_str} {bar}{reset_str}"))
             else:  # standard
                 history = _read_history() if show.get("sparkline", True) or show.get("runway", True) or show.get("status_message", True) or show.get("burn_rate", True) else []
                 label = "Session"
@@ -3078,17 +3099,18 @@ def build_status_line(usage, plan, config=None, stdin_ctx=None, cache_age=None):
                     burn_str = f" {br}" if br else ""
                 if reset_str and (runway_str or spark_str or burn_str):
                     reset_str = f" \u00b7{reset}"
-                parts.append(f"{label} {bar} {pct:.0f}%{burn_str}{pace_str}{spark_str}{runway_str}{reset_str}")
+                parts.append((_s, f"{label} {bar} {pct:.0f}%{burn_str}{pace_str}{spark_str}{runway_str}{reset_str}"))
         else:
+            _s = _pri("session")
             bar = make_bar(0, theme, plain=bar_plain, width=bw, bar_style=bstyle)
             if layout == "compact":
-                parts.append(f"S {bar} 0%")
+                parts.append((_s, f"S {bar} 0%"))
             elif layout == "minimal":
-                parts.append(f"{bar} 0%")
+                parts.append((_s, f"{bar} 0%"))
             elif layout == "percent-first":
-                parts.append(f"0% {bar}")
+                parts.append((_s, f"0% {bar}"))
             else:
-                parts.append(f"Session {bar} 0%")
+                parts.append((_s, f"Session {bar} 0%"))
 
     # Weekly Limit (7-day all models)
     if show.get("weekly", True):
@@ -3120,34 +3142,36 @@ def build_status_line(usage, plan, config=None, stdin_ctx=None, cache_age=None):
                 pace = _calc_pace_pct(seven.get("resets_at"), 604800)
                 if pace is not None:
                     pace_str = f" ({pace:.0f}%)"
+            _w = _pri("weekly")
             if celebrating:
                 celeb_label = _render_celebration_label(config)
-                parts.append(f"{celeb_label} {bar} {pct:.0f}%{pace_str}{weekly_reset_str}")
+                parts.append((_w, f"{celeb_label} {bar} {pct:.0f}%{pace_str}{weekly_reset_str}"))
             elif layout == "compact":
-                parts.append(f"W {bar} {pct:.0f}%{pace_str}{weekly_reset_str}")
+                parts.append((_w, f"W {bar} {pct:.0f}%{pace_str}{weekly_reset_str}"))
             elif layout == "minimal":
-                parts.append(f"{bar} {pct:.0f}%{pace_str}{weekly_reset_str}")
+                parts.append((_w, f"{bar} {pct:.0f}%{pace_str}{weekly_reset_str}"))
             elif layout == "percent-first":
-                parts.append(f"{pct:.0f}%{pace_str} {bar}{weekly_reset_str}")
+                parts.append((_w, f"{pct:.0f}%{pace_str} {bar}{weekly_reset_str}"))
             else:
-                parts.append(f"Weekly {bar} {pct:.0f}%{pace_str}{weekly_reset_str}")
+                parts.append((_w, f"Weekly {bar} {pct:.0f}%{pace_str}{weekly_reset_str}"))
 
-    # Opus weekly limit (separate per-model cap)
+    # Opus weekly limit
     if show.get("opus", True):
         opus = usage.get("seven_day_opus")
         if opus and opus.get("utilization") is not None:
             pct = opus.get("utilization") or 0
             bar = make_bar(pct, theme, plain=bar_plain, width=bw, bar_style=bstyle)
+            _o = _pri("opus")
             if layout == "compact":
-                parts.append(f"O {bar} {pct:.0f}%")
+                parts.append((_o, f"O {bar} {pct:.0f}%"))
             elif layout == "minimal":
-                parts.append(f"{bar} {pct:.0f}%")
+                parts.append((_o, f"{bar} {pct:.0f}%"))
             elif layout == "percent-first":
-                parts.append(f"{pct:.0f}% {bar}")
+                parts.append((_o, f"{pct:.0f}% {bar}"))
             else:
-                parts.append(f"Opus {bar} {pct:.0f}%")
+                parts.append((_o, f"Opus {bar} {pct:.0f}%"))
 
-    # Sonnet weekly limit (separate per-model cap)
+    # Sonnet weekly limit
     if show.get("sonnet", True):
         sonnet = usage.get("seven_day_sonnet")
         if sonnet and sonnet.get("utilization") is not None:
@@ -3158,53 +3182,54 @@ def build_status_line(usage, plan, config=None, stdin_ctx=None, cache_age=None):
                 pace = _calc_pace_pct(sonnet.get("resets_at"), 604800)
                 if pace is not None:
                     pace_str = f" ({pace:.0f}%)"
+            _sn = _pri("sonnet")
             if layout == "compact":
-                parts.append(f"S {bar} {pct:.0f}%{pace_str}")
+                parts.append((_sn, f"S {bar} {pct:.0f}%{pace_str}"))
             elif layout == "minimal":
-                parts.append(f"{bar} {pct:.0f}%{pace_str}")
+                parts.append((_sn, f"{bar} {pct:.0f}%{pace_str}"))
             elif layout == "percent-first":
-                parts.append(f"{pct:.0f}%{pace_str} {bar}")
+                parts.append((_sn, f"{pct:.0f}%{pace_str} {bar}"))
             else:
-                parts.append(f"Sonnet {bar} {pct:.0f}%{pace_str}")
+                parts.append((_sn, f"Sonnet {bar} {pct:.0f}%{pace_str}"))
 
     # Extra usage (bonus/gifted credits)
-    # Auto-shows when credits are gifted, unless user explicitly hid it
     extra = usage.get("extra_usage")
     extra_enabled_by_user = show.get("extra", False)
     extra_explicitly_hidden = config.get("extra_hidden", False)
     extra_has_credits = extra and extra.get("is_enabled") and (extra.get("monthly_limit") or 0) > 0
     if extra_enabled_by_user or (extra_has_credits and not extra_explicitly_hidden):
+        _e = _pri("extra")
         currency = _sanitize(config.get("currency", "\u00a3"))[:5]
         if extra and extra.get("is_enabled"):
             pct = min(extra.get("utilization") or 0, 100)
-            used = (extra.get("used_credits") or 0) / 100  # API returns pence/cents
+            used = (extra.get("used_credits") or 0) / 100
             limit = (extra.get("monthly_limit") or 0) / 100
             extra_display = config.get("extra_display", "auto")
             if extra_display == "auto":
                 extra_display = "amount" if limit == 0 else "full"
             if extra_display == "amount":
                 if layout == "compact":
-                    parts.append(f"E {currency}{used:.2f}")
+                    parts.append((_e, f"E {currency}{used:.2f}"))
                 elif layout == "minimal":
-                    parts.append(f"{currency}{used:.2f}")
+                    parts.append((_e, f"{currency}{used:.2f}"))
                 else:
-                    parts.append(f"Extra {currency}{used:.2f}")
+                    parts.append((_e, f"Extra {currency}{used:.2f}"))
             else:
                 bar = make_bar(pct, theme, plain=bar_plain, width=bw, bar_style=bstyle)
                 if layout == "compact":
-                    parts.append(f"E {bar} {currency}{used:.2f}/{currency}{limit:.2f}")
+                    parts.append((_e, f"E {bar} {currency}{used:.2f}/{currency}{limit:.2f}"))
                 elif layout == "minimal":
-                    parts.append(f"{bar} {currency}{used:.2f}")
+                    parts.append((_e, f"{bar} {currency}{used:.2f}"))
                 elif layout == "percent-first":
-                    parts.append(f"{currency}{used:.2f} {bar}")
+                    parts.append((_e, f"{currency}{used:.2f} {bar}"))
                 else:
-                    parts.append(f"Extra {bar} {currency}{used:.2f}/{currency}{limit:.2f}")
+                    parts.append((_e, f"Extra {bar} {currency}{used:.2f}/{currency}{limit:.2f}"))
         elif extra_enabled_by_user:
             bar = make_bar(0, theme, plain=bar_plain, width=bw, bar_style=bstyle)
             if layout == "minimal":
-                parts.append(f"{bar} none")
+                parts.append((_e, f"{bar} none"))
             else:
-                parts.append(f"Extra {bar} none")
+                parts.append((_e, f"Extra {bar} none"))
 
     # Context window usage from stdin context (with pressure warning)
     if stdin_ctx and show.get("context", True):
@@ -3224,45 +3249,56 @@ def build_status_line(usage, plan, config=None, stdin_ctx=None, cache_age=None):
                 pct_label = f"{_fmt_tokens(ctx_used)}/{_fmt_tokens(ctx_limit)}"
             else:
                 pct_label = f"{ctx_pct:.0f}%"
-            # Context pressure warning
             ctx_warning_label = None
             ctx_warning_suffix = ""
             if show.get("context_warning", True):
                 ctx_warning_label, ctx_warning_suffix = _format_context_warning(ctx_pct, theme)
                 if ctx_warning_suffix is None:
                     ctx_warning_suffix = ""
+            _cx = _pri("context")
             if layout == "compact":
                 prefix = f"\u26a0 C" if ctx_warning_label else "C"
-                parts.append(f"{prefix} {ctx_bar} {pct_label}{ctx_warning_suffix}")
+                parts.append((_cx, f"{prefix} {ctx_bar} {pct_label}{ctx_warning_suffix}"))
             elif layout == "minimal":
-                parts.append(f"{ctx_bar} {pct_label}{ctx_warning_suffix}")
+                parts.append((_cx, f"{ctx_bar} {pct_label}{ctx_warning_suffix}"))
             elif layout == "percent-first":
-                parts.append(f"{pct_label}{ctx_warning_suffix} {ctx_bar}")
+                parts.append((_cx, f"{pct_label}{ctx_warning_suffix} {ctx_bar}"))
             else:
                 if ctx_warning_label:
-                    parts.append(f"{ctx_warning_label} {ctx_bar} {pct_label}{ctx_warning_suffix}")
+                    parts.append((_cx, f"{ctx_warning_label} {ctx_bar} {pct_label}{ctx_warning_suffix}"))
                 else:
-                    parts.append(f"Context {ctx_bar} {pct_label}")
+                    parts.append((_cx, f"Context {ctx_bar} {pct_label}"))
 
-    # Cost ticker from stdin context
+    # Cost ticker
     if stdin_ctx and show.get("cost", True):
         cost_str = _format_cost(stdin_ctx, config)
         if cost_str:
-            parts.append(cost_str)
+            parts.append((_pri("cost"), cost_str))
+
+    # Lines changed (from stdin cost data)
+    if stdin_ctx and show.get("lines", True):
+        la = stdin_ctx.get("lines_added")
+        lr = stdin_ctx.get("lines_removed")
+        if la is not None or lr is not None:
+            a = int(la or 0)
+            r = int(lr or 0)
+            if a > 0 or r > 0:
+                parts.append((_pri("lines"), f"{BRIGHT_GREEN}+{a}{RESET} {BRIGHT_RED}-{r}{RESET}"))
 
     # Peak hours indicator
     is_peak, peak_str = _check_peak_hours(config)
     if peak_str:
+        _pk = _pri("peak")
         if is_peak:
-            parts.append(f"{RED}{peak_str}{RESET}")
+            parts.append((_pk, f"{RED}{peak_str}{RESET}"))
         elif "in " in peak_str:
-            parts.append(f"{YELLOW}{peak_str}{RESET}")
+            parts.append((_pk, f"{YELLOW}{peak_str}{RESET}"))
         else:
-            parts.append(f"{GREEN}{peak_str}{RESET}")
+            parts.append((_pk, f"{GREEN}{peak_str}{RESET}"))
 
     # Plan name (hidden in minimal layout)
     if layout != "minimal" and show.get("plan", True) and plan:
-        parts.append(_sanitize(plan))
+        parts.append((_pri("plan"), _sanitize(plan)))
 
     # Streak display
     if show.get("streak", True):
@@ -3270,104 +3306,98 @@ def build_status_line(usage, plan, config=None, stdin_ctx=None, cache_age=None):
             stats = _load_stats()
             sd = _get_streak_display(config, stats)
             if sd:
-                parts.append(sd)
+                parts.append((_pri("streak"), sd))
         except Exception:
             pass
 
-    # Model name from stdin context (strip "(1M context)" suffix)
+    # Model name from stdin context
     if stdin_ctx and show.get("model", True):
         model = stdin_ctx.get("model_name")
         if model:
             model = re.sub(r'\s*\([^)]*context[^)]*\)', '', model).strip()
             if model:
-                parts.append(model)
+                parts.append((_pri("model"), model))
 
-    # Effort level from env var (set by Claude Code v2.1.68+)
+    # Effort level
     if show.get("effort", True):
         effort = os.environ.get("CLAUDE_CODE_EFFORT_LEVEL", "")
         if effort and effort != "unset":
             effort = _sanitize(effort)
             effort_short = {"medium": "med"}.get(effort, effort)
-            parts.append(effort_short)
+            parts.append((_pri("effort"), effort_short))
 
-    # Worktree branch from stdin context (v2.1.69+)
+    # Worktree branch
     if stdin_ctx and show.get("worktree", True):
         wt_branch = stdin_ctx.get("worktree_branch")
         if wt_branch:
-            parts.append(wt_branch)
+            parts.append((_pri("worktree"), wt_branch))
 
     # --- Hook-based live features ---
     hook_state = _read_hook_state()
     hook_fresh = _is_hook_state_fresh(hook_state)
 
-    # Heartbeat: spinner + tool count + elapsed time
     if show.get("heartbeat", True) and hook_fresh:
         tool_count = hook_state.get("tool_count", 0)
         session_start = hook_state.get("session_start", time.time())
         elapsed = time.time() - session_start
         frame_idx = int(time.time() * 4) % len(HEARTBEAT_SPINNER)
         spinner = HEARTBEAT_SPINNER[frame_idx]
-        parts.append(f"[{spinner}] {tool_count} tools {_format_elapsed(elapsed)}")
+        parts.append((_pri("heartbeat"), f"[{spinner}] {tool_count} tools {_format_elapsed(elapsed)}"))
 
-    # Activity: rapid-call indicator
     if show.get("activity", True) and hook_fresh:
         if hook_state.get("rapid_calls", 0) > 3:
-            parts.append(f"\u26a1 Active")
+            parts.append((_pri("activity"), f"\u26a1 Active"))
 
-    # Last tool name (opt-in)
     if show.get("last_tool", False) and hook_fresh:
         last_tool = hook_state.get("last_tool", "")
         if last_tool:
-            parts.append(f"Last: {last_tool[:12]}")
+            parts.append((_pri("last_tool"), f"Last: {last_tool[:12]}"))
 
-    # Git branch (only when worktree_branch is NOT already displayed)
     if show.get("branch", True):
         worktree_shown = stdin_ctx and show.get("worktree", True) and stdin_ctx.get("worktree_branch")
         if not worktree_shown:
             git_branch = _get_git_branch()
             if git_branch:
-                parts.append(git_branch)
+                parts.append((_pri("branch"), git_branch))
 
-    # Multi-session awareness (disabled by default — opt-in via --show sessions)
     if show.get("sessions", False):
         try:
             other_sessions = _get_active_sessions()
             if other_sessions:
                 count = len(other_sessions)
-                parts.append(f"+{count} session{'s' if count != 1 else ''}")
+                parts.append((_pri("sessions"), f"+{count} session{'s' if count != 1 else ''}"))
         except Exception:
             pass
 
-    # Focus timer
     if show.get("pomodoro", True):
         try:
             pomo = _read_pomodoro()
             if pomo and pomo.get("active"):
                 pomo_str = _render_pomodoro(pomo, theme, bar_width=min(bw, 8))
                 if pomo_str:
-                    parts.append(pomo_str)
+                    parts.append((_pri("pomodoro"), pomo_str))
         except Exception:
             pass
 
-    # Git drift detector (opt-in)
     if show.get("git_drift", False):
         try:
             drift_str = _render_git_drift()
             if drift_str:
-                parts.append(drift_str)
+                parts.append((_pri("git_drift"), drift_str))
         except Exception:
             pass
 
-    # Files changed counter (opt-in)
     if show.get("files_changed", False):
         try:
             files_str = _render_files_changed()
             if files_str:
-                parts.append(files_str)
+                parts.append((_pri("files_changed"), files_str))
         except Exception:
             pass
 
-    line = " | ".join(parts)
+    # Sort widgets by priority, then join
+    parts.sort(key=lambda x: x[0])
+    line = " | ".join(p[1] for p in parts)
 
     # Staleness indicator
     if show.get("staleness", True) and cache_age is not None:
@@ -3905,6 +3935,37 @@ def main():
             utf8_print("Usage: --hide <parts>  (comma-separated: session,weekly,plan,timer,extra,update)")
         return
 
+    if "--priority" in args:
+        idx = args.index("--priority")
+        if idx + 1 < len(args):
+            raw = args[idx + 1]
+            config = load_config()
+            wp = config.get("widget_priority", {})
+            valid = set(WIDGET_PRIORITY.keys())
+            for pair in raw.split(","):
+                if "=" not in pair:
+                    utf8_print(f"Bad format: {_sanitize(pair)} (use widget=number)")
+                    return
+                wid, val = pair.split("=", 1)
+                wid = wid.strip().lower()
+                if wid not in valid:
+                    utf8_print(f"Unknown widget: {_sanitize(wid)} (valid: {', '.join(sorted(valid))})")
+                    return
+                try:
+                    wp[wid] = int(val)
+                except ValueError:
+                    utf8_print(f"Bad priority: {_sanitize(val)} (must be a number)")
+                    return
+            config["widget_priority"] = wp
+            save_config(config)
+            utf8_print(f"Widget priorities updated: {', '.join(f'{k}={v}' for k, v in wp.items())}")
+        else:
+            utf8_print("Usage: --priority widget=N,widget=N")
+            utf8_print(f"\nDefaults:")
+            for wid, pri in sorted(WIDGET_PRIORITY.items(), key=lambda x: x[1]):
+                utf8_print(f"  {wid:20s} {pri}")
+        return
+
     if "--text-color" in args:
         idx = args.index("--text-color")
         if idx + 1 < len(args):
@@ -4376,7 +4437,7 @@ def main():
     # survives across refreshes that don't receive stdin data from Claude Code.
     # Merge new data into persisted data so partial updates (e.g. model but
     # no context_pct during thinking) don't wipe previously known fields.
-    _STDIN_CTX_KEYS = {"model_name", "context_pct", "context_used", "context_limit", "cost_usd", "worktree_branch", "_rate_limits"}
+    _STDIN_CTX_KEYS = {"model_name", "context_pct", "context_used", "context_limit", "cost_usd", "worktree_branch", "_rate_limits", "lines_added", "lines_removed"}
     stdin_ctx_path = get_state_dir() / "stdin_ctx.json"
     persisted = {}
     try:
