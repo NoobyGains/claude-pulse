@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 250" width="700" height="250">
+  <defs>
+    <linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#eb5f57"/>
+      <stop offset="14%" stop-color="#f58b57"/>
+      <stop offset="28%" stop-color="#fac35f"/>
+      <stop offset="42%" stop-color="#91c882"/>
+      <stop offset="57%" stop-color="#82aadc"/>
+      <stop offset="71%" stop-color="#9b82c8"/>
+      <stop offset="85%" stop-color="#c882b4"/>
+      <stop offset="100%" stop-color="#eb5f57"/>
+    </linearGradient>
+    <filter id="g1"><feGaussianBlur stdDeviation="6"/></filter>
+    <filter id="g2"><feGaussianBlur stdDeviation="12"/></filter>
+    <filter id="g3"><feGaussianBlur stdDeviation="20"/></filter>
+  </defs>
+
+  <rect width="700" height="250" fill="#0d1117" rx="16"/>
+
+  <!-- Wide ambient glow -->
+  <polyline points="40,140 100,140 140,140 170,60 200,180 230,35 260,185 290,75 320,140 360,140 400,140"
+    fill="none" stroke="url(#g)" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"
+    opacity="0.15" filter="url(#g3)"/>
+
+  <!-- Medium glow -->
+  <polyline points="40,140 100,140 140,140 170,60 200,180 230,35 260,185 290,75 320,140 360,140 400,140"
+    fill="none" stroke="url(#g)" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"
+    opacity="0.4" filter="url(#g2)"/>
+
+  <!-- Inner glow -->
+  <polyline points="40,140 100,140 140,140 170,60 200,180 230,35 260,185 290,75 320,140 360,140 400,140"
+    fill="none" stroke="url(#g)" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"
+    opacity="0.6" filter="url(#g1)"/>
+
+  <!-- Sharp line -->
+  <polyline points="40,140 100,140 140,140 170,60 200,180 230,35 260,185 290,75 320,140 360,140 400,140"
+    fill="none" stroke="url(#g)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- "claude" in white -->
+  <text x="430" y="120" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif"
+    font-size="48" font-weight="700" fill="#ffffff" letter-spacing="-1">claude</text>
+
+  <!-- "pulse" in gradient -->
+  <text x="430" y="168" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif"
+    font-size="48" font-weight="300" fill="url(#g)" letter-spacing="-1">pulse</text>
+
+  <!-- Subtle tagline -->
+  <text x="432" y="195" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif"
+    font-size="13" fill="#8b949e" letter-spacing="0.5">real-time usage monitor for Claude Code</text>
+</svg>
