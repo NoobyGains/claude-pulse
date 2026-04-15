@@ -3769,6 +3769,22 @@ def build_status_line(usage, plan, config=None, stdin_ctx=None, cache_age=None):
     return line
 
 
+def _visible_len(text):
+    """Return the number of visible (non-ANSI-escape) characters in *text*."""
+    count = 0
+    i = 0
+    while i < len(text):
+        if text[i] == "\033":
+            j = i + 1
+            while j < len(text) and j < i + 25 and text[j] not in "ABCDEFGHJKSTfmnsulh":
+                j += 1
+            i = j + 1 if j < len(text) else j
+            continue
+        count += 1
+        i += 1
+    return count
+
+
 def _truncate_line(line, config):
     """Clip visible characters to effective terminal width.
 
@@ -3802,6 +3818,61 @@ def _truncate_line(line, config):
     except Exception:
         pass
     return line
+
+
+def _wrap_line(line, config):
+    """Wrap at ' | ' separators when the line would overflow the terminal.
+
+    Returns one or two lines joined by newline.  If the line fits, it is
+    returned unchanged (no trailing newline added).  When wrapping is needed,
+    segments are distributed across two lines so that each stays within the
+    effective terminal width.
+    """
+    try:
+        term_width = _detect_terminal_width() or shutil.get_terminal_size((120, 24)).columns
+        max_width_pct = config.get("max_width", DEFAULT_MAX_WIDTH_PCT)
+        if not (isinstance(max_width_pct, int) and 20 <= max_width_pct <= 100):
+            max_width_pct = DEFAULT_MAX_WIDTH_PCT
+        max_visible = (term_width * max_width_pct) // 100
+
+        if _visible_len(line) <= max_visible:
+            return line
+
+        # Split on the rendered separator
+        segments = line.split(" | ")
+        if len(segments) < 2:
+            return _truncate_line(line, config)
+
+        # Greedily fill line 1, then put the rest on line 2
+        line1_parts = [segments[0]]
+        rest = segments[1:]
+        for seg in rest:
+            candidate = " | ".join(line1_parts + [seg])
+            if _visible_len(candidate) <= max_visible:
+                line1_parts.append(seg)
+            else:
+                break
+        used = len(line1_parts)
+        line2_parts = segments[used:]
+
+        if not line2_parts:
+            return _truncate_line(line, config)
+
+        row1 = " | ".join(line1_parts)
+        row2 = " | ".join(line2_parts)
+        # Truncate each row individually as a safety net
+        row1 = _truncate_line(row1, config)
+        row2 = _truncate_line(row2, config)
+        return row1 + RESET + "\n" + row2
+    except Exception:
+        return _truncate_line(line, config)
+
+
+def _fit_line(line, config):
+    """Apply wrap or truncate depending on the user's --wrap setting."""
+    if config.get("wrap") == "auto":
+        return _wrap_line(line, config)
+    return _truncate_line(line, config)
 
 
 # ---------------------------------------------------------------------------
@@ -4429,6 +4500,31 @@ def main():
             utf8_print("Usage: --max-width <20-100>  (percentage, default 80)")
         return
 
+    if "--wrap" in args:
+        idx = args.index("--wrap")
+        if idx + 1 < len(args):
+            val = args[idx + 1].lower()
+            if val not in ("off", "auto"):
+                utf8_print(f"Unknown wrap mode: {_sanitize(val)}")
+                utf8_print("Available: off, auto")
+                return
+            config = load_config()
+            config["wrap"] = val
+            save_config(config)
+            try:
+                os.remove(get_cache_path())
+            except OSError:
+                pass
+            if val == "auto":
+                utf8_print(f"Wrap: {GREEN}auto{RESET}  (splits at | when line overflows)")
+            else:
+                utf8_print(f"Wrap: {BOLD}off{RESET}  (truncate, default)")
+        else:
+            utf8_print("Usage: --wrap <off|auto>")
+            utf8_print(f"  {'off':<10} Truncate long lines (default)")
+            utf8_print(f"  {'auto':<10} Wrap to 2 lines at | separators when overflow")
+        return
+
     if "--bar-style" in args:
         idx = args.index("--bar-style")
         if idx + 1 < len(args):
@@ -4860,7 +4956,7 @@ def main():
 
         line = append_update_indicator(line, config)
         line = append_claude_update_indicator(line, config)
-        line = _truncate_line(line, config)
+        line = _fit_line(line, config)
         sys.stdout.buffer.write((line + RESET + "\n").encode("utf-8"))
         return
 
@@ -4874,7 +4970,7 @@ def main():
             line = cached.get("line", "")
         line = append_update_indicator(line, config)
         line = append_claude_update_indicator(line, config)
-        line = _truncate_line(line, config)
+        line = _fit_line(line, config)
         sys.stdout.buffer.write((line + RESET + "\n").encode("utf-8"))
         return
 
@@ -4974,7 +5070,7 @@ def main():
         write_cache(cache_path, line)
     line = append_update_indicator(line, config)
     line = append_claude_update_indicator(line, config)
-    line = _truncate_line(line, config)
+    line = _fit_line(line, config)
     sys.stdout.buffer.write((line + RESET + "\n").encode("utf-8"))
 
 
