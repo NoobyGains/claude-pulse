@@ -3919,8 +3919,12 @@ def install_status_line():
         try:
             with open(settings_path, "r", encoding="utf-8") as f:
                 settings = json.load(f)
-        except (json.JSONDecodeError, OSError):
-            pass
+        except json.JSONDecodeError:
+            print(f"Error: {settings_path} contains invalid JSON. Fix or remove it before installing.", file=sys.stderr)
+            return
+        except OSError as e:
+            print(f"Error: Cannot read {settings_path}: {e}", file=sys.stderr)
+            return
 
     # Status line command — use $HOME on Windows for Claude Code compat
     settings["statusLine"] = {
