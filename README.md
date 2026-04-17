@@ -125,6 +125,7 @@ Use `/pulse` in Claude Code for an interactive setup wizard, or configure direct
 --bar-size large           # small, small-medium, medium, medium-large, large
 --bar-style block          # classic, block, shade, pipe, dot, square, star, braille
 --layout compact           # standard, compact, minimal, percent-first
+--wrap auto                # off (default, truncate) or auto (wrap to 2 lines at | when narrow)
 
 # Currency (auto-converts USD via live exchange rate)
 --currency £               # $, £, €, ¥, C$, A$, ₹, kr, and 20+ more
