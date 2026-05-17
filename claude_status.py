@@ -2781,7 +2781,8 @@ def cmd_stats():
                 f"{BRIGHT_YELLOW}{cost_str:<12}{RESET}{DIM}({tok_str}){RESET}"
             )
 
-        utf8_print(f"    {DIM}{'\u2500' * 33}{RESET}")
+        _sep = '\u2500' * 33
+        utf8_print(f"    {DIM}{_sep}{RESET}")
         total_local = cost_data["total_cost_usd"] * rate
         utf8_print(f"    {'Total:':<{max_name_len + 2}}  {BOLD}{BRIGHT_YELLOW}{currency_sym}{total_local:,.2f}{RESET}")
         utf8_print("")
