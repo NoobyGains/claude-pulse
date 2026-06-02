@@ -1732,6 +1732,81 @@ def fetch_usage(token):
 
 
 # ---------------------------------------------------------------------------
+# MiniMax provider extension (additive, see PR description)
+# ---------------------------------------------------------------------------
+# When running under mxclaude (a wrapper that points the `claude` binary at
+# MiniMax's Anthropic-protocol-compatible endpoint, e.g. with model
+# `MiniMax-M3`), three of Pulse's stdin's Anthropic-format fields don't
+# accurately describe the session, and a fourth is missing entirely:
+#
+#   1. `context_window.used_percentage` is INPUT-ONLY per Anthropic's docs
+#      (input_tokens + cache_creation + cache_read). Claude Code's own
+#      "X% context used" warning includes OUTPUT too. Result: the bar
+#      visibly disagrees with the warning.
+#
+#   2. `context_window_size` is unreliable from the Anthropic-protocol shim.
+#      MiniMax's shim reports 200,000 for M3 even though the real window is
+#      1,000,000 (verified 2026-06-02 against the model's docs). Inflates
+#      the % display by ~5×.
+#
+#   3. `cost.total_cost_usd` is Anthropic-priced and wrong for MiniMax.
+#      Recompute from token counts using MiniMax's tiered pricing.
+#
+#   4. The `rate_limits` block is absent (only Claude.ai Pro/Max subscribers
+#      get it on stdin). Fall back to `mmx quota show` and reshape to
+#      Pulse's existing _rate_limits schema so the renderer — which is
+#      data-shape-agnostic — picks it up automatically.
+#
+# The patch is purely additive: no changes to the OAuth flow, the
+# `_TOKEN_ALLOWED_DOMAINS` allowlist, the renderer, or any existing
+# user-visible behavior. The new code is feature-gated on the env
+# (`ANTHROPIC_BASE_URL` contains `minimax.io` + `ANTHROPIC_MODEL` starts
+# with `MiniMax-`), so it cannot activate for non-MiniMax users.
+
+# Per-model context window sizes. Don't trust the shim's stdin value.
+MINIMAX_CONTEXT_SIZES = {
+    "MiniMax-M3":              1_000_000,
+    "MiniMax-M2.7":              128_000,
+    "MiniMax-M2.7-highspeed":    128_000,
+}
+
+# Pricing tiers (USD per 1M tokens, no 7-day discount).
+# Tier1 = ≤512K, tier2 = 512K~1M. Per https://platform.minimax.io/docs/token-plan/claude-code
+MINIMAX_PRICING = {
+    "tier1": {"max_tokens":   512_000, "in_per_m": 0.60, "out_per_m": 2.40},
+    "tier2": {"max_tokens": 1_000_000, "in_per_m": 1.20, "out_per_m": 4.80},
+}
+
+
+def _parse_minimax_quota(mmx_json):
+    """Convert `mmx quota show --output json` into Pulse's _rate_limits shape.
+
+    Skips buckets with status_code 3 (un-used-this-period, e.g. video when
+    the user hasn't generated any video).
+    """
+    out = {}
+    for entry in mmx_json.get("model_remains", []):
+        if entry.get("current_interval_status") == 3:
+            continue
+        interval_left = entry.get("current_interval_remaining_percent")
+        weekly_left   = entry.get("current_weekly_remaining_percent")
+        end_ms        = entry.get("end_time")
+        weekly_end_ms = entry.get("weekly_end_time")
+        if interval_left is not None and end_ms:
+            out["five_hour"] = {
+                "utilization": 100.0 - float(interval_left),
+                "resets_at":   datetime.fromtimestamp(end_ms / 1000, tz=timezone.utc).isoformat(),
+            }
+        if weekly_left is not None and weekly_end_ms:
+            out["seven_day"] = {
+                "utilization": 100.0 - float(weekly_left),
+                "resets_at":   datetime.fromtimestamp(weekly_end_ms / 1000, tz=timezone.utc).isoformat(),
+            }
+        break
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Status line rendering
 # ---------------------------------------------------------------------------
 
@@ -2915,6 +2990,48 @@ def _parse_stdin_context(raw_stdin):
                     }
     except (AttributeError, KeyError, ValueError, TypeError):
         pass
+
+    # MiniMax provider: when running under mxclaude, fix the four known
+    # stdin mismatches described at the top of this provider block.
+    if "minimax.io" in os.environ.get("ANTHROPIC_BASE_URL", "") and \
+       os.environ.get("ANTHROPIC_MODEL", "").startswith("MiniMax-"):
+        ctx = data.get("data", data).get("context_window", {}) or {}
+        in_tok  = int(ctx.get("total_input_tokens")  or 0)
+        out_tok = int(ctx.get("total_output_tokens") or 0)
+        total   = in_tok + out_tok
+
+        # 1 + 2: Recompute Context %% from (input + output) against the
+        # real per-model window (don't trust the shim's stdin value).
+        ctx_size = MINIMAX_CONTEXT_SIZES.get(
+            os.environ["ANTHROPIC_MODEL"], 1_000_000,
+        )
+        if ctx_size > 0:
+            result["context_pct"] = (total / ctx_size) * 100.0
+
+        # 3: Recompute cost from token counts using tiered pricing.
+        # Anthropic-priced `cost.total_cost_usd` is wrong under mxclaude.
+        tier = MINIMAX_PRICING["tier1"]
+        if total > MINIMAX_PRICING["tier1"]["max_tokens"]:
+            tier = MINIMAX_PRICING["tier2"]
+        result["cost_usd"] = (
+            in_tok  * tier["in_per_m"] / 1_000_000.0
+            + out_tok * tier["out_per_m"] / 1_000_000.0
+        )
+
+        # 4: Fetch rate_limits from `mmx quota show` and reshape to Pulse's
+        # schema. Only override if stdin didn't already provide rate_limits.
+        if not result.get("_rate_limits"):
+            try:
+                mmx_proc = subprocess.run(
+                    ["mmx", "quota", "show", "--output", "json", "--quiet"],
+                    capture_output=True, text=True, timeout=3,
+                )
+                if mmx_proc.returncode == 0:
+                    parsed = _parse_minimax_quota(json.loads(mmx_proc.stdout))
+                    if parsed:
+                        result["_rate_limits"] = parsed
+            except (subprocess.TimeoutExpired, FileNotFoundError, json.JSONDecodeError):
+                pass  # renderer will simply not show rate bars
 
     return result
 
