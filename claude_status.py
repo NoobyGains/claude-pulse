@@ -648,11 +648,9 @@ def _apply_bar_animation(colour, char_idx, bar_width, anim_mode, config=None):
     now = time.time()
 
     if anim_mode == "pulse":
-        # Bar cycles through theme's low → mid → high colours over time
-        # Each frame is a distinctly different colour
-        phase = (now * 0.5 * speed) % 1.0  # slow cycle
-        # Cycle: low(0) → mid(0.33) → high(0.66) → low(1.0)
-        return None  # handled at bar level with _pulse_theme_color
+        # Bar cycles through theme's low → mid → high colours over time;
+        # the actual cycling is handled at bar level with _pulse_theme_color.
+        return None
 
     elif anim_mode == "glow":
         # Each character is a different colour — gradient across the bar
@@ -1785,23 +1783,33 @@ def _parse_minimax_quota(mmx_json):
     the user hasn't generated any video).
     """
     out = {}
+    if not isinstance(mmx_json, dict):
+        return out
     for entry in mmx_json.get("model_remains", []):
-        if entry.get("current_interval_status") == 3:
+        if not isinstance(entry, dict) or entry.get("current_interval_status") == 3:
             continue
         interval_left = entry.get("current_interval_remaining_percent")
         weekly_left   = entry.get("current_weekly_remaining_percent")
         end_ms        = entry.get("end_time")
         weekly_end_ms = entry.get("weekly_end_time")
+        # Guard each bucket independently: a malformed percent or timestamp
+        # in one window must not lose the other (or crash the status line).
         if interval_left is not None and end_ms:
-            out["five_hour"] = {
-                "utilization": 100.0 - float(interval_left),
-                "resets_at":   datetime.fromtimestamp(end_ms / 1000, tz=timezone.utc).isoformat(),
-            }
+            try:
+                out["five_hour"] = {
+                    "utilization": 100.0 - float(interval_left),
+                    "resets_at":   datetime.fromtimestamp(float(end_ms) / 1000, tz=timezone.utc).isoformat(),
+                }
+            except (ValueError, TypeError, OSError, OverflowError):
+                pass
         if weekly_left is not None and weekly_end_ms:
-            out["seven_day"] = {
-                "utilization": 100.0 - float(weekly_left),
-                "resets_at":   datetime.fromtimestamp(weekly_end_ms / 1000, tz=timezone.utc).isoformat(),
-            }
+            try:
+                out["seven_day"] = {
+                    "utilization": 100.0 - float(weekly_left),
+                    "resets_at":   datetime.fromtimestamp(float(weekly_end_ms) / 1000, tz=timezone.utc).isoformat(),
+                }
+            except (ValueError, TypeError, OSError, OverflowError):
+                pass
         break
     return out
 
@@ -2992,46 +3000,54 @@ def _parse_stdin_context(raw_stdin):
         pass
 
     # MiniMax provider: when running under mxclaude, fix the four known
-    # stdin mismatches described at the top of this provider block.
-    if "minimax.io" in os.environ.get("ANTHROPIC_BASE_URL", "") and \
-       os.environ.get("ANTHROPIC_MODEL", "").startswith("MiniMax-"):
-        ctx = data.get("data", data).get("context_window", {}) or {}
-        in_tok  = int(ctx.get("total_input_tokens")  or 0)
-        out_tok = int(ctx.get("total_output_tokens") or 0)
-        total   = in_tok + out_tok
+    # stdin mismatches described at the top of this provider block. Wrapped
+    # like every sibling block above so malformed stdin can never crash the
+    # status line — on any error we simply leave the Anthropic-shaped values.
+    try:
+        if "minimax.io" in os.environ.get("ANTHROPIC_BASE_URL", "") and \
+           os.environ.get("ANTHROPIC_MODEL", "").startswith("MiniMax-"):
+            ctx = data.get("data", data).get("context_window", {}) or {}
+            in_tok  = int(ctx.get("total_input_tokens")  or 0)
+            out_tok = int(ctx.get("total_output_tokens") or 0)
+            total   = in_tok + out_tok
 
-        # 1 + 2: Recompute Context %% from (input + output) against the
-        # real per-model window (don't trust the shim's stdin value).
-        ctx_size = MINIMAX_CONTEXT_SIZES.get(
-            os.environ["ANTHROPIC_MODEL"], 1_000_000,
-        )
-        if ctx_size > 0:
-            result["context_pct"] = (total / ctx_size) * 100.0
+            # 1 + 2: Recompute Context %% from (input + output) against the
+            # real per-model window (don't trust the shim's stdin value), and
+            # keep tokens-display mode consistent with the corrected window.
+            ctx_size = MINIMAX_CONTEXT_SIZES.get(
+                os.environ.get("ANTHROPIC_MODEL", ""), 1_000_000,
+            )
+            if ctx_size > 0:
+                result["context_pct"] = (total / ctx_size) * 100.0
+                result["context_used"] = total
+                result["context_limit"] = ctx_size
 
-        # 3: Recompute cost from token counts using tiered pricing.
-        # Anthropic-priced `cost.total_cost_usd` is wrong under mxclaude.
-        tier = MINIMAX_PRICING["tier1"]
-        if total > MINIMAX_PRICING["tier1"]["max_tokens"]:
-            tier = MINIMAX_PRICING["tier2"]
-        result["cost_usd"] = (
-            in_tok  * tier["in_per_m"] / 1_000_000.0
-            + out_tok * tier["out_per_m"] / 1_000_000.0
-        )
+            # 3: Recompute cost from token counts using tiered pricing.
+            # Anthropic-priced `cost.total_cost_usd` is wrong under mxclaude.
+            tier = MINIMAX_PRICING["tier1"]
+            if total > MINIMAX_PRICING["tier1"]["max_tokens"]:
+                tier = MINIMAX_PRICING["tier2"]
+            result["cost_usd"] = (
+                in_tok  * tier["in_per_m"] / 1_000_000.0
+                + out_tok * tier["out_per_m"] / 1_000_000.0
+            )
 
-        # 4: Fetch rate_limits from `mmx quota show` and reshape to Pulse's
-        # schema. Only override if stdin didn't already provide rate_limits.
-        if not result.get("_rate_limits"):
-            try:
-                mmx_proc = subprocess.run(
-                    ["mmx", "quota", "show", "--output", "json", "--quiet"],
-                    capture_output=True, text=True, timeout=3,
-                )
-                if mmx_proc.returncode == 0:
-                    parsed = _parse_minimax_quota(json.loads(mmx_proc.stdout))
-                    if parsed:
-                        result["_rate_limits"] = parsed
-            except (subprocess.TimeoutExpired, FileNotFoundError, json.JSONDecodeError):
-                pass  # renderer will simply not show rate bars
+            # 4: Fetch rate_limits from `mmx quota show` and reshape to Pulse's
+            # schema. Only override if stdin didn't already provide rate_limits.
+            if not result.get("_rate_limits"):
+                try:
+                    mmx_proc = subprocess.run(
+                        ["mmx", "quota", "show", "--output", "json", "--quiet"],
+                        capture_output=True, text=True, timeout=3,
+                    )
+                    if mmx_proc.returncode == 0:
+                        parsed = _parse_minimax_quota(json.loads(mmx_proc.stdout))
+                        if parsed:
+                            result["_rate_limits"] = parsed
+                except (subprocess.TimeoutExpired, FileNotFoundError, json.JSONDecodeError):
+                    pass  # renderer will simply not show rate bars
+    except (AttributeError, KeyError, ValueError, TypeError, OSError):
+        pass
 
     return result
 
@@ -5170,7 +5186,6 @@ def main():
     # Normal status line mode
     config = load_config()
     cache_ttl = config.get("cache_ttl_seconds", DEFAULT_CACHE_TTL)
-    animate = config.get("animate", "off")
 
     # Note: _detect_status_bar_conflict() removed — it suppressed all output
     # when leftover npm @anthropic-ai/claude-code files existed on disk,
@@ -5387,4 +5402,21 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        raise SystemExit(130)
+    except Exception:
+        # A status line must never crash Claude Code with a traceback. When
+        # invoked as the status line (stdin is piped, not a TTY) degrade to a
+        # clean blank line; for interactive CLI use, surface the error.
+        try:
+            interactive = sys.stdin.isatty()
+        except Exception:
+            interactive = False
+        if interactive:
+            raise
+        try:
+            sys.stdout.buffer.write((RESET + "\n").encode("utf-8"))
+        except Exception:
+            pass
