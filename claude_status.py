@@ -2599,7 +2599,7 @@ def _calculate_streak(daily_dates, today):
         if d_ord == check_ord:
             current_streak += 1
             check_ord -= 1
-        elif d_ord == check_ord + 1 and current_streak == 0:
+        elif d_ord == check_ord - 1 and current_streak == 0:
             # Today not logged yet, start from yesterday
             current_streak = 1
             check_ord = d_ord - 1
