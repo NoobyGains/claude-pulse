@@ -1,4 +1,4 @@
-Configure your Claude status bars — themes, colours, animations, peak hours, and more. $ARGUMENTS
+Configure your Claude status bars — themes, colours, animations, widgets, and more. $ARGUMENTS
 
 ---
 
@@ -67,16 +67,16 @@ If $ARGUMENTS matches `bar-style <name>` or `style <name>`:
 If $ARGUMENTS matches `layout <name>`:
 -> Run `--layout <name>` directly.
 
-If $ARGUMENTS matches `peak-hours <value>` or `peak <value>`:
--> Run `--peak-hours <value>` directly.
--> Examples: `peak-hours 13:00-19:00`, `peak-hours off`, `peak-hours on`
-
 If $ARGUMENTS matches `animation-speed <speed>` or `speed <speed>`:
 -> Run `--animation-speed <speed>` directly.
 
 If $ARGUMENTS matches `focus start [minutes]` or `focus stop` or `focus status`:
 -> Run `--focus <action> [minutes]` directly.
 -> Default is 25 minutes if no duration given.
+
+If $ARGUMENTS matches `effort-format <value>`:
+-> Run `--effort-format <value>` directly.
+-> Values: `labeled` (default, "Effort: Medium"), `full` ("Medium"), `short` ("med")
 
 If $ARGUMENTS matches `clock <format>` (where format is `12h` or `24h`):
 -> Run `--clock-format <format>` directly.
@@ -198,21 +198,7 @@ Options:
 
 Apply with `--currency <symbol>`. Explain: the cost shows what this session would cost at API rates, converted to their currency via live exchange rate.
 
-**Step 7:** Peak hours:
-
-```
-Question: "Enable peak hours indicator? (Anthropic's 2x consumption window)"
-Options:
-  - "On — 1pm-7pm (Recommended)" — "Default window matching known peak times"
-  - "Custom" — "Set your own peak window"
-  - "Off" — "Don't show peak indicator"
-```
-
-If "Custom", ask for start and end time (HH:MM format). Apply with `--peak-hours <start>-<end>`.
-If "On", apply `--peak-hours on`.
-If "Off", apply `--peak-hours off`.
-
-**Step 8:** Clock format:
+**Step 7:** Clock format:
 
 ```
 Question: "Clock format for timers?"
@@ -223,7 +209,7 @@ Options:
 
 Apply with `--clock-format <12h|24h>`.
 
-**Step 9:** Live heartbeat hook:
+**Step 8:** Live heartbeat hook:
 
 ```
 Question: "Install the live heartbeat hook? (shows tool counter during active work)"
@@ -234,8 +220,8 @@ Options:
 
 If "Yes", run `python "SCRIPT_PATH" --install-hooks`. Remind to restart Claude Code.
 
-**Step 10:** Confirm everything:
-"All set! Your status bar is configured with **<theme>**, **<animation>** animation, **<currency>** cost tracking, and peak hours **<on/off>**. It updates on every interaction."
+**Step 9:** Confirm everything:
+"All set! Your status bar is configured with **<theme>**, **<animation>** animation, and **<currency>** cost tracking. It updates on every interaction."
 
 If hooks were installed: "Restart Claude Code to activate the live heartbeat."
 
