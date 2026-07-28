@@ -118,6 +118,7 @@ PLAN_NAMES = {
 MODEL_SHORT_NAMES = {
     "claude-fable-5": "Fable",
     "claude-mythos-5": "Mythos",
+    "claude-mythos-preview": "Mythos",
     "claude-opus-5": "Opus",
     "claude-opus-4-8": "Opus",
     "claude-opus-4-7": "Opus",
@@ -146,6 +147,7 @@ MODEL_CONTEXT_WINDOWS = {
     "Fable": 1_000_000,
     "Fable 5": 1_000_000,
     "Mythos": 1_000_000,
+    "Mythos Preview": 1_000_000,
     "Mythos 5": 1_000_000,
     "Opus": 1_000_000,
     "Opus 5": 1_000_000,
@@ -169,12 +171,15 @@ DEFAULT_CONTEXT_WINDOW = 200_000
 API_PRICING = {
     "claude-fable-5": {"input": 10.0, "output": 50.0, "cache_read": 1.0, "cache_write": 12.5},
     "claude-mythos-5": {"input": 10.0, "output": 50.0, "cache_read": 1.0, "cache_write": 12.5},
+    "claude-mythos-preview": {"input": 25.0, "output": 125.0, "cache_read": 2.5, "cache_write": 31.25},
     "claude-opus-5": {"input": 5.0, "output": 25.0, "cache_read": 0.50, "cache_write": 6.25},
     "claude-opus-4-8": {"input": 5.0, "output": 25.0, "cache_read": 0.50, "cache_write": 6.25},
     "claude-opus-4-7": {"input": 5.0, "output": 25.0, "cache_read": 0.50, "cache_write": 6.25},
     "claude-opus-4-6": {"input": 5.0, "output": 25.0, "cache_read": 0.50, "cache_write": 6.25},
     "claude-opus-4-5": {"input": 5.0, "output": 25.0, "cache_read": 0.50, "cache_write": 6.25},
     "claude-opus-4": {"input": 15.0, "output": 75.0, "cache_read": 1.5, "cache_write": 18.75},
+    # Sonnet 5 list price. Introductory pricing ($2/$10) applies through
+    # 2026-08-31 and is substituted at lookup time by _pricing_for.
     "claude-sonnet-5": {"input": 3.0, "output": 15.0, "cache_read": 0.30, "cache_write": 3.75},
     "claude-sonnet-4-6": {"input": 3.0, "output": 15.0, "cache_read": 0.30, "cache_write": 3.75},
     "claude-sonnet-4-5": {"input": 3.0, "output": 15.0, "cache_read": 0.30, "cache_write": 3.75},
@@ -189,6 +194,7 @@ API_PRICING = {
 API_PRICING_DISPLAY = {
     "claude-fable-5": "Fable 5",
     "claude-mythos-5": "Mythos 5",
+    "claude-mythos-preview": "Mythos Preview",
     "claude-opus-5": "Opus 5",
     "claude-opus-4-8": "Opus 4.8",
     "claude-opus-4-7": "Opus 4.7",
@@ -205,6 +211,44 @@ API_PRICING_DISPLAY = {
     "claude-3-5-haiku": "Haiku 3.5",
     "claude-3-opus": "Opus 3",
 }
+
+
+# Introductory / promotional rates, applied until the stated UTC date.
+# Keeping these separate from API_PRICING means the table remains the list
+# price and the promo simply expires on its own without a code change.
+API_PRICING_PROMOS = {
+    "claude-sonnet-5": {
+        "until": "2026-08-31",
+        "pricing": {"input": 2.0, "output": 10.0, "cache_read": 0.20, "cache_write": 2.5},
+    },
+}
+
+
+def _pricing_for(model_id, at=None):
+    """Return the per-MTok rates for *model_id*, honouring active promos.
+
+    *at* is a UTC date (defaults to today). A promo whose end date has passed
+    falls back to the list price automatically.
+
+    Known limitation: fast mode bills Opus 5 / 4.8 at $10/$50 rather than
+    $5/$25, but transcripts do not record whether a request used it, so
+    historical scans price fast-mode turns at the standard rate and will
+    under-report them.
+    """
+    base = API_PRICING.get(model_id)
+    if base is None:
+        return None
+    promo = API_PRICING_PROMOS.get(model_id)
+    if not promo:
+        return base
+    try:
+        until = date.fromisoformat(promo["until"])
+        today = at or datetime.now(timezone.utc).date()
+        if today <= until:
+            return promo["pricing"]
+    except (ValueError, TypeError, KeyError):
+        pass
+    return base
 
 
 def _model_short_name(model_id):
@@ -1296,6 +1340,7 @@ def get_cache_path():
 # Update checker — compares local git HEAD to GitHub remote (cached 1 hour)
 # ---------------------------------------------------------------------------
 
+_UPDATE_CHECK_BUDGET = 6  # seconds; hard ceiling on one update check
 UPDATE_CHECK_TTL = 3600  # check at most once per hour
 GITHUB_REPO = "NoobyGains/claude-pulse"
 _GIT_PATH = shutil.which("git") or "git"  # resolve once at import time
@@ -1339,7 +1384,7 @@ def get_local_commit():
     try:
         result = subprocess.run(
             [_GIT_PATH, "rev-parse", "HEAD"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, text=True, timeout=2,
             cwd=str(repo_dir),
         )
         if result.returncode == 0:
@@ -1366,8 +1411,13 @@ def get_remote_commit():
         return None
 
 
-def _git(*args, timeout=5):
-    """Run git in the install dir, returning stripped stdout or None."""
+def _git(*args, timeout=2):
+    """Run git in the install dir, returning stripped stdout or None.
+
+    The default timeout is deliberately short: these calls sit behind the
+    hourly update check, and several run in series, so a slow filesystem or a
+    hung git could otherwise stall a repaint for tens of seconds.
+    """
     repo_dir = Path(__file__).resolve().parent
     try:
         result = subprocess.run(
@@ -1412,7 +1462,7 @@ def _remote_is_ancestor(remote):
     try:
         result = subprocess.run(
             [_GIT_PATH, "merge-base", "--is-ancestor", remote, "HEAD"],
-            capture_output=True, text=True, timeout=5, cwd=str(repo_dir),
+            capture_output=True, text=True, timeout=2, cwd=str(repo_dir),
         )
     except Exception:
         return None
@@ -1466,7 +1516,11 @@ def check_for_update():
         if script_mtime is not None and cached.get("script_mtime") == script_mtime:
             return cached.get("update_available", False)
 
-    # Cache is stale or unverifiable — now it's worth asking git.
+    # Cache is stale or unverifiable — now it's worth asking git. Everything
+    # from here is bounded by _UPDATE_CHECK_BUDGET so a slow git or a slow
+    # GitHub can never hold a repaint open for the sum of its timeouts.
+    _deadline = time.time() + _UPDATE_CHECK_BUDGET
+
     local = get_local_commit()
     if not local:
         return None  # not a git install, skip silently
@@ -1479,10 +1533,14 @@ def check_for_update():
     # A fork's own commits are never on upstream main, so a bare inequality
     # would nag forever. Only ever prompt a checkout that actually tracks
     # upstream (issue: forks false-positive on the update indicator).
+    if time.time() > _deadline:
+        return None
     if _tracks_upstream() is False:
         return None
 
     # Perform the check
+    if time.time() > _deadline:
+        return None
     remote = get_remote_commit()
     if not remote:
         return None  # network error, skip silently
@@ -1794,6 +1852,10 @@ def read_cache(cache_path, ttl):
     try:
         with open(cache_path, "r", encoding="utf-8") as f:
             cached = json.load(f)
+        # Same untrusted-shape rule as read_cache: this feeds the 429 fallback,
+        # where a raise means no status line at all.
+        if not isinstance(cached, dict):
+            return None
         # The file is ours, but it is still untrusted input: a truncated write,
         # a disk error, or a hand-edit can leave valid JSON of the wrong shape.
         # Anything other than a dict is treated as a cache miss rather than
@@ -1839,9 +1901,14 @@ def _read_stale_cache(cache_path):
     try:
         with open(cache_path, "r", encoding="utf-8") as f:
             cached = json.load(f)
+        # Same untrusted-shape rule as read_cache. This one feeds the 429
+        # fallback, where raising means no status line is printed at all:
+        # a cache file containing bare `42` made `"usage" in cached` raise.
+        if not isinstance(cached, dict):
+            return None
         if "usage" in cached or "line" in cached:
             return cached
-    except (FileNotFoundError, json.JSONDecodeError, KeyError, OSError):
+    except (FileNotFoundError, json.JSONDecodeError, KeyError, OSError, TypeError):
         pass
     return None
 
@@ -3122,7 +3189,7 @@ def _scan_session_costs(since_ts=None):
                         # Longest prefix wins — a first-match scan would let the
                         # bare "claude-opus-4" key ($15/$75) swallow
                         # "claude-opus-4-8" ($5/$25) and treble the reported cost.
-                        pricing = API_PRICING.get(model_id)
+                        pricing = _pricing_for(model_id)
                         if pricing is None:
                             best_key = None
                             for key in API_PRICING:
@@ -3131,7 +3198,7 @@ def _scan_session_costs(since_ts=None):
                                 ):
                                     best_key = key
                             if best_key is not None:
-                                pricing = API_PRICING[best_key]
+                                pricing = _pricing_for(best_key)
                                 model_id = best_key
                         if pricing is None:
                             continue
@@ -3309,6 +3376,8 @@ def _parse_stdin_context(raw_stdin):
         result["pr_number"] = None
         result["pr_url"] = None
         result["pr_review_state"] = None
+        result["cache_hit_pct"] = None
+        result["cache_read_tokens"] = None
 
     # Model name
     try:
@@ -4480,10 +4549,10 @@ def _join_parts(parts, config):
         return " | ".join(p[1] for p in parts)
     line1_ids = config.get("line1_widgets") or []
     line2_ids = config.get("line2_widgets") or []
-    if not isinstance(line1_ids, list):
-        line1_ids = []
-    if not isinstance(line2_ids, list):
-        line2_ids = []
+    # Only str ids are usable; a nested list/dict would make set() raise
+    # TypeError: unhashable type and blank the bar.
+    line1_ids = [w for w in line1_ids if isinstance(w, str)] if isinstance(line1_ids, list) else []
+    line2_ids = [w for w in line2_ids if isinstance(w, str)] if isinstance(line2_ids, list) else []
     if not line1_ids and not line2_ids:
         return " | ".join(p[1] for p in parts)
 
@@ -4740,8 +4809,23 @@ def _desired_refresh_interval(config):
     show = config.get("show", {})
     if not isinstance(show, dict):
         show = {}
-    if show.get("heartbeat", True) or show.get("pomodoro", True):
-        return REFRESH_TIMED
+    # `heartbeat` and `pomodoro` are enabled by default but render nothing
+    # unless a hook is currently firing or a focus timer is actually running.
+    # Asking for a timer on the strength of the *setting* alone meant a stock
+    # config relaunched Python every 15s — 240 times an hour — to redraw a bar
+    # that never changed. Only ask once one of them is genuinely on screen.
+    try:
+        if show.get("heartbeat", True) and _is_hook_state_fresh(_read_hook_state()):
+            return REFRESH_TIMED
+    except Exception:
+        pass
+    try:
+        if show.get("pomodoro", True):
+            pomo = _read_pomodoro()
+            if pomo and pomo.get("active"):
+                return REFRESH_TIMED
+    except Exception:
+        pass
     return REFRESH_STATIC
 
 
@@ -5998,7 +6082,14 @@ def main():
                 if key == "extra_usage":
                     has_model_caps = has_model_caps or True
 
-        if not has_model_caps and "extra_usage" not in usage_from_stdin:
+        # Only reach for the API when stdin left us with nothing to draw.
+        # Previously any payload without model-scoped caps triggered a blocking
+        # OAuth request — which is every Claude Pro session, on every repaint
+        # with a cold cache, for data that only enriches an already-complete
+        # bar. extra_usage and per-model caps are both nice-to-have; the
+        # five-hour and weekly windows are the status line.
+        has_core = "five_hour" in usage_from_stdin or "seven_day" in usage_from_stdin
+        if not has_core and not has_model_caps and "extra_usage" not in usage_from_stdin:
             try:
                 token, api_plan = get_credentials()
                 if token:

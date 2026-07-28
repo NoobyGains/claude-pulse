@@ -168,5 +168,50 @@ class TranscriptTimestampTest(unittest.TestCase):
             self.assertIsNone(cs._parse_transcript_ts(bad), repr(bad))
 
 
+class PromoPricingTest(unittest.TestCase):
+    """Promotional rates expire on a date, so they live outside API_PRICING."""
+
+    def test_sonnet_5_intro_rate_applies_before_the_cutoff(self):
+        from datetime import date
+        self.assertEqual(cs._pricing_for("claude-sonnet-5", date(2026, 7, 1))["input"], 2.0)
+        self.assertEqual(cs._pricing_for("claude-sonnet-5", date(2026, 8, 31))["input"], 2.0)
+
+    def test_reverts_to_list_price_after_the_cutoff(self):
+        from datetime import date
+        self.assertEqual(cs._pricing_for("claude-sonnet-5", date(2026, 9, 1))["input"], 3.0)
+
+    def test_models_without_a_promo_use_the_table(self):
+        from datetime import date
+        self.assertEqual(cs._pricing_for("claude-opus-5", date(2026, 7, 1))["input"], 5.0)
+
+    def test_unknown_model_returns_none(self):
+        self.assertIsNone(cs._pricing_for("not-a-model"))
+
+    def test_mythos_preview_is_priced_and_sized(self):
+        self.assertIsNotNone(cs._pricing_for("claude-mythos-preview"))
+        self.assertEqual(cs.MODEL_CONTEXT_WINDOWS["Mythos Preview"], 1_000_000)
+
+
+class StaleCacheShapeTest(unittest.TestCase):
+    """_read_stale_cache feeds the 429 fallback; raising there prints nothing."""
+
+    def test_wrong_shaped_cache_returns_none(self):
+        import json
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "c.json"
+            for junk in ("42", '"s"', "[1,2]", "null", "true"):
+                p.write_text(junk, encoding="utf-8")
+                self.assertIsNone(cs._read_stale_cache(p), junk)
+
+    def test_valid_cache_still_returned(self):
+        import json
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "c.json"
+            p.write_text(json.dumps({"line": "x", "timestamp": 1}), encoding="utf-8")
+            self.assertIsNotNone(cs._read_stale_cache(p))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

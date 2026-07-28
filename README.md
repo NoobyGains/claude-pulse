@@ -57,7 +57,7 @@ Session ━━━───────── 27% 2h 53m | Weekly ━━━━━
 - **Corrupt state can't blank the bar** — a truncated or hand-edited cache/settings file used to raise on the hot path. Every state read now degrades to a cache miss instead, and one malformed rate-limit field no longer discards the windows after it.
 - **Peak hours removed.**
 
-Python floor is **3.8** — 3.1.0 advertised 3.6+ but did not parse below 3.12. Test suite: 21 → 133.
+Python floor is **3.8** — 3.1.0 advertised 3.6+ but did not parse below 3.12. Test suite: 21 → 142.
 
 ## Features
 

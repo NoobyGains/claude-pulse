@@ -15,6 +15,7 @@ Run: ``python tests/test_rendering.py``
 """
 import sys
 import unittest
+from unittest import mock
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -136,9 +137,24 @@ class RefreshIntervalTest(unittest.TestCase):
             cs._desired_refresh_interval({"animate": "rainbow"}), cs.REFRESH_ANIMATED
         )
 
-    def test_time_based_widget_gets_the_slow_tick(self):
+    def test_live_heartbeat_gets_the_slow_tick(self):
+        """A timer is warranted only once the widget is actually on screen."""
         cfg = {"animate": "off", "show": {"heartbeat": True, "pomodoro": False}}
-        self.assertEqual(cs._desired_refresh_interval(cfg), cs.REFRESH_TIMED)
+        with mock.patch.object(cs, "_read_hook_state", return_value={"tool_count": 1}),              mock.patch.object(cs, "_is_hook_state_fresh", return_value=True):
+            self.assertEqual(cs._desired_refresh_interval(cfg), cs.REFRESH_TIMED)
+
+    def test_running_focus_timer_gets_the_slow_tick(self):
+        cfg = {"animate": "off", "show": {"heartbeat": False, "pomodoro": True}}
+        with mock.patch.object(cs, "_read_pomodoro", return_value={"active": True}):
+            self.assertEqual(cs._desired_refresh_interval(cfg), cs.REFRESH_TIMED)
+
+    def test_enabled_but_idle_widgets_need_no_timer(self):
+        """Regression: heartbeat and pomodoro are on by default but render
+        nothing while idle. Asking for a timer on the setting alone relaunched
+        Python every 15s — 240 times an hour — to redraw an unchanged bar."""
+        cfg = {"animate": "off", "show": {"heartbeat": True, "pomodoro": True}}
+        with mock.patch.object(cs, "_is_hook_state_fresh", return_value=False),              mock.patch.object(cs, "_read_pomodoro", return_value=None):
+            self.assertIsNone(cs._desired_refresh_interval(cfg))
 
     def test_static_bar_needs_no_timer(self):
         cfg = {"animate": "off", "show": {"heartbeat": False, "pomodoro": False}}
