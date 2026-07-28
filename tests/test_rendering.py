@@ -245,5 +245,42 @@ class CsiGrammarTest(unittest.TestCase):
         self.assertEqual(cs._visible_len("[38;2;255"), 0)
 
 
+class EffortFormatTest(unittest.TestCase):
+    """Effort has three renderings; "med" alone reads as cryptic."""
+
+    def test_short(self):
+        self.assertEqual(cs._format_effort("medium", "short"), "med")
+        self.assertEqual(cs._format_effort("xhigh", "short"), "xh")
+
+    def test_full(self):
+        self.assertEqual(cs._format_effort("medium", "full"), "Medium")
+        self.assertEqual(cs._format_effort("xhigh", "full"), "XHigh")
+
+    def test_labeled_is_the_default(self):
+        self.assertEqual(cs.DEFAULT_EFFORT_FORMAT, "labeled")
+        self.assertEqual(cs._format_effort("medium"), "Effort: Medium")
+        self.assertEqual(cs._format_effort("max"), "Effort: Max")
+
+    def test_every_level_renders_in_every_format(self):
+        for level in ("low", "medium", "high", "xhigh", "max"):
+            for fmt in cs.EFFORT_FORMATS:
+                out = cs._format_effort(level, fmt)
+                self.assertTrue(out, f"{level}/{fmt} rendered empty")
+
+    def test_unknown_level_passes_through(self):
+        """A new effort tier should still appear, just without a nicer name."""
+        self.assertEqual(cs._format_effort("ultra", "short"), "ultra")
+        self.assertEqual(cs._format_effort("ultra", "full"), "Ultra")
+
+    def test_empty_level_renders_nothing(self):
+        for fmt in cs.EFFORT_FORMATS:
+            self.assertEqual(cs._format_effort("", fmt), "")
+            self.assertEqual(cs._format_effort(None, fmt), "")
+
+    def test_invalid_format_falls_back_to_default(self):
+        self.assertEqual(cs._format_effort("medium", "bogus"),
+                         cs._format_effort("medium", cs.DEFAULT_EFFORT_FORMAT))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

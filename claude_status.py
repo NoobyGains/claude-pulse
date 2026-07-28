@@ -447,9 +447,39 @@ WIDGET_PRIORITY = {
 }
 
 # Reasoning-effort display. Claude Code reports low|medium|high|xhigh|max.
+# Three renderings, because "med" reads as cryptic to anyone who hasn't
+# memorised the abbreviations, while the full word costs width on a busy bar.
 EFFORT_SHORT = {
     "low": "lo", "medium": "med", "high": "hi", "xhigh": "xh", "max": "max",
 }
+EFFORT_FULL = {
+    "low": "Low", "medium": "Medium", "high": "High",
+    "xhigh": "XHigh", "max": "Max",
+}
+EFFORT_FORMATS = ("short", "full", "labeled")
+# Default to the labelled form: "med" is only legible if you already know the
+# abbreviations, and even "Medium" on its own is ambiguous next to a model name.
+DEFAULT_EFFORT_FORMAT = "labeled"
+
+
+def _format_effort(level, effort_format=DEFAULT_EFFORT_FORMAT):
+    """Render a reasoning-effort level per the user's ``effort_format``.
+
+    short   → ``med``
+    full    → ``Medium``
+    labeled → ``Effort: Medium``  (default; unambiguous at a glance)
+
+    An unrecognised level is passed through rather than dropped — a new effort
+    tier should still show up, just without a prettier name.
+    """
+    if not level:
+        return ""
+    if effort_format not in EFFORT_FORMATS:
+        effort_format = DEFAULT_EFFORT_FORMAT
+    if effort_format == "short":
+        return EFFORT_SHORT.get(level, level)
+    full = EFFORT_FULL.get(level, level.title())
+    return f"Effort: {full}" if effort_format == "labeled" else full
 
 # Higher effort burns limits faster, so escalate the colour with it.
 EFFORT_COLOURS = {
@@ -1006,6 +1036,7 @@ def load_config():
     data.setdefault("bar_style", DEFAULT_BAR_STYLE)
     data.setdefault("layout", DEFAULT_LAYOUT)
     data.setdefault("context_format", "percent")
+    data.setdefault("effort_format", DEFAULT_EFFORT_FORMAT)
     data.setdefault("extra_display", "auto")
     if "currency" not in data:
         data["currency"] = _detect_default_currency()
@@ -4282,7 +4313,9 @@ def build_status_line(usage, plan, config=None, stdin_ctx=None, cache_age=None):
         effort = (stdin_ctx or {}).get("effort") or os.environ.get("CLAUDE_CODE_EFFORT_LEVEL", "")
         if effort and effort != "unset":
             effort = _sanitize(effort)
-            effort_short = EFFORT_SHORT.get(effort, effort)
+            effort_short = _format_effort(
+                effort, config.get("effort_format", DEFAULT_EFFORT_FORMAT)
+            )
             colour = EFFORT_COLOURS.get(effort, "")
             parts.append((_pri("effort"), f"{colour}{effort_short}{RESET}" if colour else effort_short))
 
@@ -5855,6 +5888,26 @@ def main():
             utf8_print(f"Animation speed: {BOLD}{val}{RESET}  ({ANIMATION_SPEEDS[val]}x)")
         else:
             utf8_print("Usage: --animation-speed <slow|normal|fast>")
+        return
+
+    if "--effort-format" in args:
+        idx = args.index("--effort-format")
+        if idx + 1 < len(args):
+            val = args[idx + 1].lower()
+            if val in EFFORT_FORMATS:
+                config = load_config()
+                config["effort_format"] = val
+                save_config(config)
+                sample = _format_effort("medium", val)
+                utf8_print(f"Effort format: {BOLD}{val}{RESET}  (renders as: {sample})")
+            else:
+                utf8_print(f"Usage: --effort-format <{'|'.join(EFFORT_FORMATS)}>")
+                for fmt in EFFORT_FORMATS:
+                    utf8_print(f"  {fmt:<10} {_format_effort('medium', fmt)}")
+        else:
+            config = load_config()
+            current = config.get("effort_format", DEFAULT_EFFORT_FORMAT)
+            utf8_print(f"Effort format: {BOLD}{current}{RESET}  (renders as: {_format_effort('medium', current)})")
         return
 
     if "--config" in args:

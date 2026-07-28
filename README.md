@@ -42,7 +42,7 @@ A single-file Python status bar for Claude Code that shows everything you need a
 </p>
 
 ```
-Session ━━━───────── 27% 2h 53m | Weekly ━━━━━━━━━─── 73% R:Fri 3pm | Fable ━━───────── 18% | Context ━━━━──────── 35% | $38.75 | +142 -37 | Opus 5 | xh | ⚡fast | [\] 320 tools 51m | main
+Session ━━━───────── 27% 2h 53m | Weekly ━━━━━━━━━─── 73% R:Fri 3pm | Fable ━━───────── 18% | Context ━━━━──────── 35% | $38.75 | +142 -37 | Opus 5 | Effort: XHigh | ⚡fast | [\] 320 tools 51m | main
 ```
 
 ## What's new in 3.2.0
@@ -57,7 +57,7 @@ Session ━━━───────── 27% 2h 53m | Weekly ━━━━━
 - **Corrupt state can't blank the bar** — a truncated or hand-edited cache/settings file used to raise on the hot path. Every state read now degrades to a cache miss instead, and one malformed rate-limit field no longer discards the windows after it.
 - **Peak hours removed.**
 
-Python floor is **3.8** — 3.1.0 advertised 3.6+ but did not parse below 3.12. Test suite: 21 → 120.
+Python floor is **3.8** — 3.1.0 advertised 3.6+ but did not parse below 3.12. Test suite: 21 → 133.
 
 ## Features
 
@@ -67,7 +67,7 @@ Python floor is **3.8** — 3.1.0 advertised 3.6+ but did not parse below 3.12. 
 | **Context window** | Live context usage percentage with pressure warnings at 70%/90% |
 | **Cost tracking** | Real-time session cost in your local currency (USD, GBP, EUR, + 25 more) with live exchange rates |
 | **Per-model weekly caps** | Separate bars for Opus, Sonnet and **Fable** weekly budgets, read from the model-scoped limits the API reports. Shown only when your plan actually reports them |
-| **Effort & fast mode** | Reasoning effort (`lo`/`med`/`hi`/`xh`/`max`, colour-escalating) and a **⚡fast** badge when Opus fast mode is active |
+| **Effort & fast mode** | Reasoning effort, written as `Effort: Medium` by default and colour-escalating with the level (`--effort-format full`/`short` for `Medium`/`med`), plus a **⚡fast** badge while Opus fast mode is on |
 | **Subagent & PR** | Active subagent name, plus an opt-in clickable PR badge with review state (OSC 8 hyperlink) |
 | **Cache efficiency** | Opt-in indicator for the share of input served from cache — the clearest cost signal on stdin |
 | **Two-line layout** | Split widgets across two rows with `line1_widgets` / `line2_widgets` |
@@ -152,6 +152,9 @@ Use `/pulse` in Claude Code for an interactive setup wizard, or configure direct
 
 # Currency (auto-converts USD via live exchange rate)
 --currency £               # $, £, €, ¥, C$, A$, ₹, kr, and 20+ more
+
+# Effort display (how the reasoning-effort level is written)
+--effort-format labeled    # labeled (default) 'Effort: Medium' · full 'Medium' · short 'med'
 
 # Clock
 --clock-format 12h         # 12h or 24h

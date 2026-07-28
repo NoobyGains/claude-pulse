@@ -74,6 +74,10 @@ If $ARGUMENTS matches `focus start [minutes]` or `focus stop` or `focus status`:
 -> Run `--focus <action> [minutes]` directly.
 -> Default is 25 minutes if no duration given.
 
+If $ARGUMENTS matches `effort-format <value>`:
+-> Run `--effort-format <value>` directly.
+-> Values: `labeled` (default, "Effort: Medium"), `full` ("Medium"), `short` ("med")
+
 If $ARGUMENTS matches `clock <format>` (where format is `12h` or `24h`):
 -> Run `--clock-format <format>` directly.
 

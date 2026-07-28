@@ -9,6 +9,7 @@
   "layout": "standard",
   "max_width": 80,
   "context_format": "percent",
+  "effort_format": "labeled",
   "weekly_timer_format": "auto",
   "clock_format": "12h",
   "extra_display": "auto",
