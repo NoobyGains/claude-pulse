@@ -3366,9 +3366,19 @@ def _parse_stdin_context(raw_stdin):
         rl = data.get("data", data).get("rate_limits", {})
         if rl:
             result["_rate_limits"] = {}
-            for window in ("five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet"):
+            # Take the two fixed windows plus every model-scoped weekly cap
+            # Claude Code reports (seven_day_opus, seven_day_sonnet,
+            # seven_day_fable, ...). Enumerating rather than hardcoding means a
+            # new model shows up without another release — the previous fixed
+            # tuple silently dropped Fable.
+            windows = ["five_hour", "seven_day"]
+            windows += sorted(
+                k for k in rl
+                if isinstance(k, str) and k.startswith("seven_day_")
+            )
+            for window in windows:
                 w = rl.get(window)
-                if w and w.get("used_percentage") is not None:
+                if isinstance(w, dict) and w.get("used_percentage") is not None:
                     # Convert Unix epoch seconds to ISO string for compatibility
                     # with existing format_reset_time / format_weekly_reset
                     resets_at = w.get("resets_at")
@@ -5789,7 +5799,18 @@ def main():
     # survives across refreshes that don't receive stdin data from Claude Code.
     # Merge new data into persisted data so partial updates (e.g. model but
     # no context_pct during thinking) don't wipe previously known fields.
-    _STDIN_CTX_KEYS = {"model_name", "context_pct", "context_used", "context_limit", "cost_usd", "worktree_branch", "_rate_limits", "lines_added", "lines_removed"}
+    # Fields worth carrying across a refresh that arrives without stdin.
+    # Deliberately excludes `agent_name`: a subagent name is only true for the
+    # turn it ran on, so persisting it would leave a stale "▸reviewer" pinned
+    # to the bar long after that subagent finished.
+    _STDIN_CTX_KEYS = {
+        "model_name", "context_pct", "context_used", "context_limit",
+        "cost_usd", "worktree_branch", "_rate_limits",
+        "lines_added", "lines_removed",
+        "effort", "fast_mode", "thinking", "cc_version",
+        "cache_hit_pct", "cache_read_tokens",
+        "pr_number", "pr_url", "pr_review_state",
+    }
     stdin_ctx_path = get_state_dir() / "stdin_ctx.json"
     persisted = {}
     try:
@@ -5814,33 +5835,36 @@ def main():
     # The API is only needed for extra credits and per-model caps (opus/sonnet).
     stdin_rl = stdin_ctx.get("_rate_limits")
     if stdin_rl:
-        # Build a synthetic usage dict from stdin rate limits
-        usage_from_stdin = {}
-        if "five_hour" in stdin_rl:
-            usage_from_stdin["five_hour"] = stdin_rl["five_hour"]
-        if "seven_day" in stdin_rl:
-            usage_from_stdin["seven_day"] = stdin_rl["seven_day"]
+        # Build a synthetic usage dict from stdin rate limits. Take *every*
+        # window stdin offers, including the model-scoped weekly caps
+        # (seven_day_opus / _sonnet / _fable). Previously only five_hour and
+        # seven_day were copied and the per-model caps were re-fetched over
+        # OAuth — which both dropped Fable entirely and made a network call for
+        # data Claude Code had already handed us.
+        usage_from_stdin = {k: v for k, v in stdin_rl.items() if v}
+        has_model_caps = any(k.startswith("seven_day_") for k in usage_from_stdin)
 
-        # Merge with cached API data for extra/opus/sonnet if available
-        has_model_caps = False
+        # extra_usage (bonus credits) is never on stdin, so it still comes from
+        # cache, and from the API only if we have nothing cached at all.
+        plan_from_cache = ""
         if cached and "usage" in cached:
-            for key in ("extra_usage", "seven_day_opus", "seven_day_sonnet"):
-                if key in cached["usage"]:
-                    usage_from_stdin[key] = cached["usage"][key]
-                    has_model_caps = True
             plan_from_cache = cached.get("plan", "")
-        else:
-            plan_from_cache = ""
+            for key, value in cached["usage"].items():
+                if key not in usage_from_stdin:
+                    usage_from_stdin[key] = value
+                    if key.startswith("seven_day_"):
+                        has_model_caps = True
+                if key == "extra_usage":
+                    has_model_caps = has_model_caps or True
 
-        # If no per-model data cached, fetch from API once to populate it
-        if not has_model_caps:
+        if not has_model_caps and "extra_usage" not in usage_from_stdin:
             try:
                 token, api_plan = get_credentials()
                 if token:
                     api_usage = fetch_usage(token)
-                    for key in ("extra_usage", "seven_day_opus", "seven_day_sonnet"):
-                        if key in api_usage:
-                            usage_from_stdin[key] = api_usage[key]
+                    for key, value in api_usage.items():
+                        if key in _USAGE_CACHE_KEYS and key not in usage_from_stdin:
+                            usage_from_stdin[key] = value
                     if api_plan:
                         plan_from_cache = api_plan
                     write_cache(cache_path, "", usage=api_usage, plan=plan_from_cache)

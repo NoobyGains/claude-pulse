@@ -166,5 +166,51 @@ class RobustnessTest(unittest.TestCase):
             self.assertIsInstance(cs._parse_stdin_context(scalar), dict)
 
 
+class RateLimitWindowsTest(unittest.TestCase):
+    """Every window Claude Code sends must survive into `_rate_limits`.
+
+    Regression: the parser looped over a hardcoded tuple that listed only
+    five_hour / seven_day / _opus / _sonnet, so a Fable weekly cap present on
+    stdin was silently dropped and the bar never appeared.
+    """
+
+    def test_all_model_scoped_windows_are_kept(self):
+        ctx = parse({"rate_limits": {
+            "five_hour": {"used_percentage": 10, "resets_at": 1900000000},
+            "seven_day": {"used_percentage": 20, "resets_at": 1900000000},
+            "seven_day_opus": {"used_percentage": 30, "resets_at": 1900000000},
+            "seven_day_sonnet": {"used_percentage": 40, "resets_at": 1900000000},
+            "seven_day_fable": {"used_percentage": 50, "resets_at": 1900000000},
+        }})
+        self.assertEqual(
+            sorted(ctx["_rate_limits"]),
+            ["five_hour", "seven_day", "seven_day_fable",
+             "seven_day_opus", "seven_day_sonnet"],
+        )
+        self.assertEqual(ctx["_rate_limits"]["seven_day_fable"]["utilization"], 50.0)
+
+    def test_future_model_window_picked_up_without_code_change(self):
+        ctx = parse({"rate_limits": {
+            "seven_day_newmodel": {"used_percentage": 7, "resets_at": 1900000000},
+        }})
+        self.assertIn("seven_day_newmodel", ctx["_rate_limits"])
+
+    def test_epoch_converted_to_iso(self):
+        ctx = parse({"rate_limits": {"five_hour": {"used_percentage": 1, "resets_at": 1900000000}}})
+        self.assertTrue(ctx["_rate_limits"]["five_hour"]["resets_at"].startswith("20"))
+
+    def test_missing_percentage_skipped(self):
+        ctx = parse({"rate_limits": {"five_hour": {"resets_at": 1900000000}}})
+        self.assertNotIn("five_hour", ctx.get("_rate_limits", {}))
+
+    def test_non_dict_window_skipped(self):
+        ctx = parse({"rate_limits": {"seven_day_x": "nope", "five_hour": {"used_percentage": 1}}})
+        self.assertNotIn("seven_day_x", ctx.get("_rate_limits", {}))
+
+    def test_bad_resets_at_keeps_the_window(self):
+        ctx = parse({"rate_limits": {"five_hour": {"used_percentage": 5, "resets_at": "junk"}}})
+        self.assertEqual(ctx["_rate_limits"]["five_hour"]["utilization"], 5.0)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
