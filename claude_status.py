@@ -487,7 +487,7 @@ WIDGET_PRIORITY = {
     "thinking": 124, "agent": 126, "worktree": 130,
     "heartbeat": 140, "activity": 150, "last_tool": 160, "branch": 170,
     "pr": 175,
-    "sessions": 180, "pomodoro": 190, "git_drift": 200, "files_changed": 210,
+    "subagents": 178, "sessions": 180, "budget": 185, "pomodoro": 190, "git_drift": 200, "files_changed": 210,
 }
 
 # Reasoning-effort display. Claude Code reports low|medium|high|xhigh|max.
@@ -542,6 +542,16 @@ PR_STATE_COLOURS = {
     "pending": YELLOW,
 }
 
+# Claude Code enforces its own per-session caps but exposes them neither on
+# stdin nor in settings.json, so these are claude-pulse's own denominators.
+# They default to Claude Code's documented values; override under "limits" in
+# config.json if your setup differs. Set any to 0 to hide that denominator.
+DEFAULT_LIMITS = {
+    "subagent_spawns": 200,      # per-session subagent spawn cap
+    "subagent_concurrent": 20,   # concurrently-running subagent cap
+    "web_searches": 200,         # per-session WebSearch call cap
+}
+
 DEFAULT_SHOW = {
     # Core bars — always visible
     "session": True,
@@ -577,6 +587,8 @@ DEFAULT_SHOW = {
     "cumulative_cost": False,
     "weekly_cost": False,
     "cache": False,
+    "subagents": True,
+    "budget": True,
     "pr": False,
     "burn_rate": False,
     "sessions": False,
@@ -1081,6 +1093,13 @@ def load_config():
     data.setdefault("layout", DEFAULT_LAYOUT)
     data.setdefault("context_format", "percent")
     data.setdefault("effort_format", DEFAULT_EFFORT_FORMAT)
+    data.setdefault("budget_usd", 0)
+    limits = data.get("limits", {})
+    if not isinstance(limits, dict):
+        limits = {}
+    for _k, _v in DEFAULT_LIMITS.items():
+        limits.setdefault(_k, _v)
+    data["limits"] = limits
     data.setdefault("extra_display", "auto")
     if "currency" not in data:
         data["currency"] = _detect_default_currency()
@@ -1299,6 +1318,24 @@ def install_hooks():
             filtered.append(h)
     filtered.append(hook_entry)
     hooks["PostToolUse"] = filtered
+
+    # SubagentStart / SubagentStop drive the live agent counter. They carry
+    # agent_id and agent_type, so no polling is needed.
+    for event, flag in (("SubagentStart", "--hook-subagent-start"),
+                        ("SubagentStop", "--hook-subagent-stop")):
+        command = f'{python_cmd} "{script_path}" {flag}'
+        existing = hooks.setdefault(event, [])
+        kept = []
+        for h in existing:
+            is_pulse = any(
+                "claude_status.py" in inner.get("command", "") and flag in inner.get("command", "")
+                for inner in h.get("hooks", [])
+            )
+            if not is_pulse:
+                kept.append(h)
+        kept.append({"matcher": "", "hooks": [{"type": "command", "command": command}]})
+        hooks[event] = kept
+
     settings["hooks"] = hooks
     _secure_mkdir(settings_path.parent)
     _atomic_json_write(settings_path, settings)
@@ -4490,6 +4527,22 @@ def build_status_line(usage, plan, config=None, stdin_ctx=None, cache_age=None):
         except Exception:
             pass
 
+    if show.get("subagents", True):
+        try:
+            sub_str = _render_subagents(config)
+            if sub_str:
+                parts.append((_pri("subagents"), sub_str))
+        except Exception:
+            pass
+
+    if show.get("budget", True):
+        try:
+            budget_str = _render_budget(config, stdin_ctx)
+            if budget_str:
+                parts.append((_pri("budget"), budget_str))
+        except Exception:
+            pass
+
     if show.get("git_drift", False):
         try:
             drift_str = _render_git_drift()
@@ -4749,6 +4802,360 @@ def _fit_line(line, config):
 
 
 # ---------------------------------------------------------------------------
+# Subagent tracking
+# ---------------------------------------------------------------------------
+# Claude Code v2.1.198+ runs subagents in the background by default and lets
+# them nest (depth 3 by default), so a session can quietly accumulate a lot of
+# them. SubagentStart / SubagentStop carry `agent_id` and `agent_type`, which is
+# everything needed to keep a live count without polling anything.
+
+SUBAGENT_STATE_TTL = 6 * 3600  # forget stragglers whose Stop hook never fired
+
+
+def _get_subagent_state_path():
+    return get_state_dir() / "subagents.json"
+
+
+def _read_subagent_state():
+    """Return the subagent tracking state, or a fresh one on any problem."""
+    empty = {"session_id": "", "active": {}, "spawned": 0}
+    try:
+        with open(_get_subagent_state_path(), "r", encoding="utf-8") as f:
+            state = json.load(f)
+        if not isinstance(state, dict):
+            return empty
+        active = state.get("active")
+        if not isinstance(active, dict):
+            state["active"] = {}
+        if not isinstance(state.get("spawned"), int):
+            state["spawned"] = 0
+        return state
+    except (FileNotFoundError, json.JSONDecodeError, OSError, TypeError, ValueError):
+        return empty
+
+
+def _prune_subagents(active, now=None):
+    """Drop entries whose Stop hook never arrived.
+
+    A crashed or force-quit subagent leaves its start record behind forever,
+    which would make the active count drift upward for the rest of the session.
+    """
+    now = now or time.time()
+    pruned = {}
+    for agent_id, rec in (active or {}).items():
+        try:
+            started = float(rec.get("started", 0))
+        except (AttributeError, TypeError, ValueError):
+            continue
+        if now - started < SUBAGENT_STATE_TTL:
+            pruned[agent_id] = rec
+    return pruned
+
+
+def hook_subagent(event):
+    """Handle --hook-subagent-start / --hook-subagent-stop. Writes no stdout.
+
+    Hooks must stay silent: anything on stdout for these events lands in the
+    transcript as context. Errors are swallowed for the same reason — a
+    bookkeeping failure must never surface as a hook error to the user.
+    """
+    raw = ""
+    try:
+        if not sys.stdin.isatty():
+            raw = sys.stdin.read(65536)
+    except (OSError, ValueError):
+        pass
+    data = {}
+    try:
+        if raw.strip():
+            data = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+
+    agent_id = _sanitize(str(data.get("agent_id") or ""))[:64]
+    agent_type = _sanitize(str(data.get("agent_type") or ""))[:40]
+    session_id = _sanitize(str(data.get("session_id") or ""))[:64]
+
+    state = _read_subagent_state()
+    # A new session starts the counters over; totals are per-session, matching
+    # how Claude Code's own per-session spawn cap is counted.
+    if session_id and state.get("session_id") != session_id:
+        state = {"session_id": session_id, "active": {}, "spawned": 0}
+
+    active = _prune_subagents(state.get("active", {}))
+    if event == "start":
+        if agent_id:
+            active[agent_id] = {"type": agent_type, "started": time.time()}
+        state["spawned"] = int(state.get("spawned", 0)) + 1
+    elif event == "stop" and agent_id:
+        active.pop(agent_id, None)
+    state["active"] = active
+    if session_id:
+        state["session_id"] = session_id
+
+    try:
+        _atomic_json_write(_get_subagent_state_path(), state, indent=None)
+    except OSError:
+        pass
+
+
+def _render_subagents(config):
+    """Return the subagent segment, or None when there is nothing to say.
+
+    Shows live count and per-session spawns. Claude Code enforces its own caps
+    (spawns and concurrency) but does not expose them on stdin or in settings,
+    so the denominators come from ``limits`` in claude-pulse's own config and
+    default to Claude Code's documented values.
+    """
+    state = _read_subagent_state()
+    active = _prune_subagents(state.get("active", {}))
+    spawned = int(state.get("spawned", 0) or 0)
+    live = len(active)
+    if not live and not spawned:
+        return None
+
+    limits = config.get("limits", {})
+    if not isinstance(limits, dict):
+        limits = {}
+    spawn_cap = limits.get("subagent_spawns", DEFAULT_LIMITS["subagent_spawns"])
+    conc_cap = limits.get("subagent_concurrent", DEFAULT_LIMITS["subagent_concurrent"])
+
+    def _tint(value, cap):
+        """Green under half, yellow past half, red past 80% of the cap."""
+        if not isinstance(cap, int) or cap <= 0:
+            return ""
+        ratio = value / cap
+        if ratio >= 0.8:
+            return RED
+        if ratio >= 0.5:
+            return YELLOW
+        return GREEN
+
+    layout = config.get("layout", DEFAULT_LAYOUT)
+    live_part = f"{_tint(live, conc_cap)}{live}{RESET}"
+    if isinstance(spawn_cap, int) and spawn_cap > 0:
+        total_part = f"{_tint(spawned, spawn_cap)}{spawned}{RESET}{DIM}/{spawn_cap}{RESET}"
+    else:
+        total_part = f"{spawned}"
+    if layout == "minimal":
+        return f"⚇{live_part}"
+    if layout == "compact":
+        return f"⚇{live_part} {total_part}"
+    return f"{DIM}agents{RESET} {live_part} live {DIM}·{RESET} {total_part}"
+
+
+def _render_budget(config, stdin_ctx):
+    """Return a spend-against-budget segment, or None.
+
+    ``--max-budget-usd`` is a Claude Code CLI flag with no settings key and no
+    environment variable, so its value cannot be discovered from here. The
+    ceiling is therefore claude-pulse's own ``budget_usd`` setting, which the
+    user sets to match whatever they pass on the command line.
+    """
+    try:
+        budget = float(config.get("budget_usd") or 0)
+    except (TypeError, ValueError):
+        return None
+    if budget <= 0:
+        return None
+    spent = (stdin_ctx or {}).get("cost_usd")
+    if spent is None:
+        return None
+    try:
+        spent = float(spent)
+    except (TypeError, ValueError):
+        return None
+
+    pct = min(100.0, (spent / budget) * 100.0) if budget else 0.0
+    theme = get_theme_colours(config.get("theme", "default"))
+    bw = BAR_SIZES.get(config.get("bar_size", DEFAULT_BAR_SIZE), BAR_SIZES[DEFAULT_BAR_SIZE])
+    bar = make_bar(pct, theme, width=max(2, bw // 2),
+                   bar_style=config.get("bar_style", DEFAULT_BAR_STYLE))
+    currency = _sanitize(config.get("currency", "$"))[:5]
+    rate, code = _get_exchange_rate(currency)
+    sym = "$" if code == "USD" else currency
+    layout = config.get("layout", DEFAULT_LAYOUT)
+    if layout == "minimal":
+        return f"{bar} {pct:.0f}%"
+    return f"{DIM}budget{RESET} {bar} {sym}{spent * rate:,.2f}{DIM}/{sym}{budget * rate:,.2f}{RESET}"
+
+
+# ---------------------------------------------------------------------------
+# Subagent status line (the `subagentStatusLine` setting)
+# ---------------------------------------------------------------------------
+
+SUBAGENT_STATUS_GLYPHS = {
+    "running": "▸",    # ▸
+    "active": "▸",
+    "pending": "·",    # ·
+    "queued": "·",
+    "done": "✓",       # ✓
+    "completed": "✓",
+    "success": "✓",
+    "failed": "✗",     # ✗
+    "error": "✗",
+    "cancelled": "✗",
+}
+SUBAGENT_STATUS_COLOURS = {
+    "running": CYAN, "active": CYAN,
+    "pending": DIM, "queued": DIM,
+    "done": GREEN, "completed": GREEN, "success": GREEN,
+    "failed": RED, "error": RED, "cancelled": YELLOW,
+}
+
+
+def _elapsed_from_start(start_time):
+    """Seconds since *start_time*, which may be epoch ms, epoch s, or ISO."""
+    if start_time is None:
+        return None
+    try:
+        value = float(start_time)
+        # Anything past ~2001 in milliseconds is far beyond a plausible epoch
+        # second, so treat large values as ms.
+        if value > 1e11:
+            value /= 1000.0
+        delta = time.time() - value
+        return delta if delta >= 0 else None
+    except (TypeError, ValueError):
+        pass
+    ts = _parse_transcript_ts(start_time)
+    if ts is None:
+        return None
+    delta = time.time() - ts
+    return delta if delta >= 0 else None
+
+
+def _render_subagent_row(task, config, columns=None):
+    """Build one subagent row body, or "" to hide it.
+
+    Mirrors the main bar's vocabulary — same theme, same bar style — so the
+    agent panel reads as part of the same tool rather than a separate widget.
+    """
+    if not isinstance(task, dict):
+        return ""
+    name = _sanitize(str(task.get("name") or task.get("type") or "agent"))[:28]
+    status = _sanitize(str(task.get("status") or "")).lower()
+    glyph = SUBAGENT_STATUS_GLYPHS.get(status, "·")
+    colour = SUBAGENT_STATUS_COLOURS.get(status, "")
+
+    parts = [f"{colour}{glyph}{RESET} {name}" if colour else f"{glyph} {name}"]
+
+    model_short = _model_short_name(str(task.get("model") or ""))
+    if model_short:
+        parts.append(f"{DIM}{model_short}{RESET}")
+
+    effort = task.get("effort")
+    if effort not in (None, "", "unset"):
+        # Either a level string or a numeric token budget.
+        if isinstance(effort, (int, float)) and not isinstance(effort, bool):
+            parts.append(f"{DIM}{_fmt_tokens(int(effort))}{RESET}")
+        else:
+            rendered = _format_effort(
+                _sanitize(str(effort)).lower(),
+                config.get("effort_format", DEFAULT_EFFORT_FORMAT),
+            )
+            if rendered:
+                parts.append(f"{DIM}{rendered}{RESET}")
+
+    # Context bar, when Claude Code resolved the model's window (v2.1.205+).
+    try:
+        tokens = int(task.get("tokenCount") or 0)
+        window = int(task.get("contextWindowSize") or 0)
+    except (TypeError, ValueError):
+        tokens, window = 0, 0
+    if tokens and window > 0:
+        pct = max(0.0, min(100.0, (tokens / window) * 100.0))
+        theme = get_theme_colours(config.get("theme", "default"))
+        bw = BAR_SIZES.get(config.get("bar_size", DEFAULT_BAR_SIZE), BAR_SIZES[DEFAULT_BAR_SIZE])
+        bar = make_bar(pct, theme, width=max(2, bw // 2),
+                       bar_style=config.get("bar_style", DEFAULT_BAR_STYLE))
+        parts.append(f"{bar} {pct:.0f}%")
+    elif tokens:
+        parts.append(f"{DIM}{_fmt_tokens(tokens)}{RESET}")
+
+    elapsed = _elapsed_from_start(task.get("startTime"))
+    if elapsed is not None:
+        parts.append(f"{DIM}{_format_elapsed(elapsed)}{RESET}")
+
+    row = f" {DIM}·{RESET} ".join(parts)
+
+    # `columns` is the usable row width Claude Code offers; respect it.
+    try:
+        width = int(columns or 0)
+    except (TypeError, ValueError):
+        width = 0
+    if width > 0 and _visible_len(row) > width:
+        row = _clip_visible(row, width)
+    return row
+
+
+def _clip_visible(text, width):
+    """Clip to *width* visible columns, keeping escapes intact and resetting."""
+    count = 0
+    i = 0
+    while i < len(text):
+        if text[i] == "":
+            i = _skip_escape(text, i)
+            continue
+        count += 1
+        if count > width:
+            return text[:i] + RESET
+        i += 1
+    return text
+
+
+def cmd_subagent_status_line():
+    """Handle --subagent-status-line: render the agent panel's rows.
+
+    Claude Code sends every visible subagent row as one JSON object on stdin
+    and expects one JSON line of ``{"id", "content"}`` per row we want to
+    override. Rows we say nothing about keep their default rendering, so any
+    failure here degrades to Claude Code's own display rather than a blank
+    panel — which is why the whole body is defensive.
+    """
+    try:
+        raw = sys.stdin.read(1_000_000) if not sys.stdin.isatty() else ""
+    except (OSError, ValueError):
+        return
+    if not raw or not raw.strip():
+        return
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return
+    if not isinstance(data, dict):
+        return
+
+    tasks = data.get("tasks")
+    if not isinstance(tasks, list):
+        return
+    columns = data.get("columns")
+
+    try:
+        config = load_config()
+    except Exception:
+        config = {}
+
+    out = []
+    for task in tasks[:64]:  # a sane ceiling; the panel never shows more
+        if not isinstance(task, dict):
+            continue
+        task_id = task.get("id")
+        if not task_id:
+            continue
+        try:
+            content = _render_subagent_row(task, config, columns)
+        except Exception:
+            continue  # leave this row's default rendering alone
+        if not content:
+            continue
+        out.append(json.dumps({"id": str(task_id), "content": content}))
+    if out:
+        sys.stdout.buffer.write(("\n".join(out) + "\n").encode("utf-8"))
+
+# ---------------------------------------------------------------------------
 # Install
 # ---------------------------------------------------------------------------
 
@@ -4906,6 +5313,13 @@ def install_status_line():
         status_line["refreshInterval"] = interval
     settings["statusLine"] = status_line
 
+    # Render the agent-panel rows too. Claude Code falls back to its own row
+    # rendering for anything we don't emit, so this can only add information.
+    settings["subagentStatusLine"] = {
+        "type": "command",
+        "command": f'{python_cmd} "{script_path}" --subagent-status-line',
+    }
+
     # No hooks installed here — static status bar by default.
     # Use --animate on for always-on animation (installs hooks automatically)
     # Use --install-hooks for animate-while-working mode
@@ -4914,6 +5328,7 @@ def install_status_line():
     _atomic_json_write(settings_path, settings)
 
     utf8_print(f"Installed status line to {settings_path}")
+    utf8_print("Installed subagent status line (per-agent rows in the agent panel)")
     utf8_print(f"Command: {python_cmd} \"{script_path}\"")
     if interval is not None:
         utf8_print(f"Refresh: every {interval}s (plus Claude Code's own events)")
@@ -5972,6 +6387,68 @@ def main():
             utf8_print(f"Animation speed: {BOLD}{val}{RESET}  ({ANIMATION_SPEEDS[val]}x)")
         else:
             utf8_print("Usage: --animation-speed <slow|normal|fast>")
+        return
+
+    if "--subagent-status-line" in args:
+        cmd_subagent_status_line()
+        return
+
+    if "--hook-subagent-start" in args:
+        hook_subagent("start")
+        return
+
+    if "--hook-subagent-stop" in args:
+        hook_subagent("stop")
+        return
+
+    if "--budget" in args:
+        idx = args.index("--budget")
+        config = load_config()
+        if idx + 1 < len(args):
+            raw = args[idx + 1]
+            try:
+                value = 0.0 if raw.lower() in ("off", "none", "0") else float(raw.lstrip("$£€"))
+            except ValueError:
+                utf8_print("Usage: --budget <amount|off>   e.g. --budget 25  (matches --max-budget-usd)")
+                return
+            config["budget_usd"] = value
+            save_config(config)
+            if value > 0:
+                utf8_print(f"Budget: {BOLD}${value:,.2f}{RESET}  (set this to match your --max-budget-usd)")
+            else:
+                utf8_print(f"Budget: {RED}off{RESET}")
+        else:
+            cur = config.get("budget_usd", 0)
+            state = f"${cur:,.2f}" if cur else f"{RED}off{RESET}"
+            utf8_print(f"Budget: {BOLD}{state}{RESET}")
+        return
+
+    if "--limits" in args:
+        idx = args.index("--limits")
+        config = load_config()
+        limits = config.get("limits", dict(DEFAULT_LIMITS))
+        if idx + 1 < len(args) and "=" in args[idx + 1]:
+            for pair in args[idx + 1].split(","):
+                if "=" not in pair:
+                    continue
+                key, _, val = pair.partition("=")
+                key = key.strip()
+                if key not in DEFAULT_LIMITS:
+                    utf8_print(f"Unknown limit '{key}'. Known: {', '.join(DEFAULT_LIMITS)}")
+                    return
+                try:
+                    limits[key] = max(0, int(val))
+                except ValueError:
+                    utf8_print(f"Limit '{key}' must be a whole number (0 hides the denominator).")
+                    return
+            config["limits"] = limits
+            save_config(config)
+        utf8_print(f"{BOLD}Caps{RESET} {DIM}(Claude Code enforces these; it does not report them,{RESET}")
+        utf8_print(f"{DIM}     so set them here to match your setup){RESET}")
+        for key, default in DEFAULT_LIMITS.items():
+            cur = limits.get(key, default)
+            mark = "" if cur == default else f"  {DIM}(default {default}){RESET}"
+            utf8_print(f"  {key:<22} {BOLD}{cur or 'hidden'}{RESET}{mark}")
         return
 
     if "--effort-format" in args:

@@ -74,6 +74,13 @@ If $ARGUMENTS matches `focus start [minutes]` or `focus stop` or `focus status`:
 -> Run `--focus <action> [minutes]` directly.
 -> Default is 25 minutes if no duration given.
 
+If $ARGUMENTS matches `budget <amount|off>`:
+-> Run `--budget <value>` directly. Explain it mirrors Claude Code's `--max-budget-usd`,
+   which is CLI-only and cannot be read automatically.
+
+If $ARGUMENTS matches `limits` or `limits <k>=<v>,...`:
+-> Run `--limits <value>` directly. Keys: subagent_spawns, subagent_concurrent, web_searches.
+
 If $ARGUMENTS matches `effort-format <value>`:
 -> Run `--effort-format <value>` directly.
 -> Values: `labeled` (default, "Effort: Medium"), `full` ("Medium"), `short` ("med")

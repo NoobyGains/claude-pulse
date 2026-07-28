@@ -55,9 +55,10 @@ Session ━━━───────── 27% 2h 53m | Weekly ━━━━━
 - **Zero API calls, for real** — the per-model caps arrive on stdin, but 3.1.0 discarded them and re-fetched over OAuth. That call is gone.
 - **Two-line layout**, rolling **7-day cost** widget, `CLAUDE_CONFIG_DIR` support, exponential backoff on 429, and an update check that no longer nags forks forever.
 - **Corrupt state can't blank the bar** — a truncated or hand-edited cache/settings file used to raise on the hot path. Every state read now degrades to a cache miss instead, and one malformed rate-limit field no longer discards the windows after it.
+- **Subagent panel rows** via `subagentStatusLine`, a live agent counter from the `SubagentStart`/`SubagentStop` hooks, and an opt-in budget bar.
 - **Peak hours removed.**
 
-Python floor is **3.8** — 3.1.0 advertised 3.6+ but did not parse below 3.12. Test suite: 21 → 142.
+Python floor is **3.8** — 3.1.0 advertised 3.6+ but did not parse below 3.12. Test suite: 21 → 166.
 
 ## Features
 
@@ -71,6 +72,9 @@ Python floor is **3.8** — 3.1.0 advertised 3.6+ but did not parse below 3.12. 
 | **Subagent & PR** | Active subagent name, plus an opt-in clickable PR badge with review state (OSC 8 hyperlink) |
 | **Cache efficiency** | Opt-in indicator for the share of input served from cache — the clearest cost signal on stdin |
 | **Two-line layout** | Split widgets across two rows with `line1_widgets` / `line2_widgets` |
+| **Subagent rows** | Custom per-agent rows in the agent panel via `subagentStatusLine` — status, model, effort, a context bar from `tokenCount`/`contextWindowSize`, and elapsed time |
+| **Live agent counter** | `agents 3 live · 47/200` from `SubagentStart`/`SubagentStop` hooks, colour-escalating toward the caps |
+| **Budget bar** | Spend against a ceiling you set with `--budget` to match your `--max-budget-usd` |
 | **Live heartbeat** | Spinning indicator with tool count and elapsed time (via PostToolUse hook) |
 | **Git branch** | Current branch name always visible |
 | **Model display** | Shows which model is active (Fable, Opus, Sonnet, Haiku) |
@@ -153,6 +157,15 @@ Use `/pulse` in Claude Code for an interactive setup wizard, or configure direct
 # Currency (auto-converts USD via live exchange rate)
 --currency £               # $, £, €, ¥, C$, A$, ₹, kr, and 20+ more
 
+# Budget (Claude Code's --max-budget-usd is CLI-only and can't be read from
+# here, so set the same number to track spend against it)
+--budget 25                # or: --budget off
+
+# Caps shown as denominators. Claude Code enforces these but doesn't report
+# them, so set them to match your setup. 0 hides that denominator.
+--limits                   # show current values
+--limits subagent_spawns=200,subagent_concurrent=20,web_searches=200
+
 # Effort display (how the reasoning-effort level is written)
 --effort-format labeled    # labeled (default) 'Effort: Medium' · full 'Medium' · short 'med'
 
@@ -179,6 +192,8 @@ Use `/pulse` in Claude Code for an interactive setup wizard, or configure direct
 --hide fable               # Hide the Fable weekly cap bar
 --hide fast_mode           # Hide the ⚡fast badge
 --hide agent               # Hide the active subagent name
+--hide subagents           # Hide the live agent counter
+--hide budget              # Hide the budget bar
 
 # Focus timer
 --focus start 25        # Start a 25-minute focus timer

@@ -54,6 +54,14 @@
     "weekly_cost": false,
     "cache": false,
     "pr": false,
-    "lines": true
+    "lines": true,
+    "subagents": true,
+    "budget": true
+  },
+  "budget_usd": 0,
+  "limits": {
+    "subagent_spawns": 200,
+    "subagent_concurrent": 20,
+    "web_searches": 200
   }
 }
