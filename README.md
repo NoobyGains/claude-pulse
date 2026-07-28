@@ -181,7 +181,8 @@ Use `/pulse` in Claude Code for an interactive setup wizard, or configure direct
 ┌───────────────────────────────────────────────┐
 │  Claude Code                                  │
 │  Pipes JSON via stdin on every status refresh │
-│  (model, context %, cost, rate_limits)        │
+│  (model, context, cost, rate_limits, effort,  │
+│   fast_mode, agent, pr, version)              │
 ├───────────────────────────────────────────────┤
 │  claude_status.py                             │
 │  Reads stdin → builds ANSI status line        │
@@ -192,15 +193,17 @@ Use `/pulse` in Claude Code for an interactive setup wizard, or configure direct
 │  on every tool call                           │
 ├───────────────────────────────────────────────┤
 │  Cache Layer                                  │
-│  Exchange rates (24h) · cumulative cost (5m)  │
-│  hook state (5m)                              │
-│  Animation state · usage history              │
+│  Exchange rates (24h) · update checks (1h)    │
+│  cumulative + weekly cost (5m) · hook (5m)    │
+│  429 backoff · animation state · history      │
 └───────────────────────────────────────────────┘
 ```
 
 **Data flow:** Claude Code sends session JSON via stdin → claude-pulse reads rate limits directly (no API) → renders colourised ANSI status line → Claude Code displays it.
 
-**Rate limits from stdin (v2.1.80+):** Claude Code now includes `rate_limits.five_hour` and `rate_limits.seven_day` in the stdin JSON, so claude-pulse no longer needs to call the Anthropic OAuth API. This eliminates rate limiting issues entirely.
+**Rate limits from stdin (v2.1.80+):** Claude Code sends `rate_limits` on stdin — the 5-hour and 7-day windows plus the model-scoped weekly caps (`seven_day_opus`, `seven_day_sonnet`, `seven_day_fable`). claude-pulse reads all of them straight from stdin, so no OAuth call is needed for the bars. The API is only consulted for extra/bonus credits, which stdin doesn't carry, and a 429 there now backs off exponentially instead of retrying on every repaint.
+
+**Refresh cadence:** Claude Code repaints on its own events (prompt, tool use), which covers anything derived from stdin. Content that moves with the clock — animation frames, the focus countdown, the heartbeat's elapsed time — also needs a timer, so `--install` sets `statusLine.refreshInterval` (2s when animating, 15s for time-based widgets, omitted entirely for a static bar). It is re-synced automatically whenever you change a setting.
 
 **PostToolUse hook:** When installed, the hook fires on every tool call (Read, Edit, Bash, etc.), updating the heartbeat counter and git branch. The status line refreshes on each tool call, making the spinner animate during active work.
 
@@ -222,12 +225,12 @@ Use `/pulse` in Claude Code for an interactive setup wizard, or configure direct
 | `glow` | Per-character gradient that shifts across the bar each frame |
 | `shift` | Bright highlight slides across the bar |
 
-Set with `--animate <mode>`. Animation moves on each status line refresh (interaction or tool call).
+Set with `--animate <mode>`. Animation advances on every repaint — Claude Code's own events plus the 2-second `refreshInterval` that `--install` configures while animation is on, so the bar keeps moving even while the session is idle.
 
 ## Requirements
 
 - **Python 3.8+** (no pip installs needed)
-- **Claude Code** with a Pro or Max subscription
+- **Claude Code** v2.1.80+ with a Pro or Max subscription (Fable reporting needs v2.1.170+)
 - No API key required — uses Claude Code's existing credentials
 
 ## Security
@@ -236,6 +239,7 @@ Set with `--animate <mode>`. Animation moves on each status line refresh (intera
 - OAuth tokens only used as fallback for extra credits/per-model caps, sent only to `api.anthropic.com` (hardcoded allowlist)
 - All file writes use atomic operations with 0o600 permissions
 - ANSI escape injection prevention on all external data
+- Hyperlink targets (PR badge) restricted to `http(s)` and rejected if they contain control characters, so nothing can break out of the OSC 8 escape
 - No `shell=True` in any subprocess call
 - Exchange rate API (frankfurter.app) — no auth, read-only, cached 24h
 
@@ -244,7 +248,9 @@ Set with `--animate <mode>`. Animation moves on each status line refresh (intera
 | Issue | Fix |
 |---|---|
 | No status line visible | Run `--install` then restart Claude Code |
-| "Rate limited" message | Update to v3.0.0+ — reads from stdin, no API calls needed |
+| "Rate limited" message | v3.0.0+ reads limits from stdin, so the bars keep working. v3.2.0+ also backs off exponentially before retrying the API |
+| Animation/timer frozen when idle | Re-run `--install` on v3.2.0+. Earlier versions wrote a `refresh` key that Claude Code ignores; the real setting is `refreshInterval` |
+| Opus/Sonnet/Fable bar missing | Those bars render only when your plan reports that cap. Claude Pro returns `null` for the model-scoped windows |
 | Heartbeat not showing | Run `--install-hooks` then restart Claude Code. Shows after first tool call |
 | Heartbeat appears/disappears | Normal — shows when hook state is fresh (within 5 min of last tool call) |
 | Settings error after hook install | Run `/doctor` — hooks need nested format: `{matcher, hooks: [{type, command}]}` |
