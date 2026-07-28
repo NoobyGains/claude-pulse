@@ -45,6 +45,18 @@ A single-file Python status bar for Claude Code that shows everything you need a
 Session ━━━───────── 27% 2h 53m | Weekly ━━━━━━━━━─── 73% R:Fri 3pm | Fable ━━───────── 18% | Context ━━━━──────── 35% | $38.75 | +142 -37 | Opus 5 | xh | ⚡fast | [\] 320 tools 51m | main
 ```
 
+## What's new in 3.2.0
+
+- **Fable weekly cap** — read from the model-scoped `limits` the API reports, so new models are picked up without a code change.
+- **Claude 5-era stdin fields** — reasoning effort, `⚡fast` mode, thinking state, active subagent, PR badge, and cache-hit ratio.
+- **Fixed: the refresh timer never worked.** Every version up to 3.1.0 wrote a `refresh` key that Claude Code does not have, so it was silently ignored — animations, the heartbeat and the focus countdown froze whenever the session went idle. The real setting is `refreshInterval`, and it is now set only when something time-based is on screen.
+- **~40% faster repaints** (204ms → 118ms): `claude --version` and `git rev-parse` were both running on *every* repaint just to validate hourly caches.
+- **Per-model bars no longer invent data** — Claude Pro reports `null` for the model-scoped windows, and 3.1.0 drew a hardcoded `Sonnet 0%` bar in that case.
+- **Two-line layout**, rolling **7-day cost** widget, `CLAUDE_CONFIG_DIR` support, exponential backoff on 429, and an update check that no longer nags forks forever.
+- **Peak hours removed.**
+
+Python floor is **3.8** — 3.1.0 advertised 3.6+ but did not parse below 3.12.
+
 ## Features
 
 | Feature | Description |
