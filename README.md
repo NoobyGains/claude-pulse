@@ -3,13 +3,13 @@
 </p>
 
 <p align="center">
-  Real-time usage monitor for Claude Code — session limits, weekly limits, cost tracking, peak hours, and 10 themes with animations. All in your status bar.
+  Real-time usage monitor for Claude Code — session limits, weekly limits, per-model caps (Opus/Sonnet/Fable), cost tracking, and 10 themes with animations. All in your status bar.
 </p>
 
 <p align="center">
   <a href="https://github.com/NoobyGains/claude-pulse/stargazers"><img src="https://img.shields.io/github/stars/NoobyGains/claude-pulse?style=social" alt="GitHub Stars" /></a>
   <img src="https://img.shields.io/github/v/tag/NoobyGains/claude-pulse?label=version&color=blue" alt="Version" />
-  <img src="https://img.shields.io/badge/python-3.6+-3776AB?logo=python&logoColor=white" alt="Python 3.6+" />
+  <img src="https://img.shields.io/badge/python-3.8+-3776AB?logo=python&logoColor=white" alt="Python 3.8+" />
   <img src="https://img.shields.io/badge/dependencies-zero-brightgreen" alt="Zero Dependencies" />
   <img src="https://img.shields.io/badge/Claude%20Code-v2.1.80+-7C3AED?logo=anthropic&logoColor=white" alt="Claude Code v2.1.80+" />
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey" alt="Platform" />
@@ -42,7 +42,7 @@ A single-file Python status bar for Claude Code that shows everything you need a
 </p>
 
 ```
-Session ━━━───────── 27% 2h 53m | Weekly ━━━━━━━━━─── 73% R:Fri 3pm | Context ━━━━──────── 35% | $38.75 | +142 -37 | In Peak ⚡2x 2h 54m left (1pm-7pm) | Opus 4.6 | [\] 320 tools 51m | main
+Session ━━━───────── 27% 2h 53m | Weekly ━━━━━━━━━─── 73% R:Fri 3pm | Fable ━━───────── 18% | Context ━━━━──────── 35% | $38.75 | +142 -37 | Opus 5 | xh | ⚡fast | [\] 320 tools 51m | main
 ```
 
 ## Features
@@ -52,10 +52,14 @@ Session ━━━───────── 27% 2h 53m | Weekly ━━━━━
 | **Session & Weekly bars** | Colour-coded progress bars (green → yellow → red) for 5-hour session and 7-day weekly limits |
 | **Context window** | Live context usage percentage with pressure warnings at 70%/90% |
 | **Cost tracking** | Real-time session cost in your local currency (USD, GBP, EUR, + 25 more) with live exchange rates |
-| **Peak hours** | Configurable indicator for Anthropic's peak consumption window — red **In Peak ⚡** when limits burn faster, yellow when **approaching**, green **Off-Peak ✓** when limits stretch further. Full and minimal display modes |
+| **Per-model weekly caps** | Separate bars for Opus, Sonnet and **Fable** weekly budgets, read from the model-scoped limits the API reports. Shown only when your plan actually reports them |
+| **Effort & fast mode** | Reasoning effort (`lo`/`med`/`hi`/`xh`/`max`, colour-escalating) and a **⚡fast** badge when Opus fast mode is active |
+| **Subagent & PR** | Active subagent name, plus an opt-in clickable PR badge with review state (OSC 8 hyperlink) |
+| **Cache efficiency** | Opt-in indicator for the share of input served from cache — the clearest cost signal on stdin |
+| **Two-line layout** | Split widgets across two rows with `line1_widgets` / `line2_widgets` |
 | **Live heartbeat** | Spinning indicator with tool count and elapsed time (via PostToolUse hook) |
 | **Git branch** | Current branch name always visible |
-| **Model display** | Shows which model is active (Opus, Sonnet, Haiku) |
+| **Model display** | Shows which model is active (Fable, Opus, Sonnet, Haiku) |
 | **10 themes** | default, ocean, sunset, mono, neon, pride, frost, ember, candy, rainbow |
 | **5 animation modes** | off, rainbow, pulse, glow, shift — each visually distinct |
 | **8 bar styles** | classic, block, shade, pipe, dot, square, star, braille |
@@ -127,14 +131,13 @@ Use `/pulse` in Claude Code for an interactive setup wizard, or configure direct
 --layout compact           # standard, compact, minimal, percent-first
 --wrap auto                # off (default, truncate) or auto (wrap to 2 lines at | when narrow)
 
+# Two-line layout (config.json) — deliberate split, unlike --wrap's overflow handling.
+#   "line2_widgets": ["model", "effort", "branch"]   push these to row 2
+#   "line1_widgets": ["session", "weekly"]           allowlist row 1, rest flows to row 2
+# line1_widgets wins if both are set.
+
 # Currency (auto-converts USD via live exchange rate)
 --currency £               # $, £, €, ¥, C$, A$, ₹, kr, and 20+ more
-
-# Peak hours (local time, weekdays only — Sat/Sun always off-peak per Anthropic policy)
---peak-hours 13:00-19:00   # Set your peak window
---peak-hours off           # Disable peak indicator
-# Set "display": "minimal" in config for short format (⚡ Peak 2h)
-# Set "weekdays_only": false in config to show the window every day
 
 # Clock
 --clock-format 12h         # 12h or 24h
@@ -148,10 +151,17 @@ Use `/pulse` in Claude Code for an interactive setup wizard, or configure direct
 --show burn_rate           # Show usage velocity (↑3%/hr)
 --show git_drift           # Show commits ahead/behind
 --show cumulative_cost     # Show total API-equivalent cost across all sessions
+--show weekly_cost         # Show rolling 7-day API-equivalent cost
+--show cache               # Show % of input served from cache (cost signal)
+--show pr                  # Show clickable PR badge + review state
+--show thinking            # Show whether extended thinking is on
 --show files_changed       # Show modified file count
 --show last_tool           # Show last tool Claude used
 --hide cost                # Hide cost ticker
 --hide heartbeat           # Hide tool counter
+--hide fable               # Hide the Fable weekly cap bar
+--hide fast_mode           # Hide the ⚡fast badge
+--hide agent               # Hide the active subagent name
 
 # Focus timer
 --focus start 25        # Start a 25-minute focus timer
@@ -216,7 +226,7 @@ Set with `--animate <mode>`. Animation moves on each status line refresh (intera
 
 ## Requirements
 
-- **Python 3.6+** (no pip installs needed)
+- **Python 3.8+** (no pip installs needed)
 - **Claude Code** with a Pro or Max subscription
 - No API key required — uses Claude Code's existing credentials
 

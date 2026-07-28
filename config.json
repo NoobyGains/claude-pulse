@@ -13,12 +13,6 @@
   "clock_format": "12h",
   "extra_display": "auto",
   "currency": "$",
-  "peak_hours": {
-    "enabled": true,
-    "start": "13:00",
-    "end": "19:00",
-    "weekdays_only": true
-  },
   "show": {
     "session": true,
     "weekly": true,
@@ -50,6 +44,15 @@
     "streak": false,
     "pace": false,
     "git_drift": false,
-    "files_changed": false
+    "files_changed": false,
+    "fable": true,
+    "fast_mode": true,
+    "thinking": false,
+    "agent": true,
+    "cumulative_cost": false,
+    "weekly_cost": false,
+    "cache": false,
+    "pr": false,
+    "lines": true
   }
 }
