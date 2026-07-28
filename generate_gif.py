@@ -554,14 +554,14 @@ def main():
         for session_pct, weekly_pct, ctx_pct, reset, desc, eu, el in scenarios:
             frames_data.append((
                 theme_name, theme, session_pct, weekly_pct, ctx_pct,
-                reset, "Max 20x", "Opus 4.6", desc, False, 0, eu, el
+                reset, "Max 20x", "Opus 5", desc, False, 0, eu, el
             ))
 
     rainbow_theme = THEME_CSS["rainbow"]
     for offset in range(10):
         frames_data.append((
             "rainbow", rainbow_theme, 55, 38, 45,
-            "2h 10m", "Max 20x", "Opus 4.6", "animated shimmer", True, offset,
+            "2h 10m", "Max 20x", "Opus 5", "animated shimmer", True, offset,
             "£18.50", "£37.00"
         ))
 
@@ -603,13 +603,13 @@ def main():
         theme = THEME_CSS[tname]
         for sp, wp, cp, reset, desc in update_scenarios:
             update_frames.append((tname, theme, sp, wp, cp, reset,
-                                  "Max 20x", "Opus 4.6", desc, False, 0))
+                                  "Max 20x", "Opus 5", desc, False, 0))
 
     # Rainbow shimmer for update GIF too
     for offset in range(10):
         update_frames.append((
             "rainbow", THEME_CSS["rainbow"], 55, 38, 45,
-            "2h 10m", "Max 20x", "Opus 4.6", "shimmer", True, offset
+            "2h 10m", "Max 20x", "Opus 5", "shimmer", True, offset
         ))
 
     tmp_dir2 = Path(tempfile.mkdtemp())
@@ -648,13 +648,13 @@ def main():
         theme = THEME_CSS[tname]
         for sp, wp, cp, reset, desc in cc_update_scenarios:
             cc_update_frames.append((tname, theme, sp, wp, cp, reset,
-                                     "Max 20x", "Opus 4.6", desc, False, 0))
+                                     "Max 20x", "Opus 5", desc, False, 0))
 
     # Rainbow shimmer for claude update GIF too
     for offset in range(10):
         cc_update_frames.append((
             "rainbow", THEME_CSS["rainbow"], 55, 38, 45,
-            "2h 10m", "Max 20x", "Opus 4.6", "shimmer", True, offset
+            "2h 10m", "Max 20x", "Opus 5", "shimmer", True, offset
         ))
 
     tmp_dir3 = Path(tempfile.mkdtemp())
