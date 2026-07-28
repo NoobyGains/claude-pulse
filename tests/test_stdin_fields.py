@@ -35,25 +35,28 @@ class EffortFastModeThinkingTest(unittest.TestCase):
     def test_effort_level_read_from_stdin(self):
         self.assertEqual(parse({"effort": {"level": "xhigh"}})["effort"], "xhigh")
 
-    def test_effort_unset_is_ignored(self):
-        self.assertNotIn("effort", parse({"effort": {"level": "unset"}}))
+    def test_effort_unset_records_the_off_value(self):
+        # Present-but-None, not absent: absent would mean "unchanged" to the
+        # persistence layer and the previous level would stay pinned.
+        self.assertIsNone(parse({"effort": {"level": "unset"}})["effort"])
 
     def test_effort_missing_is_absent(self):
         self.assertNotIn("effort", parse({}))
 
     def test_effort_wrong_type_does_not_raise(self):
-        self.assertNotIn("effort", parse({"effort": "high"}))
-        self.assertNotIn("effort", parse({"effort": None}))
+        self.assertIsNone(parse({"effort": "high"})["effort"])
+        self.assertIsNone(parse({"effort": None})["effort"])
 
-    def test_fast_mode_only_true_when_true(self):
-        self.assertTrue(parse({"fast_mode": True})["fast_mode"])
-        self.assertNotIn("fast_mode", parse({"fast_mode": False}))
+    def test_fast_mode_records_both_states(self):
+        self.assertIs(parse({"fast_mode": True})["fast_mode"], True)
+        self.assertIs(parse({"fast_mode": False})["fast_mode"], False)
+        # A fragment with no session identity says nothing either way.
         self.assertNotIn("fast_mode", parse({}))
 
     def test_thinking_records_both_states(self):
         self.assertIs(parse({"thinking": {"enabled": True}})["thinking"], True)
         self.assertIs(parse({"thinking": {"enabled": False}})["thinking"], False)
-        self.assertNotIn("thinking", parse({"thinking": {}}))
+        self.assertIsNone(parse({"thinking": {}})["thinking"])
 
 
 class AgentAndPrTest(unittest.TestCase):
@@ -81,8 +84,8 @@ class AgentAndPrTest(unittest.TestCase):
             self.assertEqual(ctx["pr_number"], 1)
             self.assertNotIn("pr_url", ctx, f"{bad} must not be linkified")
 
-    def test_pr_without_number_is_ignored(self):
-        self.assertNotIn("pr_number", parse({"pr": {"url": "https://x/y"}}))
+    def test_pr_without_number_clears_the_badge(self):
+        self.assertIsNone(parse({"pr": {"url": "https://x/y"}})["pr_number"])
 
 
 class CacheEfficiencyTest(unittest.TestCase):
@@ -230,6 +233,57 @@ class RateLimitWindowsTest(unittest.TestCase):
         for bad in ("junk", None, [], {}, float("inf"), 10 ** 30):
             ctx = parse({"rate_limits": {"five_hour": {"used_percentage": 5, "resets_at": bad}}})
             self.assertEqual(ctx["_rate_limits"]["five_hour"]["utilization"], 5.0, repr(bad))
+
+
+class SessionStateClearsTest(unittest.TestCase):
+    """Session-state fields must be able to turn back off.
+
+    Regression: these were recorded only when *on*, and main() persists stdin
+    context across refreshes treating an absent key as "unchanged". So the
+    ⚡fast badge stuck permanently after a single fast-mode turn — it was still
+    displayed with Fast mode switched off in Claude Code. The same applied to
+    effort and the PR badge.
+
+    Both shapes must clear it: the field sent explicitly as false, and the
+    field dropped from the payload entirely.
+    """
+
+    FULL = {"session_id": "s1", "model": {"id": "claude-opus-5"},
+            "workspace": {"current_dir": "."}}
+
+    def test_explicit_false_clears_fast_mode(self):
+        self.assertIs(parse({**self.FULL, "fast_mode": True})["fast_mode"], True)
+        self.assertIs(parse({**self.FULL, "fast_mode": False})["fast_mode"], False)
+
+    def test_omitted_field_clears_on_a_full_payload(self):
+        self.assertIs(parse(self.FULL)["fast_mode"], False)
+        self.assertIsNone(parse(self.FULL)["effort"])
+        self.assertIsNone(parse(self.FULL)["pr_number"])
+        self.assertIsNone(parse(self.FULL)["agent_name"])
+
+    def test_effort_clears(self):
+        self.assertEqual(parse({**self.FULL, "effort": {"level": "max"}})["effort"], "max")
+        self.assertIsNone(parse({**self.FULL, "effort": {"level": "unset"}})["effort"])
+        self.assertIsNone(parse({**self.FULL, "effort": {}})["effort"])
+
+    def test_pr_clears_when_leaving_the_branch(self):
+        on = parse({**self.FULL, "pr": {"number": 7, "url": "https://x/y", "review_state": "approved"}})
+        self.assertEqual(on["pr_number"], 7)
+        off = parse({**self.FULL, "pr": None})
+        self.assertIsNone(off["pr_number"])
+        self.assertIsNone(off["pr_url"])
+
+    def test_fragment_payload_does_not_clear(self):
+        """A partial payload (no session identity) must not wipe known state —
+        absent there really does mean 'unknown', not 'off'."""
+        frag = parse({"cost": {"total_cost_usd": 1.0}})
+        self.assertNotIn("fast_mode", frag)
+        self.assertNotIn("effort", frag)
+
+    def test_thinking_tri_state(self):
+        self.assertIs(parse({**self.FULL, "thinking": {"enabled": True}})["thinking"], True)
+        self.assertIs(parse({**self.FULL, "thinking": {"enabled": False}})["thinking"], False)
+        self.assertIsNone(parse(self.FULL)["thinking"])
 
 
 if __name__ == "__main__":

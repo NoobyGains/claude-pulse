@@ -3256,6 +3256,29 @@ def _parse_stdin_context(raw_stdin):
 
     result = {}
 
+    # Is this a full repaint payload rather than a fragment? Claude Code always
+    # sends the session identity fields on a real status refresh, so their
+    # presence means an omitted session-state field genuinely means "off", not
+    # "unknown". Without this, a field that is simply dropped when inactive
+    # (rather than sent as false) could never clear the badge it set, because
+    # the persistence layer treats absent as unchanged.
+    try:
+        _payload = data.get("data", data)
+        _full = isinstance(_payload, dict) and any(
+            k in _payload for k in ("session_id", "model", "workspace", "transcript_path")
+        )
+    except (AttributeError, TypeError):
+        _payload, _full = {}, False
+    if _full:
+        # Defaults for session state; each block below overwrites when present.
+        result["fast_mode"] = False
+        result["effort"] = None
+        result["thinking"] = None
+        result["agent_name"] = None
+        result["pr_number"] = None
+        result["pr_url"] = None
+        result["pr_review_state"] = None
+
     # Model name
     try:
         model = data.get("data", data).get("model", {})
@@ -3319,18 +3342,28 @@ def _parse_stdin_context(raw_stdin):
     # — so the effort widget only ever rendered for users who happened to set
     # that variable by hand. stdin is the real source; the env var is kept
     # below as a fallback for anyone relying on the old behaviour.
+    # These are *session state*, not accumulating facts: each can be switched
+    # off again mid-session. Record the value whenever the field is present —
+    # including the off value — because the persistence layer below treats an
+    # absent key as "unchanged". Recording only the on value meant a badge
+    # could never be cleared: toggle fast mode on once and the ⚡fast marker
+    # stuck forever, even as Claude Code reported fast_mode: false.
     try:
         payload = data.get("data", data)
-        effort = payload.get("effort")
-        if isinstance(effort, dict):
-            level = _sanitize(str(effort.get("level") or ""))
-            if level and level != "unset":
-                result["effort"] = level
-        if payload.get("fast_mode") is True:
-            result["fast_mode"] = True
-        thinking = payload.get("thinking")
-        if isinstance(thinking, dict) and thinking.get("enabled") is not None:
-            result["thinking"] = bool(thinking.get("enabled"))
+        if "effort" in payload:
+            effort = payload.get("effort")
+            level = ""
+            if isinstance(effort, dict):
+                level = _sanitize(str(effort.get("level") or ""))
+            result["effort"] = level if level and level != "unset" else None
+        if "fast_mode" in payload:
+            result["fast_mode"] = payload.get("fast_mode") is True
+        if "thinking" in payload:
+            thinking = payload.get("thinking")
+            if isinstance(thinking, dict) and thinking.get("enabled") is not None:
+                result["thinking"] = bool(thinking.get("enabled"))
+            else:
+                result["thinking"] = None
     except (AttributeError, KeyError, TypeError, ValueError):
         pass
 
@@ -3344,9 +3377,16 @@ def _parse_stdin_context(raw_stdin):
     except (AttributeError, KeyError, TypeError):
         pass
 
-    # Pull request context (number / url / review_state).
+    # Pull request context (number / url / review_state). Also session state:
+    # switching off a PR branch must clear the badge, so an explicitly absent
+    # or empty `pr` clears rather than leaving the previous one pinned.
     try:
-        pr = data.get("data", data).get("pr")
+        payload = data.get("data", data)
+        pr = payload.get("pr")
+        if "pr" in payload and not (isinstance(pr, dict) and pr.get("number") is not None):
+            result["pr_number"] = None
+            result["pr_url"] = None
+            result["pr_review_state"] = None
         if isinstance(pr, dict) and pr.get("number") is not None:
             result["pr_number"] = int(pr["number"])
             url = _sanitize(pr.get("url", ""))
