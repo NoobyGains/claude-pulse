@@ -1262,6 +1262,15 @@ def hook_refresh(tool_name_arg):
         except (json.JSONDecodeError, OSError, ValueError):
             pass
 
+    # The heartbeat becoming live (or going idle) changes whether the status
+    # line needs a repaint timer, and this hook fires at exactly those moments.
+    # sync_status_line_refresh is a no-op when the answer is unchanged, so this
+    # costs one small read per tool call and nothing else.
+    try:
+        sync_status_line_refresh()
+    except Exception:
+        pass
+
     hook_state_path = _get_hook_state_path()
     now = time.time()
     state = {}
@@ -3915,6 +3924,21 @@ def _render_pomodoro(pomo, theme, bar_width=8):
 
 
 def cmd_pomodoro(action, minutes=None):
+    """Run the focus-timer command, then re-evaluate the repaint timer.
+
+    Starting or stopping a timer flips whether a countdown is on screen, which
+    is one of the two things `refreshInterval` exists for.
+    """
+    try:
+        return _cmd_pomodoro_inner(action, minutes)
+    finally:
+        try:
+            sync_status_line_refresh()
+        except Exception:
+            pass
+
+
+def _cmd_pomodoro_inner(action, minutes=None):
     if action == "start":
         duration = POMODORO_DEFAULT_MINUTES
         if minutes is not None:
