@@ -1392,6 +1392,18 @@ def _remote_is_ancestor(remote):
     return None  # any other status means git could not answer
 
 
+def _cache_age(cached):
+    """Age in seconds of a cache dict, or +inf when its timestamp is unusable.
+
+    Returning infinity makes a corrupt entry look infinitely stale, so callers
+    naturally fall through to a fresh check instead of raising on the subtraction.
+    """
+    try:
+        return time.time() - float(cached.get("timestamp", 0) or 0)
+    except (AttributeError, TypeError, ValueError):
+        return float("inf")
+
+
 def check_for_update():
     """Check if a newer version is available on GitHub. Returns True/False/None.
 
@@ -1416,8 +1428,10 @@ def check_for_update():
             cached = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         cached = None
+    if not isinstance(cached, dict):
+        cached = None
 
-    if cached and time.time() - cached.get("timestamp", 0) < UPDATE_CHECK_TTL:
+    if cached and _cache_age(cached) < UPDATE_CHECK_TTL:
         if script_mtime is not None and cached.get("script_mtime") == script_mtime:
             return cached.get("update_available", False)
 
@@ -1427,7 +1441,7 @@ def check_for_update():
         return None  # not a git install, skip silently
 
     if (cached
-            and time.time() - cached.get("timestamp", 0) < UPDATE_CHECK_TTL
+            and _cache_age(cached) < UPDATE_CHECK_TTL
             and cached.get("local") == local[:8]):
         return cached.get("update_available", False)
 
@@ -1749,6 +1763,13 @@ def read_cache(cache_path, ttl):
     try:
         with open(cache_path, "r", encoding="utf-8") as f:
             cached = json.load(f)
+        # The file is ours, but it is still untrusted input: a truncated write,
+        # a disk error, or a hand-edit can leave valid JSON of the wrong shape.
+        # Anything other than a dict is treated as a cache miss rather than
+        # allowed to raise — read_cache sits on the hot path, so an exception
+        # here blanks the status bar.
+        if not isinstance(cached, dict):
+            return None
         # An active 429 backoff wins over the normal TTL: keep serving what we
         # have until the backoff expires. Without this, a rate-limited session
         # that still had usable cached usage re-hit the API on every refresh —
@@ -1766,9 +1787,13 @@ def read_cache(cache_path, ttl):
             effective_ttl = _RATE_LIMIT_CACHE_TTL
         else:
             effective_ttl = _ERROR_CACHE_TTL
-        if time.time() - cached.get("timestamp", 0) < effective_ttl:
+        try:
+            age = time.time() - float(cached.get("timestamp", 0) or 0)
+        except (TypeError, ValueError):
+            return None  # unusable timestamp — treat as a miss
+        if age < effective_ttl:
             return cached
-    except (FileNotFoundError, json.JSONDecodeError, KeyError):
+    except (FileNotFoundError, json.JSONDecodeError, KeyError, OSError):
         pass
     return None
 
@@ -1806,7 +1831,9 @@ def write_cache(cache_path, line, usage=None, plan=None,
     """
     try:
         data = {"timestamp": time.time(), "line": line}
-        if usage is not None:
+        # `usage` can arrive from a stale cache file (the 429 fallback path
+        # re-writes what it just read), so it is not guaranteed to be a dict.
+        if isinstance(usage, dict):
             data["usage"] = {k: v for k, v in usage.items() if k in _USAGE_CACHE_KEYS}
         if plan is not None:
             data["plan"] = plan
@@ -2015,9 +2042,10 @@ def _normalize_usage(usage):
         if not name:
             continue
         # "Fable" → seven_day_fable; "Sonnet 4.6" → seven_day_sonnet_4_6
-        key = "seven_day_" + re.sub(r"[^a-z0-9]+", "_", str(name).lower()).strip("_")
-        if not key.strip("_"):
-            continue
+        slug = re.sub(r"[^a-z0-9]+", "_", str(name).lower()).strip("_")
+        if not slug:
+            continue  # e.g. display_name "!!!" — would yield a bare "seven_day_"
+        key = "seven_day_" + slug
         existing = usage.get(key)
         if isinstance(existing, dict) and existing.get("utilization") is not None:
             continue
@@ -3377,8 +3405,15 @@ def _parse_stdin_context(raw_stdin):
                 if isinstance(k, str) and k.startswith("seven_day_")
             )
             for window in windows:
-                w = rl.get(window)
-                if isinstance(w, dict) and w.get("used_percentage") is not None:
+                # Guard each window separately. Sharing one try/except across
+                # the loop meant a single unparseable `used_percentage` aborted
+                # it and silently dropped every window after the bad one — the
+                # weekly and per-model bars would vanish because of one field.
+                try:
+                    w = rl.get(window)
+                    if not isinstance(w, dict) or w.get("used_percentage") is None:
+                        continue
+                    utilization = float(w["used_percentage"])
                     # Convert Unix epoch seconds to ISO string for compatibility
                     # with existing format_reset_time / format_weekly_reset
                     resets_at = w.get("resets_at")
@@ -3388,12 +3423,14 @@ def _parse_stdin_context(raw_stdin):
                             resets_iso = datetime.fromtimestamp(
                                 float(resets_at), tz=timezone.utc
                             ).isoformat()
-                        except (ValueError, OSError):
+                        except (ValueError, OSError, OverflowError, TypeError):
                             pass
                     result["_rate_limits"][window] = {
-                        "utilization": float(w["used_percentage"]),
+                        "utilization": utilization,
                         "resets_at": resets_iso,
                     }
+                except (AttributeError, KeyError, TypeError, ValueError):
+                    continue
     except (AttributeError, KeyError, ValueError, TypeError):
         pass
 
@@ -4422,11 +4459,20 @@ def _skip_escape(text, i):
                 return j + 2
             j += 1
         return n
-    # CSI (or a bare ESC followed by a final byte).
-    j = i + 1
-    while j < n and j < i + 25 and text[j] not in _CSI_TERMINATORS:
-        j += 1
-    return j + 1 if j < n else j
+    if i + 1 < n and text[i + 1] == "[":
+        # CSI, per ECMA-48: parameter bytes 0x30-0x3F, then intermediate bytes
+        # 0x20-0x2F, then one final byte 0x40-0x7E. Matching the grammar rather
+        # than a hand-listed set of finals means a long true-colour SGR such as
+        # ESC[38;2;255;128;64;48;2;0;0;0m is consumed whole; the previous
+        # scanner gave up after 25 bytes and counted the tail as visible width.
+        j = i + 2
+        while j < n and 0x30 <= ord(text[j]) <= 0x3F:
+            j += 1
+        while j < n and 0x20 <= ord(text[j]) <= 0x2F:
+            j += 1
+        return j + 1 if j < n else n
+    # Bare ESC followed by a single final byte (e.g. ESC c), or a trailing ESC.
+    return min(i + 2, n)
 
 
 def _osc8(url, label):
@@ -4643,6 +4689,8 @@ def sync_status_line_refresh(config=None):
             settings = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return False
+    if not isinstance(settings, dict):
+        return False  # valid JSON, wrong shape — leave it alone
     status_line = settings.get("statusLine")
     if not isinstance(status_line, dict):
         return False

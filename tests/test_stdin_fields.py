@@ -211,6 +211,26 @@ class RateLimitWindowsTest(unittest.TestCase):
         ctx = parse({"rate_limits": {"five_hour": {"used_percentage": 5, "resets_at": "junk"}}})
         self.assertEqual(ctx["_rate_limits"]["five_hour"]["utilization"], 5.0)
 
+    def test_one_malformed_window_does_not_drop_the_others(self):
+        """Regression: a shared try/except around the loop meant a single bad
+        `used_percentage` aborted it, silently discarding every window after
+        the poisoned one — the weekly and per-model bars would just vanish."""
+        ctx = parse({"rate_limits": {
+            "five_hour": {"used_percentage": 10, "resets_at": 1900000000},
+            "seven_day": {"used_percentage": "not-a-number"},
+            "seven_day_fable": {"used_percentage": 50, "resets_at": 1900000000},
+            "seven_day_opus": {"used_percentage": 30, "resets_at": 1900000000},
+        }})
+        self.assertEqual(
+            sorted(ctx["_rate_limits"]),
+            ["five_hour", "seven_day_fable", "seven_day_opus"],
+        )
+
+    def test_bad_resets_at_does_not_drop_the_window(self):
+        for bad in ("junk", None, [], {}, float("inf"), 10 ** 30):
+            ctx = parse({"rate_limits": {"five_hour": {"used_percentage": 5, "resets_at": bad}}})
+            self.assertEqual(ctx["_rate_limits"]["five_hour"]["utilization"], 5.0, repr(bad))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

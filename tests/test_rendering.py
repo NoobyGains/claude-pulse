@@ -176,5 +176,74 @@ class RateLimitBackoffTest(unittest.TestCase):
             self.assertEqual(fails, 1, f"{bad!r}")
 
 
+class CorruptStateResilienceTest(unittest.TestCase):
+    """Our own state files are still untrusted input.
+
+    A truncated write, a disk error, or a hand-edit can leave *valid JSON of
+    the wrong shape*. These paths run on every repaint, so raising blanks the
+    user's status bar. All found by adversarial review.
+    """
+
+    def test_read_cache_survives_wrong_shaped_json(self):
+        import json
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "c.json"
+            for junk in ("[1, 2]", '"a string"', "42", "null",
+                         '{"timestamp": "bad"}', '{"timestamp": null}'):
+                p.write_text(junk, encoding="utf-8")
+                self.assertIsNone(cs.read_cache(p, 60), junk)
+
+    def test_write_cache_survives_non_dict_usage(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "c.json"
+            for bad in ("not-a-dict", [1, 2], 7, True):
+                cs.write_cache(p, "line", usage=bad)  # must not raise
+
+    def test_sync_refresh_survives_wrong_shaped_settings(self):
+        import os
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            os.environ["CLAUDE_CONFIG_DIR"] = td
+            try:
+                for junk in ("[]", '"x"', "5", "null"):
+                    (Path(td) / "settings.json").write_text(junk, encoding="utf-8")
+                    self.assertIs(cs.sync_status_line_refresh({"animate": "off"}), False, junk)
+            finally:
+                os.environ.pop("CLAUDE_CONFIG_DIR", None)
+
+    def test_cache_age_of_corrupt_entry_is_infinite(self):
+        self.assertEqual(cs._cache_age({"timestamp": "bad"}), float("inf"))
+        self.assertEqual(cs._cache_age([]), float("inf"))
+        self.assertLess(cs._cache_age({"timestamp": __import__("time").time()}), 5)
+
+
+class CsiGrammarTest(unittest.TestCase):
+    """_skip_escape follows the ECMA-48 CSI grammar, not a hand-listed set.
+
+    A long true-colour SGR exceeded the old 25-byte scan cap, so the tail was
+    counted as visible width and the line truncated far too early.
+    """
+
+    def test_long_truecolour_sgr_is_consumed_whole(self):
+        seq = "[38;2;255;128;64;48;2;0;0;0;1;4;7m"
+        self.assertEqual(cs._visible_len(seq + "AB"), 2)
+
+    def test_ordinary_sgr(self):
+        self.assertEqual(cs._visible_len("[0m" + "abc"), 3)
+        self.assertEqual(cs._visible_len("[1;31mX"), 1)
+
+    def test_csi_with_intermediate_bytes(self):
+        self.assertEqual(cs._visible_len("[?25lZ"), 1)
+
+    def test_bare_escape_and_trailing_escape(self):
+        self.assertEqual(cs._visible_len("cQ"), 1)
+        self.assertEqual(cs._visible_len("ab"), 2)
+
+    def test_unterminated_csi_does_not_overrun(self):
+        self.assertEqual(cs._visible_len("[38;2;255"), 0)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
