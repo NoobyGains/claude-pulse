@@ -52,10 +52,12 @@ Session ━━━───────── 27% 2h 53m | Weekly ━━━━━
 - **Fixed: the refresh timer never worked.** Every version up to 3.1.0 wrote a `refresh` key that Claude Code does not have, so it was silently ignored — animations, the heartbeat and the focus countdown froze whenever the session went idle. The real setting is `refreshInterval`, and it is now set only when something time-based is on screen.
 - **~40% faster repaints** (204ms → 118ms): `claude --version` and `git rev-parse` were both running on *every* repaint just to validate hourly caches.
 - **Per-model bars no longer invent data** — Claude Pro reports `null` for the model-scoped windows, and 3.1.0 drew a hardcoded `Sonnet 0%` bar in that case.
+- **Zero API calls, for real** — the per-model caps arrive on stdin, but 3.1.0 discarded them and re-fetched over OAuth. That call is gone.
 - **Two-line layout**, rolling **7-day cost** widget, `CLAUDE_CONFIG_DIR` support, exponential backoff on 429, and an update check that no longer nags forks forever.
+- **Corrupt state can't blank the bar** — a truncated or hand-edited cache/settings file used to raise on the hot path. Every state read now degrades to a cache miss instead, and one malformed rate-limit field no longer discards the windows after it.
 - **Peak hours removed.**
 
-Python floor is **3.8** — 3.1.0 advertised 3.6+ but did not parse below 3.12.
+Python floor is **3.8** — 3.1.0 advertised 3.6+ but did not parse below 3.12. Test suite: 21 → 120.
 
 ## Features
 
