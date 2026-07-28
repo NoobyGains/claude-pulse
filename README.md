@@ -42,7 +42,7 @@ A single-file Python status bar for Claude Code that shows everything you need a
 </p>
 
 ```
-Session ━━━───────── 27% 2h 53m | Weekly ━━━━━━━━━─── 73% R:Fri 3pm | Fable ━━───────── 18% | Context ━━━━──────── 35% | $38.75 | +142 -37 | Opus 5 | Effort: XHigh | ⚡fast | [\] 320 tools 51m | main
+Session ━━━───────── 27% 2h 53m | Weekly ━━━━━━━━━─── 73% R:Fri 3pm | Fable ━━───────── 18% | Context ━━━━──────── 35% | $38.75 | +142 -37 | Opus 5 | Effort: XHigh | ⚡fast | main
 ```
 
 ## What's new in 3.2.0
@@ -56,6 +56,7 @@ Session ━━━───────── 27% 2h 53m | Weekly ━━━━━
 - **Two-line layout**, rolling **7-day cost** widget, `CLAUDE_CONFIG_DIR` support, exponential backoff on 429, and an update check that no longer nags forks forever.
 - **Corrupt state can't blank the bar** — a truncated or hand-edited cache/settings file used to raise on the hot path. Every state read now degrades to a cache miss instead, and one malformed rate-limit field no longer discards the windows after it.
 - **Subagent panel rows** via `subagentStatusLine`, a live agent counter from the `SubagentStart`/`SubagentStop` hooks, and an opt-in budget bar.
+- **The heartbeat is now opt-in** — the `[/] 42 tools 5m` spinner is noise for most people, needs a hook, and kept the repaint timer alive. `--show heartbeat` brings it back.
 - **Peak hours removed.**
 
 Python floor is **3.8** — 3.1.0 advertised 3.6+ but did not parse below 3.12. Test suite: 21 → 166.
@@ -75,7 +76,7 @@ Python floor is **3.8** — 3.1.0 advertised 3.6+ but did not parse below 3.12. 
 | **Subagent rows** | Custom per-agent rows in the agent panel via `subagentStatusLine` — status, model, effort, a context bar from `tokenCount`/`contextWindowSize`, and elapsed time |
 | **Live agent counter** | `agents 3 live · 47/200` from `SubagentStart`/`SubagentStop` hooks, colour-escalating toward the caps |
 | **Budget bar** | Spend against a ceiling you set with `--budget` to match your `--max-budget-usd` |
-| **Live heartbeat** | Spinning indicator with tool count and elapsed time (via PostToolUse hook) |
+| **Live heartbeat** | Opt-in spinner with tool count and elapsed time — `--show heartbeat` plus `--install-hooks` |
 | **Git branch** | Current branch name always visible |
 | **Model display** | Shows which model is active (Fable, Opus, Sonnet, Haiku) |
 | **10 themes** | default, ocean, sunset, mono, neon, pride, frost, ember, candy, rainbow |
@@ -169,8 +170,17 @@ Use `/pulse` in Claude Code for an interactive setup wizard, or configure direct
 # Effort display (how the reasoning-effort level is written)
 --effort-format labeled    # labeled (default) 'Effort: Medium' · full 'Medium' · short 'med'
 
-# Clock
+# Clock and timers
 --clock-format 12h         # 12h or 24h
+--weekly-timer-format auto # auto, countdown, date
+--weekly-timer-prefix "R:" # text before the weekly reset time
+
+# Other display options
+--context-format percent   # percent or tokens (155k/1M)
+--max-width 80             # % of terminal width the bar may use
+--extra-display auto       # auto, full, amount, minimal (bonus credits)
+--streak-style fire        # how the daily streak is drawn
+--show-all                 # preview every widget at once
 
 # Widget priority (lower = leftmost)
 --priority                 # Show all widget priorities
@@ -194,6 +204,12 @@ Use `/pulse` in Claude Code for an interactive setup wizard, or configure direct
 --hide agent               # Hide the active subagent name
 --hide subagents           # Hide the live agent counter
 --hide budget              # Hide the budget bar
+
+# Internal (invoked by Claude Code, not by you):
+#   --subagent-status-line   renders the agent-panel rows
+#   --hook-refresh           PostToolUse heartbeat
+#   --hook-subagent-start/-stop   live agent counter
+#   --debug-stdin            dump the raw stdin payload for troubleshooting
 
 # Focus timer
 --focus start 25        # Start a 25-minute focus timer

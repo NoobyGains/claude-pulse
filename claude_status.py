@@ -563,8 +563,12 @@ DEFAULT_SHOW = {
     "cost": True,
     "model": True,
     "branch": True,
-    "heartbeat": True,
-    "activity": True,
+    # Opt-in: the spinner and tool counter are noise for most people, and both
+    # need the PostToolUse hook anyway. --show heartbeat (or /pulse) turns them
+    # on. Leaving them off by default also means a stock config asks for no
+    # repaint timer at all.
+    "heartbeat": False,
+    "activity": False,
     "update": True,
     "claude_update": True,
     # Per-model caps (show when available)
@@ -4508,7 +4512,7 @@ def build_status_line(usage, plan, config=None, stdin_ctx=None, cache_age=None):
     hook_state = _read_hook_state()
     hook_fresh = _is_hook_state_fresh(hook_state)
 
-    if show.get("heartbeat", True) and hook_fresh:
+    if show.get("heartbeat", False) and hook_fresh:
         tool_count = hook_state.get("tool_count", 0)
         session_start = hook_state.get("session_start", time.time())
         elapsed = time.time() - session_start
@@ -4516,7 +4520,7 @@ def build_status_line(usage, plan, config=None, stdin_ctx=None, cache_age=None):
         spinner = HEARTBEAT_SPINNER[frame_idx]
         parts.append((_pri("heartbeat"), f"[{spinner}] {tool_count} tools {_format_elapsed(elapsed)}"))
 
-    if show.get("activity", True) and hook_fresh:
+    if show.get("activity", False) and hook_fresh:
         if hook_state.get("rapid_calls", 0) > 3:
             parts.append((_pri("activity"), f"\u26a1 Active"))
 
@@ -5246,7 +5250,7 @@ def _desired_refresh_interval(config):
     # config relaunched Python every 15s — 240 times an hour — to redraw a bar
     # that never changed. Only ask once one of them is genuinely on screen.
     try:
-        if show.get("heartbeat", True) and _is_hook_state_fresh(_read_hook_state()):
+        if show.get("heartbeat", False) and _is_hook_state_fresh(_read_hook_state()):
             return REFRESH_TIMED
     except Exception:
         pass

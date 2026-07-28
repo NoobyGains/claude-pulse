@@ -216,21 +216,56 @@ Options:
 
 Apply with `--clock-format <12h|24h>`.
 
-**Step 8:** Live heartbeat hook:
+**Step 8:** Reasoning effort display:
 
 ```
-Question: "Install the live heartbeat hook? (shows tool counter during active work)"
+Question: "How should the reasoning-effort level be written?"
 Options:
-  - "Yes (Recommended)" — "Adds [/] 42 tools 5m to your status bar"
-  - "No" — "Skip — you can install later with /pulse hooks"
+  - "Effort: Medium (Recommended)" — "Unambiguous at a glance"
+  - "Medium" — "Just the word"
+  - "med" — "Shortest, saves width on a busy bar"
 ```
 
-If "Yes", run `python "SCRIPT_PATH" --install-hooks`. Remind to restart Claude Code.
+Apply with `--effort-format <labeled|full|short>`.
 
-**Step 9:** Confirm everything:
-"All set! Your status bar is configured with **<theme>**, **<animation>** animation, and **<currency>** cost tracking. It updates on every interaction."
+**Step 9:** Optional widgets — ask which extras they want, multi-select:
 
-If hooks were installed: "Restart Claude Code to activate the live heartbeat."
+```
+Question: "Any optional widgets? (all off by default)"
+Options (multi-select):
+  - "Live heartbeat" — "[/] 42 tools 5m spinner during active work. Needs the PostToolUse hook"
+  - "Cache hit rate" — "Share of input served from cache — the clearest cost signal"
+  - "PR badge" — "Clickable #123 with review state (needs a terminal with hyperlink support)"
+  - "7-day cost" — "Rolling weekly API-equivalent spend"
+  - "Thinking state" — "Whether extended thinking is on"
+```
+
+Apply each with `--show <name>`: `heartbeat` (also `activity`), `cache`, `pr`,
+`weekly_cost`, `thinking`. If heartbeat was chosen, also run
+`python "SCRIPT_PATH" --install-hooks`.
+
+**Step 10:** Budget (optional):
+
+```
+Question: "Track spend against a budget?"
+Options:
+  - "No (Recommended)" — "Skip"
+  - "Yes" — "Set an amount to match Claude Code's --max-budget-usd"
+```
+
+If "Yes", ask for the amount and apply `--budget <amount>`. Explain that
+`--max-budget-usd` is CLI-only and cannot be read automatically, so this number
+has to be kept in step with it by hand.
+
+**Step 11:** Confirm everything:
+"All set! Your status bar is configured with **<theme>**, **<animation>** animation,
+and **<currency>** cost tracking. It updates on every interaction."
+
+Mention anything switched on in Step 9/10. If hooks were installed, add:
+"Restart Claude Code to activate the live heartbeat."
+
+Also note that subagent rows in the agent panel are installed automatically —
+each running subagent shows its model, effort, context bar and elapsed time.
 
 ---
 
