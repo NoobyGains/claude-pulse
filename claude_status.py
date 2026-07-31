@@ -1482,8 +1482,10 @@ def _on_default_branch(deadline=None):
             capture_output=True, text=True, timeout=timeout,
             cwd=str(repo_dir),
         )
+        if result.returncode == 1:
+            return False  # -q's documented "not a symbolic ref": detached HEAD
         if result.returncode != 0:
-            return False  # detached HEAD
+            return None  # broken repo/permissions — unknown, don't cache a verdict
         return result.stdout.strip() in ("main", "master")
     except Exception:
         return None
@@ -1641,6 +1643,9 @@ def check_for_update():
     # Only a main/master checkout gets the nag; topic and preview branches are
     # developers, usually ahead of upstream. Cache the verdict — returning
     # None uncached would re-run git on every repaint once the TTL lapses.
+    # Known tradeoff: the cache keys on commit + script mtime, not branch, so
+    # switching branches at the *same* commit serves the old verdict for up to
+    # one TTL. Keying on branch would cost a git subprocess per repaint.
     on_default = _on_default_branch(deadline=_deadline)
     if on_default is None:
         return None
@@ -5006,44 +5011,51 @@ def _record_subagent_event(event, data):
     session_id = _safe_path_id(data.get("session_id"))
     if not session_id:
         return
+    if event == "start" and not agent_id:
+        # The spawn still counts toward the cap; give it a unique name.
+        agent_id = "noid-%d-%d" % (os.getpid(), time.monotonic_ns())
+    elif event == "stop" and not agent_id:
+        return
 
     session_dir = _subagent_root() / session_id
-    if event == "start":
-        if not agent_id:
-            # The spawn still counts toward the cap; give it a unique name.
-            agent_id = "noid-%d-%d" % (os.getpid(), time.monotonic_ns())
+    live = session_dir / (agent_id + ".live")
+    done = session_dir / (agent_id + ".done")
+    # A pruner in another process can sweep this dir between the mkdir and
+    # the marker write (TOCTOU on the staleness check); the second attempt
+    # restores the event rather than silently losing it.
+    for _attempt in (0, 1):
         _secure_mkdir(session_dir)
-        live = session_dir / (agent_id + ".live")
-        done = session_dir / (agent_id + ".done")
-        if not done.exists():
-            try:
-                with open(live, "x", encoding="utf-8") as f:
-                    json.dump({"type": _sanitize(str(data.get("agent_type") or ""))[:40],
-                               "started": time.time()}, f)
-            except (FileExistsError, OSError):
-                pass
-            # Stop may have slipped in between the check and the create.
-            if done.exists():
+        if event == "start":
+            if not done.exists():
                 try:
-                    os.replace(live, done)
+                    with open(live, "x", encoding="utf-8") as f:
+                        json.dump({"type": _sanitize(str(data.get("agent_type") or ""))[:40],
+                                   "started": time.time()}, f)
+                except (FileExistsError, OSError):
+                    pass
+                # Stop may have slipped in between the check and the create.
+                if done.exists():
+                    try:
+                        os.replace(live, done)
+                    except OSError:
+                        pass
+        elif event == "stop":
+            try:
+                os.replace(live, done)
+                # os.replace preserves mtime: an agent that ran past the TTL
+                # would otherwise leave a marker that looks ancient, and the
+                # next prune would erase the session's whole history.
+                os.utime(done, None)
+            except OSError:
+                # Stop arrived before Start (or Start never made it): leave a
+                # tombstone so the late Start can't mark the agent live.
+                try:
+                    with open(done, "w", encoding="utf-8") as f:
+                        json.dump({"stopped": time.time()}, f)
                 except OSError:
                     pass
-    elif event == "stop":
-        if not agent_id:
-            return
-        _secure_mkdir(session_dir)
-        live = session_dir / (agent_id + ".live")
-        done = session_dir / (agent_id + ".done")
-        try:
-            os.replace(live, done)
-        except OSError:
-            # Stop arrived before Start (or Start never made it): leave a
-            # tombstone so the late Start can't mark the agent live.
-            try:
-                with open(done, "w", encoding="utf-8") as f:
-                    json.dump({"stopped": time.time()}, f)
-            except OSError:
-                pass
+        if live.exists() or done.exists():
+            break
 
     _prune_subagent_dirs(_subagent_root())
     # One-time migration: the pre-3.2.1 single-file state is dead weight now.
@@ -5084,24 +5096,31 @@ def _count_subagents(session_id, now=None):
     if not session_id:
         return 0, 0
     now = now or time.time()
-    live = spawned = 0
     try:
         entries = list(os.scandir(_subagent_root() / session_id))
     except OSError:
         return 0, 0
+    # An agent can transiently own both markers (Stop's rename fails against
+    # Start's open handle, then tombstones after Start's heal check). The
+    # .done twin wins: one spawn, not live.
+    done_ids = {e.name[:-5] for e in entries if e.name.endswith(".done")}
+    live = 0
+    live_ids = set()
     for entry in entries:
-        if entry.name.endswith(".done"):
-            spawned += 1
-        elif entry.name.endswith(".live"):
-            spawned += 1
-            try:
-                # A marker past the TTL is a crashed agent whose Stop never
-                # fired, not a live one.
-                if now - entry.stat().st_mtime < SUBAGENT_STATE_TTL:
-                    live += 1
-            except OSError:
-                pass
-    return live, spawned
+        if not entry.name.endswith(".live"):
+            continue
+        agent = entry.name[:-5]
+        live_ids.add(agent)
+        if agent in done_ids:
+            continue
+        try:
+            # A marker past the TTL is a crashed agent whose Stop never
+            # fired, not a live one.
+            if now - entry.stat().st_mtime < SUBAGENT_STATE_TTL:
+                live += 1
+        except OSError:
+            pass
+    return live, len(live_ids | done_ids)
 
 
 def _render_subagents(config, session_id=None):

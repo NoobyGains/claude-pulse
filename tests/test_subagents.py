@@ -159,6 +159,54 @@ class SubagentStateTest(unittest.TestCase):
         self.assertIsNone(cs._render_subagents({}, None))
         self.assertIsNone(cs._render_subagents({}, ""))
 
+    def test_agent_with_both_markers_counts_once_and_not_live(self):
+        """Start and Stop hooks overlap on Windows: Stop's rename can fail
+        against Start's open handle, then tombstone after Start's heal check,
+        leaving both files. The .done twin must win in the count."""
+        sdir = cs._subagent_root() / "s1"
+        sdir.mkdir(parents=True)
+        (sdir / "twin.live").write_text("{}", encoding="utf-8")
+        (sdir / "twin.done").write_text("{}", encoding="utf-8")
+        self.assertEqual(cs._count_subagents("s1"), (0, 1))
+
+    def test_stopping_an_old_agent_keeps_the_session_dir(self):
+        """os.replace preserves mtime: without a touch, stopping an agent that
+        ran past the TTL leaves the newest marker looking ancient and the very
+        next prune erases the session's whole history."""
+        import os
+        self._start("marathon")
+        marker = cs._subagent_root() / "s1" / "marathon.live"
+        old = time.time() - cs.SUBAGENT_STATE_TTL - 60
+        os.utime(marker, (old, old))
+        self._stop("marathon")
+        cs._prune_subagent_dirs(cs._subagent_root())
+        self.assertTrue((cs._subagent_root() / "s1").exists())
+        self.assertEqual(cs._count_subagents("s1"), (0, 1))
+
+    def test_writer_survives_a_concurrent_prune_sweep(self):
+        """A pruner in another process can rmtree the session dir between the
+        writer's mkdir and its marker write (TOCTOU); one retry must restore
+        the event instead of silently losing it."""
+        import shutil as _shutil
+        real_mkdir = cs._secure_mkdir
+        swept = {"start": False, "stop": False}
+
+        def sweeping_mkdir(path, _key=None):
+            real_mkdir(path)
+            if _key and not swept[_key]:
+                swept[_key] = True
+                _shutil.rmtree(path, ignore_errors=True)
+
+        with mock.patch.object(cs, "_secure_mkdir",
+                               lambda p: sweeping_mkdir(p, "start")):
+            self._start("phoenix")
+        self.assertEqual(cs._count_subagents("s1"), (1, 1))
+
+        with mock.patch.object(cs, "_secure_mkdir",
+                               lambda p: sweeping_mkdir(p, "stop")):
+            self._stop("phoenix")
+        self.assertEqual(cs._count_subagents("s1"), (0, 1))
+
 
 class SubagentRowTest(unittest.TestCase):
     def _cfg(self):

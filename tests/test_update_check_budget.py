@@ -148,6 +148,14 @@ class UpdateBranchGateTest(unittest.TestCase):
         self.assertIs(verdict, False)
         self.assertEqual(network, [])
 
+    def test_git_error_is_unknown_not_detached(self):
+        """symbolic-ref -q exits 1 for a detached HEAD, but 128 means the
+        repo itself is broken — that must stay 'unknown', not be cached as a
+        permanent 'never nag' verdict."""
+        verdict, network = self._run_check("", branch_rc=128)
+        self.assertIsNone(verdict)
+        self.assertEqual(network, [])
+
     def test_main_checkout_still_reaches_the_remote(self):
         verdict, network = self._run_check("main\n")
         self.assertTrue(network, "a main checkout must still check upstream")
