@@ -1428,13 +1428,33 @@ def _detect_status_bar_conflict():
     return False
 
 
-def get_local_commit():
+def _capped_timeout(default, deadline):
+    """Cap *default* to the seconds left before *deadline* (an epoch).
+
+    Returns None when the budget is spent, so callers can skip a blocking
+    operation entirely instead of starting one they have no time for. This is
+    what makes _UPDATE_CHECK_BUDGET a real ceiling: checking the deadline only
+    *between* operations still lets each one run its full fixed timeout, and
+    the sum of those (~13s) is far past the advertised budget.
+    """
+    if deadline is None:
+        return default
+    remaining = deadline - time.time()
+    if remaining < 0.05:
+        return None
+    return min(default, remaining)
+
+
+def get_local_commit(deadline=None):
     """Get the local git HEAD commit hash (short). Returns None on failure."""
+    timeout = _capped_timeout(2, deadline)
+    if timeout is None:
+        return None
     repo_dir = Path(__file__).resolve().parent
     try:
         result = subprocess.run(
             [_GIT_PATH, "rev-parse", "HEAD"],
-            capture_output=True, text=True, timeout=2,
+            capture_output=True, text=True, timeout=timeout,
             cwd=str(repo_dir),
         )
         if result.returncode == 0:
@@ -1444,15 +1464,18 @@ def get_local_commit():
     return None
 
 
-def get_remote_commit():
+def get_remote_commit(deadline=None):
     """Fetch the latest commit hash from GitHub API. Returns None on failure."""
+    timeout = _capped_timeout(3, deadline)
+    if timeout is None:
+        return None
     try:
         url = f"https://api.github.com/repos/{GITHUB_REPO}/commits/main"
         req = urllib.request.Request(url, headers={
             "Accept": "application/vnd.github.sha",
             "User-Agent": "claude-pulse-update-checker",
         })
-        with urllib.request.urlopen(req, timeout=3) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             sha = resp.read(1024).decode().strip()
         if re.fullmatch(r'[0-9a-f]{40}', sha):
             return sha
@@ -1461,13 +1484,17 @@ def get_remote_commit():
         return None
 
 
-def _git(*args, timeout=2):
+def _git(*args, timeout=2, deadline=None):
     """Run git in the install dir, returning stripped stdout or None.
 
     The default timeout is deliberately short: these calls sit behind the
     hourly update check, and several run in series, so a slow filesystem or a
-    hung git could otherwise stall a repaint for tens of seconds.
+    hung git could otherwise stall a repaint for tens of seconds. *deadline*
+    caps it further to whatever remains of the caller's overall budget.
     """
+    timeout = _capped_timeout(timeout, deadline)
+    if timeout is None:
+        return None
     repo_dir = Path(__file__).resolve().parent
     try:
         result = subprocess.run(
@@ -1482,14 +1509,14 @@ def _git(*args, timeout=2):
     return None
 
 
-def _tracks_upstream():
+def _tracks_upstream(deadline=None):
     """True when this checkout's origin is the upstream claude-pulse repo.
 
     A fork's origin points somewhere else, and its own commits are never on
     upstream's main, so the plain ``local != remote`` comparison flagged an
     update forever. Returns None when origin can't be read at all.
     """
-    url = _git("remote", "get-url", "origin", timeout=3)
+    url = _git("remote", "get-url", "origin", timeout=3, deadline=deadline)
     if url is None:
         return None
     owner_repo = GITHUB_REPO.lower()
@@ -1500,19 +1527,23 @@ def _tracks_upstream():
     return normalised.endswith(owner_repo)
 
 
-def _remote_is_ancestor(remote):
+def _remote_is_ancestor(remote, deadline=None):
     """True when *remote* is already contained in local history (we're ahead).
 
     Returns None when the commit isn't present locally, so ancestry can't be
     decided without fetching — which the status line must never do.
     """
-    if _git("cat-file", "-e", f"{remote}^{{commit}}", timeout=3) is None:
+    if _git("cat-file", "-e", f"{remote}^{{commit}}", timeout=3,
+            deadline=deadline) is None:
+        return None
+    timeout = _capped_timeout(2, deadline)
+    if timeout is None:
         return None
     repo_dir = Path(__file__).resolve().parent
     try:
         result = subprocess.run(
             [_GIT_PATH, "merge-base", "--is-ancestor", remote, "HEAD"],
-            capture_output=True, text=True, timeout=2, cwd=str(repo_dir),
+            capture_output=True, text=True, timeout=timeout, cwd=str(repo_dir),
         )
     except Exception:
         return None
@@ -1567,11 +1598,13 @@ def check_for_update():
             return cached.get("update_available", False)
 
     # Cache is stale or unverifiable — now it's worth asking git. Everything
-    # from here is bounded by _UPDATE_CHECK_BUDGET so a slow git or a slow
-    # GitHub can never hold a repaint open for the sum of its timeouts.
+    # from here is bounded by _UPDATE_CHECK_BUDGET: the deadline is threaded
+    # into every blocking call, capping each one's timeout to the budget that
+    # remains, so a slow git or a slow GitHub can never hold a repaint open
+    # for the sum of the individual timeouts.
     _deadline = time.time() + _UPDATE_CHECK_BUDGET
 
-    local = get_local_commit()
+    local = get_local_commit(deadline=_deadline)
     if not local:
         return None  # not a git install, skip silently
 
@@ -1585,21 +1618,27 @@ def check_for_update():
     # upstream (issue: forks false-positive on the update indicator).
     if time.time() > _deadline:
         return None
-    if _tracks_upstream() is False:
+    if _tracks_upstream(deadline=_deadline) is False:
         return None
 
     # Perform the check
     if time.time() > _deadline:
         return None
-    remote = get_remote_commit()
+    remote = get_remote_commit(deadline=_deadline)
     if not remote:
         return None  # network error, skip silently
 
     if local == remote:
         update_available = False
     else:
-        ancestor = _remote_is_ancestor(remote)
+        ancestor = _remote_is_ancestor(remote, deadline=_deadline)
         if ancestor is None:
+            if _deadline - time.time() < 0.05:
+                # The budget ran out mid-ancestry-check: that is a lack of
+                # time, not of information. Caching the pessimistic guess
+                # would pin a false "update available" on an ahead-of-main
+                # checkout for an hour, so skip silently and retry next time.
+                return None
             # Can't decide locally (commit not fetched) — fall back to the
             # simple comparison, which is right for a plain tracking install.
             update_available = True
@@ -1969,16 +2008,22 @@ _USAGE_CACHE_KEYS = {
 }
 
 def write_cache(cache_path, line, usage=None, plan=None,
-                rate_limited_until=None, rate_limit_fails=None):
+                rate_limited_until=None, rate_limit_fails=None,
+                data_timestamp=None):
     """Persist the rendered line plus optional usage/plan and 429 backoff state.
 
     ``rate_limited_until`` is an epoch after which it is worth calling the API
     again; ``rate_limit_fails`` is the consecutive-429 count that produced it.
     Both are omitted on a normal write, which is what clears the backoff once a
     request succeeds.
+
+    ``data_timestamp`` is the epoch the usage was actually fetched. The 429
+    fallback re-writes usage it just read from a stale cache, and stamping
+    that copy with the current time made old quota data look freshly fetched
+    on every failed retry — the staleness warning could never fire.
     """
     try:
-        data = {"timestamp": time.time(), "line": line}
+        data = {"timestamp": data_timestamp or time.time(), "line": line}
         # `usage` can arrive from a stale cache file (the 429 fallback path
         # re-writes what it just read), so it is not guaranteed to be a dict.
         if isinstance(usage, dict):
@@ -3227,19 +3272,31 @@ def _scan_session_costs(since_ts=None):
                         usage = msg.get("usage", {})
                         if not usage or "input_tokens" not in usage:
                             continue
+                        entry_ts = _parse_transcript_ts(entry.get("timestamp"))
                         if since_ts is not None:
-                            entry_ts = _parse_transcript_ts(entry.get("timestamp"))
                             # Drop undated entries too: counting them would
                             # inflate a "last 7 days" figure with history.
                             if entry_ts is None or entry_ts < since_ts:
                                 continue
+                        # Price at the rates in force when the entry was made,
+                        # not on the scan day — otherwise a promo's expiry
+                        # retroactively reprices every turn from the promo era.
+                        # Undated entries fall back to today inside _pricing_for.
+                        entry_date = None
+                        if entry_ts is not None:
+                            try:
+                                entry_date = datetime.fromtimestamp(
+                                    entry_ts, tz=timezone.utc
+                                ).date()
+                            except (OSError, OverflowError, ValueError):
+                                pass
                         model_id = msg.get("model", "")
                         # Normalise: strip version suffix variants for matching
                         # e.g. "claude-sonnet-4-5-20251022" → "claude-sonnet-4-5".
                         # Longest prefix wins — a first-match scan would let the
                         # bare "claude-opus-4" key ($15/$75) swallow
                         # "claude-opus-4-8" ($5/$25) and treble the reported cost.
-                        pricing = _pricing_for(model_id)
+                        pricing = _pricing_for(model_id, entry_date)
                         if pricing is None:
                             best_key = None
                             for key in API_PRICING:
@@ -3248,7 +3305,7 @@ def _scan_session_costs(since_ts=None):
                                 ):
                                     best_key = key
                             if best_key is not None:
-                                pricing = _pricing_for(best_key)
+                                pricing = _pricing_for(best_key, entry_date)
                                 model_id = best_key
                         if pricing is None:
                             continue
@@ -6689,6 +6746,7 @@ def main():
                 write_cache(
                     cache_path, line, usage, stale.get("plan", plan),
                     rate_limited_until=retry_at, rate_limit_fails=fails,
+                    data_timestamp=stale.get("timestamp"),
                 )
             else:
                 mins = max(1, int(delay // 60))

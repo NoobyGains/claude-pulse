@@ -192,6 +192,65 @@ class PromoPricingTest(unittest.TestCase):
         self.assertEqual(cs.MODEL_CONTEXT_WINDOWS["Mythos Preview"], 1_000_000)
 
 
+class ScanPricesEntriesByTheirOwnDateTest(unittest.TestCase):
+    """The cost scanner must price each transcript entry at the rates that
+    were in force when the entry was made, not on the day the scan runs.
+
+    Otherwise, once the Sonnet 5 intro period lapses, every August turn gets
+    retroactively repriced at $3/$15 — the cumulative widget's history would
+    silently inflate by 50% overnight.
+    """
+
+    class _FrozenDatetime(cs.datetime):
+        """datetime whose now() sits after the Sonnet 5 promo cutoff."""
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 10, 1, 12, 0, 0, tzinfo=tz)
+
+    def _scan(self, entries, since_ts=None):
+        import json as _json
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            sess = Path(td) / "projects" / "proj" / "session.jsonl"
+            sess.parent.mkdir(parents=True)
+            sess.write_text(
+                "\n".join(_json.dumps(e) for e in entries), encoding="utf-8"
+            )
+            with mock.patch.object(cs, "datetime", self._FrozenDatetime), \
+                    mock.patch.object(cs, "_claude_config_dir", lambda: Path(td)):
+                return cs._scan_session_costs(since_ts=since_ts)
+
+    @staticmethod
+    def _entry(model, ts, input_tokens=1_000_000):
+        e = {
+            "type": "assistant",
+            "message": {"model": model, "usage": {"input_tokens": input_tokens,
+                                                  "output_tokens": 0}},
+        }
+        if ts is not None:
+            e["timestamp"] = ts
+        return e
+
+    def test_promo_era_entries_keep_promo_pricing_after_the_cutoff(self):
+        result = self._scan([
+            # In the promo window: must cost $2/MTok even though "now" is October.
+            self._entry("claude-sonnet-5", "2026-08-15T12:00:00Z"),
+            # After the cutoff: list price $3/MTok.
+            self._entry("claude-sonnet-5", "2026-09-15T12:00:00Z"),
+            # Promo must also survive the longest-prefix fallback resolution.
+            self._entry("claude-sonnet-5-20260601", "2026-08-20T12:00:00Z"),
+        ])
+        self.assertAlmostEqual(
+            result["models"]["claude-sonnet-5"]["cost_usd"], 2.0 + 3.0 + 2.0
+        )
+
+    def test_undated_entries_still_price_at_the_scan_day(self):
+        """No timestamp means no better information — the scan-day default
+        stands, which after the cutoff is the list price."""
+        result = self._scan([self._entry("claude-sonnet-5", None)])
+        self.assertAlmostEqual(result["models"]["claude-sonnet-5"]["cost_usd"], 3.0)
+
+
 class StaleCacheShapeTest(unittest.TestCase):
     """_read_stale_cache feeds the 429 fallback; raising there prints nothing."""
 
