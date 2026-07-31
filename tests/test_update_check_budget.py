@@ -43,7 +43,9 @@ class UpdateCheckBudgetTest(unittest.TestCase):
 
         def fake_run(cmd, capture_output=None, text=None, timeout=None, cwd=None):
             clock.now += timeout * op_cost_fraction
-            if "rev-parse" in cmd:
+            if "symbolic-ref" in cmd:
+                out = "main"
+            elif "rev-parse" in cmd:
                 out = LOCAL_SHA
             elif "get-url" in cmd:
                 out = f"https://github.com/{cs.GITHUB_REPO}"
@@ -89,6 +91,66 @@ class UpdateCheckBudgetTest(unittest.TestCase):
         # ancestor → this checkout is ahead → no update to offer).
         self.assertIs(verdict, False)
         self.assertLess(elapsed, cs._UPDATE_CHECK_BUDGET)
+
+
+class UpdateBranchGateTest(unittest.TestCase):
+    """Only a main/master checkout gets the update nag.
+
+    A checkout parked on a topic or preview branch (v3.2.0-preview, fix/…) is
+    a developer or tester and is typically *ahead* of upstream main — where
+    "↑ Pulse Update" is not just noise but actively wrong.
+    """
+
+    def _run_check(self, branch_stdout, branch_rc=0):
+        import tempfile
+        network_calls = []
+
+        def fake_run(cmd, capture_output=None, text=None, timeout=None, cwd=None):
+            if "symbolic-ref" in cmd:
+                return SimpleNamespace(returncode=branch_rc,
+                                       stdout=branch_stdout, stderr="")
+            if "rev-parse" in cmd:
+                return SimpleNamespace(returncode=0, stdout=LOCAL_SHA, stderr="")
+            if "get-url" in cmd:
+                return SimpleNamespace(
+                    returncode=0, stdout=f"https://github.com/{cs.GITHUB_REPO}",
+                    stderr="")
+            return SimpleNamespace(returncode=1, stdout="", stderr="")
+
+        class _FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read(self, n=-1):
+                return REMOTE_SHA.encode()
+
+        def fake_urlopen(req, timeout=None):
+            network_calls.append(req)
+            return _FakeResponse()
+
+        with tempfile.TemporaryDirectory() as td, \
+                mock.patch.object(cs.subprocess, "run", fake_run), \
+                mock.patch.object(cs.urllib.request, "urlopen", fake_urlopen), \
+                mock.patch.object(cs, "get_state_dir", lambda: Path(td)):
+            verdict = cs.check_for_update()
+        return verdict, network_calls
+
+    def test_topic_branch_never_nags_and_skips_the_network(self):
+        verdict, network = self._run_check("v3.2.0-preview\n")
+        self.assertIs(verdict, False)
+        self.assertEqual(network, [])
+
+    def test_detached_head_never_nags(self):
+        verdict, network = self._run_check("", branch_rc=1)
+        self.assertIs(verdict, False)
+        self.assertEqual(network, [])
+
+    def test_main_checkout_still_reaches_the_remote(self):
+        verdict, network = self._run_check("main\n")
+        self.assertTrue(network, "a main checkout must still check upstream")
 
 
 if __name__ == "__main__":

@@ -1464,6 +1464,31 @@ def get_local_commit(deadline=None):
     return None
 
 
+def _on_default_branch(deadline=None):
+    """True when this checkout sits on main/master; False otherwise; None on error.
+
+    A checkout parked on a topic or preview branch is a developer or a preview
+    tester, and is typically *ahead* of upstream main — where "update
+    available" is not just noise but actively wrong. Detached HEADs are a
+    deliberate pin, not a plain tracking install, so they don't nag either.
+    """
+    timeout = _capped_timeout(2, deadline)
+    if timeout is None:
+        return None
+    repo_dir = Path(__file__).resolve().parent
+    try:
+        result = subprocess.run(
+            [_GIT_PATH, "symbolic-ref", "--short", "-q", "HEAD"],
+            capture_output=True, text=True, timeout=timeout,
+            cwd=str(repo_dir),
+        )
+        if result.returncode != 0:
+            return False  # detached HEAD
+        return result.stdout.strip() in ("main", "master")
+    except Exception:
+        return None
+
+
 def get_remote_commit(deadline=None):
     """Fetch the latest commit hash from GitHub API. Returns None on failure."""
     timeout = _capped_timeout(3, deadline)
@@ -1612,6 +1637,25 @@ def check_for_update():
             and _cache_age(cached) < UPDATE_CHECK_TTL
             and cached.get("local") == local[:8]):
         return cached.get("update_available", False)
+
+    # Only a main/master checkout gets the nag; topic and preview branches are
+    # developers, usually ahead of upstream. Cache the verdict — returning
+    # None uncached would re-run git on every repaint once the TTL lapses.
+    on_default = _on_default_branch(deadline=_deadline)
+    if on_default is None:
+        return None
+    if not on_default:
+        try:
+            with _secure_open_write(update_cache) as f:
+                json.dump({
+                    "timestamp": time.time(),
+                    "update_available": False,
+                    "local": local[:8],
+                    "script_mtime": script_mtime,
+                }, f)
+        except OSError:
+            pass
+        return False
 
     # A fork's own commits are never on upstream main, so a bare inequality
     # would nag forever. Only ever prompt a checkout that actually tracks
@@ -3475,6 +3519,13 @@ def _parse_stdin_context(raw_stdin):
     except (AttributeError, TypeError):
         _payload, _full = {}, False
     if _full:
+        # The session's own identity, used to scope per-session widgets (the
+        # subagent counter) to the window being painted. Deliberately absent
+        # from _STDIN_CTX_KEYS: persisting it would hand this session's id to
+        # every other session's fragment repaints.
+        sid = _sanitize(str(_payload.get("session_id") or ""))[:64]
+        if sid:
+            result["session_id"] = sid
         # Defaults for session state; each block below overwrites when present.
         result["fast_mode"] = False
         result["effort"] = None
@@ -4614,7 +4665,8 @@ def build_status_line(usage, plan, config=None, stdin_ctx=None, cache_age=None):
 
     if show.get("subagents", True):
         try:
-            sub_str = _render_subagents(config)
+            sub_str = _render_subagents(
+                config, (stdin_ctx or {}).get("session_id"))
             if sub_str:
                 parts.append((_pri("subagents"), sub_str))
         except Exception:
@@ -4893,48 +4945,26 @@ def _fit_line(line, config):
 # them nest (depth 3 by default), so a session can quietly accumulate a lot of
 # them. SubagentStart / SubagentStop carry `agent_id` and `agent_type`, which is
 # everything needed to keep a live count without polling anything.
+#
+# State is one directory per session holding one marker file per agent:
+# ``subagents/<session_id>/<agent_id>.live``, renamed to ``.done`` on stop.
+# Every write is an atomic create or rename of a distinct path. The obvious
+# single-JSON design failed two ways in practice: concurrent Start hooks lost
+# increments to the read-modify-write race (a parallel fan-out of ten agents
+# recorded two), and with several Claude Code windows open — or a session id
+# rotation after compaction — whichever session wrote last clobbered the
+# counters that every other session then displayed.
 
 SUBAGENT_STATE_TTL = 6 * 3600  # forget stragglers whose Stop hook never fired
 
 
-def _get_subagent_state_path():
-    return get_state_dir() / "subagents.json"
+def _subagent_root():
+    return get_state_dir() / "subagents"
 
 
-def _read_subagent_state():
-    """Return the subagent tracking state, or a fresh one on any problem."""
-    empty = {"session_id": "", "active": {}, "spawned": 0}
-    try:
-        with open(_get_subagent_state_path(), "r", encoding="utf-8") as f:
-            state = json.load(f)
-        if not isinstance(state, dict):
-            return empty
-        active = state.get("active")
-        if not isinstance(active, dict):
-            state["active"] = {}
-        if not isinstance(state.get("spawned"), int):
-            state["spawned"] = 0
-        return state
-    except (FileNotFoundError, json.JSONDecodeError, OSError, TypeError, ValueError):
-        return empty
-
-
-def _prune_subagents(active, now=None):
-    """Drop entries whose Stop hook never arrived.
-
-    A crashed or force-quit subagent leaves its start record behind forever,
-    which would make the active count drift upward for the rest of the session.
-    """
-    now = now or time.time()
-    pruned = {}
-    for agent_id, rec in (active or {}).items():
-        try:
-            started = float(rec.get("started", 0))
-        except (AttributeError, TypeError, ValueError):
-            continue
-        if now - started < SUBAGENT_STATE_TTL:
-            pruned[agent_id] = rec
-    return pruned
+def _safe_path_id(text, limit=64):
+    """Reduce an untrusted hook field to a filesystem-safe path component."""
+    return re.sub(r"[^A-Za-z0-9._-]", "", str(text or ""))[:limit].strip(".")
 
 
 def hook_subagent(event):
@@ -4958,46 +4988,134 @@ def hook_subagent(event):
         data = {}
     if not isinstance(data, dict):
         data = {}
-
-    agent_id = _sanitize(str(data.get("agent_id") or ""))[:64]
-    agent_type = _sanitize(str(data.get("agent_type") or ""))[:40]
-    session_id = _sanitize(str(data.get("session_id") or ""))[:64]
-
-    state = _read_subagent_state()
-    # A new session starts the counters over; totals are per-session, matching
-    # how Claude Code's own per-session spawn cap is counted.
-    if session_id and state.get("session_id") != session_id:
-        state = {"session_id": session_id, "active": {}, "spawned": 0}
-
-    active = _prune_subagents(state.get("active", {}))
-    if event == "start":
-        if agent_id:
-            active[agent_id] = {"type": agent_type, "started": time.time()}
-        state["spawned"] = int(state.get("spawned", 0)) + 1
-    elif event == "stop" and agent_id:
-        active.pop(agent_id, None)
-    state["active"] = active
-    if session_id:
-        state["session_id"] = session_id
-
     try:
-        _atomic_json_write(_get_subagent_state_path(), state, indent=None)
+        _record_subagent_event(event, data)
+    except Exception:
+        pass
+
+
+def _record_subagent_event(event, data):
+    """Record one Start/Stop event as a marker file. Concurrency-safe.
+
+    Ordering is not guaranteed between the two hook processes of a fast agent:
+    its Stop can land before its Start. A ``.done`` marker therefore blocks a
+    late ``.live`` from being created, and a Start that loses the race anyway
+    heals itself by demoting its own marker.
+    """
+    agent_id = _safe_path_id(data.get("agent_id"))
+    session_id = _safe_path_id(data.get("session_id"))
+    if not session_id:
+        return
+
+    session_dir = _subagent_root() / session_id
+    if event == "start":
+        if not agent_id:
+            # The spawn still counts toward the cap; give it a unique name.
+            agent_id = "noid-%d-%d" % (os.getpid(), time.monotonic_ns())
+        _secure_mkdir(session_dir)
+        live = session_dir / (agent_id + ".live")
+        done = session_dir / (agent_id + ".done")
+        if not done.exists():
+            try:
+                with open(live, "x", encoding="utf-8") as f:
+                    json.dump({"type": _sanitize(str(data.get("agent_type") or ""))[:40],
+                               "started": time.time()}, f)
+            except (FileExistsError, OSError):
+                pass
+            # Stop may have slipped in between the check and the create.
+            if done.exists():
+                try:
+                    os.replace(live, done)
+                except OSError:
+                    pass
+    elif event == "stop":
+        if not agent_id:
+            return
+        _secure_mkdir(session_dir)
+        live = session_dir / (agent_id + ".live")
+        done = session_dir / (agent_id + ".done")
+        try:
+            os.replace(live, done)
+        except OSError:
+            # Stop arrived before Start (or Start never made it): leave a
+            # tombstone so the late Start can't mark the agent live.
+            try:
+                with open(done, "w", encoding="utf-8") as f:
+                    json.dump({"stopped": time.time()}, f)
+            except OSError:
+                pass
+
+    _prune_subagent_dirs(_subagent_root())
+    # One-time migration: the pre-3.2.1 single-file state is dead weight now.
+    try:
+        os.unlink(get_state_dir() / "subagents.json")
     except OSError:
         pass
 
 
-def _render_subagents(config):
+def _prune_subagent_dirs(root, now=None):
+    """Remove session dirs with no marker newer than the TTL.
+
+    Sessions end without a goodbye event, so their dirs would otherwise
+    accumulate forever. Anything recent enough to still be rendered is kept.
+    """
+    now = now or time.time()
+    try:
+        entries = list(os.scandir(root))
+    except OSError:
+        return
+    for entry in entries:
+        try:
+            if not entry.is_dir(follow_symlinks=False):
+                continue
+            # The newest marker decides; the dir's own mtime only matters for
+            # an empty dir (a concurrent hook mid-mkdir must not be swept).
+            newest = max((c.stat().st_mtime for c in os.scandir(entry.path)),
+                         default=entry.stat().st_mtime)
+            if now - newest > SUBAGENT_STATE_TTL:
+                shutil.rmtree(entry.path, ignore_errors=True)
+        except OSError:
+            continue
+
+
+def _count_subagents(session_id, now=None):
+    """Return (live, spawned) for one session from its marker files."""
+    session_id = _safe_path_id(session_id)
+    if not session_id:
+        return 0, 0
+    now = now or time.time()
+    live = spawned = 0
+    try:
+        entries = list(os.scandir(_subagent_root() / session_id))
+    except OSError:
+        return 0, 0
+    for entry in entries:
+        if entry.name.endswith(".done"):
+            spawned += 1
+        elif entry.name.endswith(".live"):
+            spawned += 1
+            try:
+                # A marker past the TTL is a crashed agent whose Stop never
+                # fired, not a live one.
+                if now - entry.stat().st_mtime < SUBAGENT_STATE_TTL:
+                    live += 1
+            except OSError:
+                pass
+    return live, spawned
+
+
+def _render_subagents(config, session_id=None):
     """Return the subagent segment, or None when there is nothing to say.
 
-    Shows live count and per-session spawns. Claude Code enforces its own caps
-    (spawns and concurrency) but does not expose them on stdin or in settings,
-    so the denominators come from ``limits`` in claude-pulse's own config and
-    default to Claude Code's documented values.
+    Counts are scoped to *session_id* — the session this repaint belongs to —
+    so one window never displays another window's agents. Claude Code enforces
+    its own caps (spawns and concurrency) but does not expose them on stdin or
+    in settings, so the denominators come from ``limits`` in claude-pulse's
+    own config and default to Claude Code's documented values.
     """
-    state = _read_subagent_state()
-    active = _prune_subagents(state.get("active", {}))
-    spawned = int(state.get("spawned", 0) or 0)
-    live = len(active)
+    if not session_id:
+        return None
+    live, spawned = _count_subagents(session_id)
     if not live and not spawned:
         return None
 

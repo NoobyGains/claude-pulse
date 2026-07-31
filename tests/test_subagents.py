@@ -28,32 +28,136 @@ import claude_status as cs  # noqa: E402
 
 
 class SubagentStateTest(unittest.TestCase):
-    def test_prune_drops_stragglers(self):
-        """A crashed subagent never fires Stop; without pruning the live count
-        would drift upward for the rest of the session."""
-        now = time.time()
-        active = {
-            "fresh": {"started": now - 10},
-            "stale": {"started": now - cs.SUBAGENT_STATE_TTL - 1},
-        }
-        pruned = cs._prune_subagents(active, now)
-        self.assertIn("fresh", pruned)
-        self.assertNotIn("stale", pruned)
+    """Marker-file bookkeeping: one dir per session, one file per agent.
 
-    def test_prune_survives_malformed_records(self):
-        for bad in ({"x": "y"}, {"x": {"started": "nope"}}, {"x": None}, {}):
-            cs._prune_subagents(bad)  # must not raise
+    The previous design (one global JSON, read-modify-write, reset whenever a
+    hook arrived from a different session) had two proven failure modes: lost
+    increments when several agents spawn in parallel, and one session's counts
+    being clobbered or displayed by another. Marker files make every write an
+    atomic create/rename of a distinct path, so neither can happen.
+    """
 
-    def test_read_state_tolerates_corruption(self):
+    def setUp(self):
         import tempfile
-        with tempfile.TemporaryDirectory() as td:
-            p = Path(td) / "s.json"
-            with mock.patch.object(cs, "_get_subagent_state_path", return_value=p):
-                for junk in ("[]", "42", '"s"', "null", '{"active": 5}', "{not json"):
-                    p.write_text(junk, encoding="utf-8")
-                    state = cs._read_subagent_state()
-                    self.assertIsInstance(state, dict, junk)
-                    self.assertIsInstance(state.get("active"), dict, junk)
+        self._td = tempfile.TemporaryDirectory()
+        self._patch = mock.patch.object(
+            cs, "get_state_dir", lambda: Path(self._td.name))
+        self._patch.start()
+        self.addCleanup(self._patch.stop)
+        self.addCleanup(self._td.cleanup)
+
+    def _start(self, agent_id="a1", session="s1", agent_type="claude"):
+        cs._record_subagent_event("start", {
+            "agent_id": agent_id, "session_id": session, "agent_type": agent_type})
+
+    def _stop(self, agent_id="a1", session="s1"):
+        cs._record_subagent_event("stop", {
+            "agent_id": agent_id, "session_id": session})
+
+    def test_start_makes_agent_live(self):
+        self._start()
+        self.assertEqual(cs._count_subagents("s1"), (1, 1))
+
+    def test_stop_keeps_spawn_but_not_live(self):
+        self._start()
+        self._stop()
+        self.assertEqual(cs._count_subagents("s1"), (0, 1))
+
+    def test_parallel_starts_lose_no_increments(self):
+        """30 simultaneous SubagentStart hooks must all be counted. The old
+        read-modify-write JSON lost most of them to the race."""
+        import threading
+        threads = [threading.Thread(target=self._start, args=(f"agent{i}",))
+                   for i in range(30)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(cs._count_subagents("s1"), (30, 30))
+
+    def test_sessions_never_clobber_each_other(self):
+        """A hook from session B must not reset or leak into session A."""
+        self._start("a1", session="sessA")
+        self._start("b1", session="sessB")
+        self._stop("b1", session="sessB")
+        self.assertEqual(cs._count_subagents("sessA"), (1, 1))
+        self.assertEqual(cs._count_subagents("sessB"), (0, 1))
+
+    def test_stop_before_start_never_goes_live(self):
+        """Hook processes race: a fast agent's Stop can land before its Start.
+        The late Start must not resurrect it as live-forever."""
+        self._stop("quick")
+        self._start("quick")
+        self.assertEqual(cs._count_subagents("s1"), (0, 1))
+
+    def test_straggler_live_marker_is_not_live(self):
+        """A crashed subagent never fires Stop; past the TTL its marker must
+        stop counting as live (but the spawn still happened)."""
+        self._start("ghost")
+        marker = cs._subagent_root() / "s1" / "ghost.live"
+        old = time.time() - cs.SUBAGENT_STATE_TTL - 60
+        import os
+        os.utime(marker, (old, old))
+        self.assertEqual(cs._count_subagents("s1"), (0, 1))
+
+    def test_prune_removes_dead_session_dirs(self):
+        self._start("a", session="dead")
+        self._start("b", session="alive")
+        import os
+        old = time.time() - cs.SUBAGENT_STATE_TTL - 60
+        dead = cs._subagent_root() / "dead"
+        for child in dead.iterdir():
+            os.utime(child, (old, old))
+        cs._prune_subagent_dirs(cs._subagent_root())
+        self.assertFalse(dead.exists())
+        self.assertEqual(cs._count_subagents("alive"), (1, 1))
+
+    def test_missing_agent_id_still_counts_the_spawn(self):
+        cs._record_subagent_event("start", {"session_id": "s1"})
+        live, spawned = cs._count_subagents("s1")
+        self.assertEqual(spawned, 1)
+
+    def test_missing_session_id_is_a_noop(self):
+        cs._record_subagent_event("start", {"agent_id": "a1"})
+        self.assertFalse((cs._subagent_root()).exists() and
+                         any(cs._subagent_root().iterdir()))
+
+    def test_hostile_ids_cannot_escape_the_state_dir(self):
+        cs._record_subagent_event("start", {
+            "agent_id": "..", "session_id": "../../evil"})
+        root = cs._subagent_root()
+        if root.exists():
+            for p in root.rglob("*"):
+                self.assertIn(str(root), str(p))
+
+    def test_malformed_event_data_never_raises(self):
+        for bad in ({}, {"agent_id": None}, {"session_id": 7, "agent_id": []},
+                    {"session_id": "s", "agent_id": {"x": 1}}):
+            cs._record_subagent_event("start", bad)
+            cs._record_subagent_event("stop", bad)
+
+    def test_legacy_single_file_state_is_cleaned_up(self):
+        legacy = Path(self._td.name) / "subagents.json"
+        legacy.write_text("{}", encoding="utf-8")
+        self._start()
+        self.assertFalse(legacy.exists())
+
+    def test_render_is_scoped_to_the_painting_session(self):
+        """The status line must show the counts of the session being painted,
+        never whichever session last wrote."""
+        self._start("a1", session="mine")
+        self._start("b1", session="theirs")
+        self._start("b2", session="theirs")
+        out = cs._render_subagents({}, "mine")
+        self.assertIsNotNone(out)
+        # _sanitize strips the ANSI colouring for a readable assertion.
+        self.assertIn("1/200", cs._sanitize(out))   # mine: 1 spawn — not theirs: 2
+        self.assertIsNone(cs._render_subagents({}, "unknown-session"))
+
+    def test_render_without_a_session_id_shows_nothing(self):
+        self._start()
+        self.assertIsNone(cs._render_subagents({}, None))
+        self.assertIsNone(cs._render_subagents({}, ""))
 
 
 class SubagentRowTest(unittest.TestCase):
@@ -159,16 +263,14 @@ class CapsAndBudgetTest(unittest.TestCase):
         self.assertEqual(cs.DEFAULT_LIMITS["web_searches"], 200)
 
     def test_zero_cap_hides_the_denominator(self):
-        state = {"session_id": "s", "active": {}, "spawned": 5}
-        with mock.patch.object(cs, "_read_subagent_state", return_value=state):
-            out = cs._render_subagents({"limits": {"subagent_spawns": 0}})
+        with mock.patch.object(cs, "_count_subagents", return_value=(0, 5)):
+            out = cs._render_subagents({"limits": {"subagent_spawns": 0}}, "s")
         self.assertIsNotNone(out)
         self.assertNotIn("/", out)
 
     def test_nothing_rendered_before_any_subagent_runs(self):
-        with mock.patch.object(cs, "_read_subagent_state",
-                               return_value={"active": {}, "spawned": 0}):
-            self.assertIsNone(cs._render_subagents({}))
+        with mock.patch.object(cs, "_count_subagents", return_value=(0, 0)):
+            self.assertIsNone(cs._render_subagents({}, "s"))
 
     def test_budget_off_by_default(self):
         self.assertIsNone(cs._render_budget({}, {"cost_usd": 10}))
