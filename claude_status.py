@@ -3542,8 +3542,12 @@ def _parse_stdin_context(raw_stdin):
             # schema. Only override if stdin didn't already provide rate_limits.
             if not result.get("_rate_limits"):
                 try:
+                    # npm installs mmx as a .cmd shim on Windows, which
+                    # subprocess won't auto-resolve (only .exe) — resolve it
+                    # like _GIT_PATH/_CLAUDE_PATH above.
                     mmx_proc = subprocess.run(
-                        ["mmx", "quota", "show", "--output", "json", "--quiet"],
+                        [shutil.which("mmx") or "mmx",
+                         "quota", "show", "--output", "json", "--quiet"],
                         capture_output=True, text=True, timeout=3,
                     )
                     if mmx_proc.returncode == 0:
