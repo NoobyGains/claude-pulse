@@ -282,11 +282,11 @@ If this project helped you, consider starring the repo, sharing it with others, 
 
 ## Star History
 
-<a href="https://star-history.com/#NoobyGains/claude-pulse&Date">
+<a href="https://star-history.dera.page/#NoobyGains/claude-pulse&Date">
    <picture>
-     <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=NoobyGains/claude-pulse&type=Date&theme=dark" />
-     <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=NoobyGains/claude-pulse&type=Date" />
-     <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=NoobyGains/claude-pulse&type=Date" width="700" />
+     <source media="(prefers-color-scheme: dark)" srcset="https://star-history.dera.page/svg?repos=NoobyGains/claude-pulse&type=Date&theme=dark" />
+     <source media="(prefers-color-scheme: light)" srcset="https://star-history.dera.page/svg?repos=NoobyGains/claude-pulse&type=Date" />
+     <img alt="Star History Chart" src="https://star-history.dera.page/svg?repos=NoobyGains/claude-pulse&type=Date" width="700" />
    </picture>
 </a>
 
