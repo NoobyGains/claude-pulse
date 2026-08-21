@@ -4025,6 +4025,10 @@ def _render_pomodoro(pomo, theme, bar_width=8):
         try:
             pomo["active"] = False
             _write_pomodoro(pomo)
+            # The countdown just left the screen; without this the 15s
+            # repaint timer it asked for would stay armed until the next
+            # tool call or config save.
+            sync_status_line_refresh()
         except Exception:
             pass
         return ""
@@ -6701,6 +6705,17 @@ def main():
     # Normal status line mode
     config = load_config()
     cache_ttl = config.get("cache_ttl_seconds", DEFAULT_CACHE_TTL)
+
+    # Self-heal the repaint timer. Transitions that no command observes —
+    # the heartbeat ageing past its freshness TTL is the main one — would
+    # otherwise leave a stale 15s `refreshInterval` armed indefinitely.
+    # Each repaint (including the timed ones that stale timer causes) checks
+    # whether the timer is still wanted; a no-op costs one settings.json
+    # read and never blocks on anything but local disk.
+    try:
+        sync_status_line_refresh(config)
+    except Exception:
+        pass
 
     # Note: _detect_status_bar_conflict() removed — it suppressed all output
     # when leftover npm @anthropic-ai/claude-code files existed on disk,

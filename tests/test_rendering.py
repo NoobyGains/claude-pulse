@@ -298,5 +298,75 @@ class EffortFormatTest(unittest.TestCase):
                          cs._format_effort("medium", cs.DEFAULT_EFFORT_FORMAT))
 
 
+class RefreshSyncTransitionsTest(unittest.TestCase):
+    """Every transition that changes whether a repaint timer is needed must
+    re-evaluate `refreshInterval`; a missed one leaves a stale 15s timer
+    armed (or a live countdown frozen) until some unrelated event syncs it."""
+
+    def test_hook_refresh_resyncs_the_timer(self):
+        import io
+        import tempfile
+        stdin = io.StringIO("")  # isatty() is False; empty JSON payload
+        with tempfile.TemporaryDirectory() as td:
+            with mock.patch.object(cs, "sync_status_line_refresh") as sync, \
+                    mock.patch.object(
+                        cs, "_get_hook_state_path",
+                        return_value=Path(td) / "hook_state.json"), \
+                    mock.patch.object(sys, "stdin", stdin):
+                cs.hook_refresh("Bash")
+            self.assertTrue(sync.called)
+
+    def test_cmd_pomodoro_resyncs_on_every_path(self):
+        with mock.patch.object(cs, "sync_status_line_refresh") as sync, \
+                mock.patch.object(cs, "_cmd_pomodoro_inner", return_value=None):
+            cs.cmd_pomodoro("start")
+        self.assertTrue(sync.called)
+
+        with mock.patch.object(cs, "sync_status_line_refresh") as sync, \
+                mock.patch.object(cs, "_cmd_pomodoro_inner",
+                                  side_effect=RuntimeError("boom")):
+            with self.assertRaises(RuntimeError):
+                cs.cmd_pomodoro("start")
+        self.assertTrue(sync.called)
+
+    def test_pomodoro_expiry_drops_the_timer(self):
+        """A focus timer that runs out on its own leaves the screen without
+        any command running — the render path itself must drop the timer."""
+        expired = {"active": True, "start": 1.0, "duration_minutes": 1}
+        with mock.patch.object(cs, "sync_status_line_refresh") as sync, \
+                mock.patch.object(cs, "_write_pomodoro") as write:
+            out = cs._render_pomodoro(expired, cs.THEMES["default"])
+        self.assertEqual(out, "")
+        self.assertTrue(write.called)
+        self.assertTrue(sync.called)
+
+    def test_status_line_render_self_heals_the_timer(self):
+        """The heartbeat ageing past its TTL is observed by nothing but the
+        repaints themselves, so the render path re-syncs on every run."""
+        import io
+        import os
+        import tempfile
+        fake_stdout = mock.Mock()
+        fake_stdout.buffer = io.BytesIO()
+        tty_stdin = mock.Mock()
+        tty_stdin.isatty.return_value = True
+        passthrough = lambda line, *a, **k: line
+        with tempfile.TemporaryDirectory() as td:
+            with mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": td}), \
+                    mock.patch.object(sys, "argv", ["claude_status.py"]), \
+                    mock.patch.object(sys, "stdin", tty_stdin), \
+                    mock.patch.object(sys, "stdout", fake_stdout), \
+                    mock.patch.object(cs, "sync_status_line_refresh",
+                                      return_value=False) as sync, \
+                    mock.patch.object(cs, "get_credentials",
+                                      return_value=(None, "")), \
+                    mock.patch.object(cs, "append_update_indicator",
+                                      side_effect=passthrough), \
+                    mock.patch.object(cs, "append_claude_update_indicator",
+                                      side_effect=passthrough):
+                cs.main()
+        self.assertTrue(sync.called)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
