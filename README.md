@@ -45,8 +45,13 @@ A single-file Python status bar for Claude Code that shows everything you need a
 Session ━━━───────── 27% 2h 53m | Weekly ━━━━━━━━━─── 73% R:Fri 3pm | Fable ━━───────── 18% | Context ━━━━──────── 35% | $38.75 | +142 -37 | Opus 5 | Effort: XHigh | ⚡fast | main
 ```
 
-## What's new in 3.2.0
+## What's new in 3.3.0
 
+- **Sonnet 5 priced at its now-permanent $2/$10 rate** — Anthropic cancelled the scheduled September increase to $3/$15. Historical turns are priced by their own date either way, so a promo lapsing can never retroactively inflate the cost widgets.
+- **GitLab merge requests render as `!N`** via the `pr.kind` stdin field (Claude Code 2.1.234+); GitHub PRs keep `#N`.
+- **MiniMax quota works on Windows** — npm installs `mmx` as a `.cmd` shim that `subprocess` won't auto-resolve; the call now goes through a PATH lookup (thanks @PFalko, #50).
+- **The repaint timer heals itself** — a focus timer expiring on its own or a heartbeat going stale no longer leaves the 15s timer armed, and a heartbeat waking from idle arms it immediately.
+- **Self-hosted star chart** — GitHub restricted the stargazers API to repo collaborators, so the README chart is rendered weekly by a workflow with the repo's own token and committed as static SVGs.
 - **Fable weekly cap** — read from the model-scoped `limits` the API reports, so new models are picked up without a code change.
 - **Claude 5-era stdin fields** — reasoning effort, `⚡fast` mode, thinking state, active subagent, PR badge, and cache-hit ratio.
 - **Fixed: the refresh timer never worked.** Every version up to 3.1.0 wrote a `refresh` key that Claude Code does not have, so it was silently ignored — animations, the heartbeat and the focus countdown froze whenever the session went idle. The real setting is `refreshInterval`, and it is now set only when something time-based is on screen.
@@ -59,7 +64,7 @@ Session ━━━───────── 27% 2h 53m | Weekly ━━━━━
 - **The heartbeat is now opt-in** — the `[/] 42 tools 5m` spinner is noise for most people, needs a hook, and kept the repaint timer alive. `--show heartbeat` brings it back.
 - **Peak hours removed.**
 
-Python floor is **3.8** — 3.1.0 advertised 3.6+ but did not parse below 3.12. Test suite: 21 → 166.
+Python floor is **3.8** — 3.1.0 advertised 3.6+ but did not parse below 3.12. Test suite: 21 → 204.
 
 ## Features
 
@@ -313,11 +318,14 @@ If this project helped you, consider starring the repo, sharing it with others, 
 
 ## Star History
 
-<a href="https://star-history.com/#NoobyGains/claude-pulse&Date">
+<!-- Rendered weekly by .github/workflows/star-history.yml — GitHub restricted
+     the stargazers API (June 2026), so third-party live charts no longer work
+     for public visitors; the repo renders and commits its own. -->
+<a href="https://github.com/NoobyGains/claude-pulse/stargazers">
    <picture>
-     <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=NoobyGains/claude-pulse&type=Date&theme=dark" />
-     <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=NoobyGains/claude-pulse&type=Date" />
-     <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=NoobyGains/claude-pulse&type=Date" width="700" />
+     <source media="(prefers-color-scheme: dark)" srcset="assets/star-history-dark.svg" />
+     <source media="(prefers-color-scheme: light)" srcset="assets/star-history.svg" />
+     <img alt="Star History Chart" src="assets/star-history.svg" width="700" />
    </picture>
 </a>
 

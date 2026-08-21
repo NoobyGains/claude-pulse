@@ -11,7 +11,7 @@
       "name": "claude-pulse",
       "source": "./",
       "description": "Real-time usage monitor with 20+ widgets, priority ordering, +N/-N code changes, 10 themes, shimmer animations, and zero API calls for usage data",
-      "version": "3.2.0",
+      "version": "3.3.0",
       "homepage": "https://github.com/NoobyGains/claude-pulse"
     }
   ]

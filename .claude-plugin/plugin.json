@@ -1,7 +1,7 @@
 {
   "name": "claude-pulse",
   "description": "Live usage status bar for Claude Code — session limits, weekly usage, lines changed, 10 themes, widget priorities, shimmer animations, and zero API calls",
-  "version": "3.2.0",
+  "version": "3.3.0",
   "author": {
     "name": "PigeonDroid"
   },

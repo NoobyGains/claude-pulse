@@ -35,7 +35,16 @@ def check(name, ok, detail=""):
 
 
 print("== version / floor ==")
-check("VERSION is 3.2.0", cs.VERSION == "3.2.0", cs.VERSION)
+# Derived from the README's own heading rather than hardcoded here — a
+# hardcoded version pin in this file is the same drift bug this suite
+# exists to catch (the manifests are covered by test_version_lockstep.py).
+_whats_new = re.search(r"## What's new in (\d+\.\d+\.\d+)", readme)
+check(
+    "README 'What's new' version matches VERSION",
+    bool(_whats_new) and _whats_new.group(1) == cs.VERSION,
+    f"README {_whats_new.group(1) if _whats_new else '(heading missing)'}"
+    f" vs VERSION {cs.VERSION}",
+)
 # "3.6+" may legitimately appear in a historical note about 3.1.0; what must
 # not appear is 3.6 stated as the *current* requirement.
 stale_floor = re.search(r"(?:Python|python)[- ]3\.6\+(?!.*advertised)", readme)     and "advertised 3.6+" not in readme

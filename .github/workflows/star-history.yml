@@ -1,0 +1,34 @@
+# Regenerates the committed star-history SVGs. GitHub restricted the
+# stargazers API to a repo's own admins/collaborators (June 2026), so the
+# chart is rendered here — where the repo's own token still has access —
+# instead of by a third-party badge service.
+name: Star history
+
+on:
+  schedule:
+    - cron: "17 4 * * 1" # weekly, Monday 04:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  chart:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Render charts
+        run: python3 scripts/star_history.py
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Commit if changed
+        run: |
+          git add assets/star-history.svg assets/star-history-dark.svg
+          if git diff --cached --quiet; then
+            echo "Chart unchanged."
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit -m "Update star history chart"
+            git push
+          fi

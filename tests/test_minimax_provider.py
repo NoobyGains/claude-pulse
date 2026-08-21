@@ -143,6 +143,31 @@ class StdinGateTest(unittest.TestCase):
             res = cs._parse_stdin_context(_stdin(10, 10))  # must not raise
         self.assertNotIn("_rate_limits", res)
 
+    def test_mmx_binary_resolved_via_path_lookup(self):
+        """PR #50: npm installs mmx as a .cmd shim on Windows, which
+        subprocess.run will not auto-resolve (it only finds .exe). The call
+        must go through shutil.which like _GIT_PATH / _CLAUDE_PATH."""
+        fake = mock.Mock(returncode=1, stdout="")
+        with mock.patch.dict("os.environ", MINIMAX_ENV, clear=True), \
+                mock.patch.object(cs.shutil, "which",
+                                  return_value=r"C:\fake\mmx.CMD") as which, \
+                mock.patch.object(cs.subprocess, "run",
+                                  return_value=fake) as run:
+            cs._parse_stdin_context(_stdin(10, 10))
+        which.assert_any_call("mmx")
+        self.assertEqual(run.call_args.args[0][0], r"C:\fake\mmx.CMD")
+
+    def test_mmx_lookup_falls_back_to_bare_name(self):
+        """No mmx on PATH: keep the bare name so the FileNotFoundError
+        fallback path stays exactly as before."""
+        fake = mock.Mock(returncode=1, stdout="")
+        with mock.patch.dict("os.environ", MINIMAX_ENV, clear=True), \
+                mock.patch.object(cs.shutil, "which", return_value=None), \
+                mock.patch.object(cs.subprocess, "run",
+                                  return_value=fake) as run:
+            cs._parse_stdin_context(_stdin(10, 10))
+        self.assertEqual(run.call_args.args[0][0], "mmx")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
