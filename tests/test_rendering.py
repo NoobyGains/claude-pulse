@@ -298,6 +298,27 @@ class EffortFormatTest(unittest.TestCase):
                          cs._format_effort("medium", cs.DEFAULT_EFFORT_FORMAT))
 
 
+class PrBadgeMarkerTest(unittest.TestCase):
+    """GitLab merge requests are written !N; GitHub pull requests #N."""
+
+    def _badge_line(self, stdin_ctx):
+        import os
+        import tempfile
+        cfg = {"show": {"pr": True}}
+        with tempfile.TemporaryDirectory() as td:
+            with mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": td}):
+                return cs.build_status_line({}, "", cfg, stdin_ctx)
+
+    def test_github_pr_renders_hash(self):
+        line = self._badge_line({"pr_number": 42})
+        self.assertIn("#42", line)
+
+    def test_gitlab_mr_renders_bang(self):
+        line = self._badge_line({"pr_number": 42, "pr_kind": "mr"})
+        self.assertIn("!42", line)
+        self.assertNotIn("#42", line)
+
+
 class RefreshSyncTransitionsTest(unittest.TestCase):
     """Every transition that changes whether a repaint timer is needed must
     re-evaluate `refreshInterval`; a missed one leaves a stale 15s timer

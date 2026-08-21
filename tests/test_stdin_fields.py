@@ -87,6 +87,15 @@ class AgentAndPrTest(unittest.TestCase):
     def test_pr_without_number_clears_the_badge(self):
         self.assertIsNone(parse({"pr": {"url": "https://x/y"}})["pr_number"])
 
+    def test_gitlab_mr_kind_parsed(self):
+        """v2.1.234+ sets pr.kind to "mr" for GitLab merge requests."""
+        ctx = parse({"pr": {"number": 7, "kind": "mr"}})
+        self.assertEqual(ctx["pr_kind"], "mr")
+
+    def test_github_pr_has_no_kind(self):
+        # kind is omitted on GitHub; nothing should be recorded.
+        self.assertNotIn("pr_kind", parse({"pr": {"number": 7}}))
+
 
 class CacheEfficiencyTest(unittest.TestCase):
     def test_cache_hit_pct_over_billable_input(self):

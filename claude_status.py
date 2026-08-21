@@ -3540,6 +3540,7 @@ def _parse_stdin_context(raw_stdin):
         result["pr_number"] = None
         result["pr_url"] = None
         result["pr_review_state"] = None
+        result["pr_kind"] = None
         result["cache_hit_pct"] = None
         result["cache_read_tokens"] = None
 
@@ -3651,6 +3652,7 @@ def _parse_stdin_context(raw_stdin):
             result["pr_number"] = None
             result["pr_url"] = None
             result["pr_review_state"] = None
+            result["pr_kind"] = None
         if isinstance(pr, dict) and pr.get("number") is not None:
             result["pr_number"] = int(pr["number"])
             url = _sanitize(pr.get("url", ""))
@@ -3661,6 +3663,11 @@ def _parse_stdin_context(raw_stdin):
             state = _sanitize(pr.get("review_state", ""))
             if state:
                 result["pr_review_state"] = state
+            # v2.1.234+: "mr" marks a GitLab merge request (absent on GitHub),
+            # so the badge can use GitLab's !N notation instead of #N.
+            kind = _sanitize(pr.get("kind", ""))
+            if kind:
+                result["pr_kind"] = kind
     except (AttributeError, KeyError, TypeError, ValueError):
         pass
 
@@ -4615,7 +4622,9 @@ def build_status_line(usage, plan, config=None, stdin_ctx=None, cache_age=None):
         if pr_number is not None:
             state = stdin_ctx.get("pr_review_state", "")
             colour = PR_STATE_COLOURS.get(state, CYAN)
-            label = f"#{pr_number}"
+            # GitLab merge requests are conventionally written !N, not #N.
+            marker = "!" if stdin_ctx.get("pr_kind") == "mr" else "#"
+            label = f"{marker}{pr_number}"
             if state:
                 label += f" {PR_STATE_GLYPHS.get(state, state)}"
             parts.append((_pri("pr"), _osc8(stdin_ctx.get("pr_url"), f"{colour}{label}{RESET}")))
@@ -6749,7 +6758,7 @@ def main():
         "lines_added", "lines_removed",
         "effort", "fast_mode", "thinking", "cc_version",
         "cache_hit_pct", "cache_read_tokens",
-        "pr_number", "pr_url", "pr_review_state",
+        "pr_number", "pr_url", "pr_review_state", "pr_kind",
     }
     stdin_ctx_path = get_state_dir() / "stdin_ctx.json"
     persisted = {}
