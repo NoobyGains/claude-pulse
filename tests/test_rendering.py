@@ -306,7 +306,12 @@ class PrBadgeMarkerTest(unittest.TestCase):
         import tempfile
         cfg = {"show": {"pr": True}}
         with tempfile.TemporaryDirectory() as td:
-            with mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": td}):
+            # The state dir lives under LOCALAPPDATA / XDG_CACHE_HOME, not
+            # CLAUDE_CONFIG_DIR — all three must point at the sandbox or the
+            # test reads and writes the developer's real bar state.
+            env = {"CLAUDE_CONFIG_DIR": td, "LOCALAPPDATA": td,
+                   "XDG_CACHE_HOME": td}
+            with mock.patch.dict(os.environ, env):
                 return cs.build_status_line({}, "", cfg, stdin_ctx)
 
     def test_github_pr_renders_hash(self):
@@ -336,6 +341,28 @@ class RefreshSyncTransitionsTest(unittest.TestCase):
                     mock.patch.object(sys, "stdin", stdin):
                 cs.hook_refresh("Bash")
             self.assertTrue(sync.called)
+
+    def test_hook_refresh_syncs_after_persisting_the_state(self):
+        """The sync decides by re-reading the persisted hook state, so it
+        must run after the write — syncing first judges a just-woken
+        heartbeat by its stale on-disk timestamp and leaves the timer
+        unarmed until some other repaint happens along."""
+        import io
+        import tempfile
+        order = []
+        with tempfile.TemporaryDirectory() as td:
+            with mock.patch.object(
+                        cs, "sync_status_line_refresh",
+                        side_effect=lambda *a, **k: order.append("sync")), \
+                    mock.patch.object(
+                        cs, "_atomic_json_write",
+                        side_effect=lambda *a, **k: order.append("write")), \
+                    mock.patch.object(
+                        cs, "_get_hook_state_path",
+                        return_value=Path(td) / "hook_state.json"), \
+                    mock.patch.object(sys, "stdin", io.StringIO("")):
+                cs.hook_refresh("Bash")
+        self.assertEqual(order, ["write", "sync"])
 
     def test_cmd_pomodoro_resyncs_on_every_path(self):
         with mock.patch.object(cs, "sync_status_line_refresh") as sync, \
@@ -373,7 +400,12 @@ class RefreshSyncTransitionsTest(unittest.TestCase):
         tty_stdin.isatty.return_value = True
         passthrough = lambda line, *a, **k: line
         with tempfile.TemporaryDirectory() as td:
-            with mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": td}), \
+            # Sandbox the state dir too (LOCALAPPDATA / XDG_CACHE_HOME), so
+            # the run cannot touch — or be satisfied by — real bar state
+            # such as an expired pomodoro syncing from the render widget.
+            env = {"CLAUDE_CONFIG_DIR": td, "LOCALAPPDATA": td,
+                   "XDG_CACHE_HOME": td}
+            with mock.patch.dict(os.environ, env), \
                     mock.patch.object(sys, "argv", ["claude_status.py"]), \
                     mock.patch.object(sys, "stdin", tty_stdin), \
                     mock.patch.object(sys, "stdout", fake_stdout), \
@@ -386,7 +418,10 @@ class RefreshSyncTransitionsTest(unittest.TestCase):
                     mock.patch.object(cs, "append_claude_update_indicator",
                                       side_effect=passthrough):
                 cs.main()
-        self.assertTrue(sync.called)
+        # The self-heal call is the one that passes the loaded config as an
+        # argument; widget-level calls take none. Asserting on the args pins
+        # this to the top-of-render sync specifically.
+        self.assertTrue(any(c.args for c in sync.call_args_list))
 
 
 if __name__ == "__main__":

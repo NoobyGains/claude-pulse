@@ -1267,15 +1267,6 @@ def hook_refresh(tool_name_arg):
         except (json.JSONDecodeError, OSError, ValueError):
             pass
 
-    # The heartbeat becoming live (or going idle) changes whether the status
-    # line needs a repaint timer, and this hook fires at exactly those moments.
-    # sync_status_line_refresh is a no-op when the answer is unchanged, so this
-    # costs one small read per tool call and nothing else.
-    try:
-        sync_status_line_refresh()
-    except Exception:
-        pass
-
     hook_state_path = _get_hook_state_path()
     now = time.time()
     state = {}
@@ -1297,6 +1288,17 @@ def hook_refresh(tool_name_arg):
     try:
         _atomic_json_write(hook_state_path, state, indent=None)
     except OSError:
+        pass
+
+    # The heartbeat becoming live (or going idle) changes whether the status
+    # line needs a repaint timer, and this hook fires at exactly those moments.
+    # Must run AFTER the state write above: the sync decides by reading the
+    # persisted state, so syncing first would judge a just-woken heartbeat by
+    # its stale on-disk timestamp and leave the timer unarmed. It is a no-op
+    # when the answer is unchanged, so this costs one small read per tool call.
+    try:
+        sync_status_line_refresh()
+    except Exception:
         pass
 
 
@@ -3660,14 +3662,17 @@ def _parse_stdin_context(raw_stdin):
             # so a javascript:/file: scheme must never reach the terminal.
             if url.startswith(("https://", "http://")):
                 result["pr_url"] = url
+            # review_state and kind must be written even when absent: the
+            # persistence layer treats a missing key as "unchanged", so a
+            # GitHub PR arriving after a GitLab MR (kind omitted ⇒ GitHub)
+            # would otherwise keep rendering the stale !N marker, and a PR
+            # whose review disappeared would keep its old glyph.
             state = _sanitize(pr.get("review_state", ""))
-            if state:
-                result["pr_review_state"] = state
-            # v2.1.234+: "mr" marks a GitLab merge request (absent on GitHub),
-            # so the badge can use GitLab's !N notation instead of #N.
+            result["pr_review_state"] = state if state else None
+            # v2.1.234+: "mr" marks a GitLab merge request, so the badge can
+            # use GitLab's !N notation instead of #N.
             kind = _sanitize(pr.get("kind", ""))
-            if kind:
-                result["pr_kind"] = kind
+            result["pr_kind"] = kind if kind else None
     except (AttributeError, KeyError, TypeError, ValueError):
         pass
 
