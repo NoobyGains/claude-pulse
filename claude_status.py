@@ -178,9 +178,11 @@ API_PRICING = {
     "claude-opus-4-6": {"input": 5.0, "output": 25.0, "cache_read": 0.50, "cache_write": 6.25},
     "claude-opus-4-5": {"input": 5.0, "output": 25.0, "cache_read": 0.50, "cache_write": 6.25},
     "claude-opus-4": {"input": 15.0, "output": 75.0, "cache_read": 1.5, "cache_write": 18.75},
-    # Sonnet 5 list price. Introductory pricing ($2/$10) applies through
-    # 2026-08-31 and is substituted at lookup time by _pricing_for.
-    "claude-sonnet-5": {"input": 3.0, "output": 15.0, "cache_read": 0.30, "cache_write": 3.75},
+    # Sonnet 5 launched at a $2/$10 introductory rate due to rise to $3/$15
+    # on 2026-09-01; Anthropic cancelled the increase and made the launch
+    # rate the standard price (pricing docs, note
+    # "claude-sonnet-5-introductory-pricing"), so $2/$10 is the list price.
+    "claude-sonnet-5": {"input": 2.0, "output": 10.0, "cache_read": 0.20, "cache_write": 2.5},
     "claude-sonnet-4-6": {"input": 3.0, "output": 15.0, "cache_read": 0.30, "cache_write": 3.75},
     "claude-sonnet-4-5": {"input": 3.0, "output": 15.0, "cache_read": 0.30, "cache_write": 3.75},
     "claude-sonnet-4": {"input": 3.0, "output": 15.0, "cache_read": 0.30, "cache_write": 3.75},
@@ -216,12 +218,11 @@ API_PRICING_DISPLAY = {
 # Introductory / promotional rates, applied until the stated UTC date.
 # Keeping these separate from API_PRICING means the table remains the list
 # price and the promo simply expires on its own without a code change.
-API_PRICING_PROMOS = {
-    "claude-sonnet-5": {
-        "until": "2026-08-31",
-        "pricing": {"input": 2.0, "output": 10.0, "cache_read": 0.20, "cache_write": 2.5},
-    },
-}
+# Currently empty: Sonnet 5's $2/$10 launch rate became the standard price
+# (the scheduled 2026-09-01 increase was cancelled), so it lives in
+# API_PRICING proper. Shape, keyed by model id:
+#     "model-id": {"until": "YYYY-MM-DD", "pricing": {...API_PRICING shape...}},
+API_PRICING_PROMOS = {}
 
 
 def _pricing_for(model_id, at=None):

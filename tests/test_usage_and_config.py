@@ -168,27 +168,53 @@ class TranscriptTimestampTest(unittest.TestCase):
             self.assertIsNone(cs._parse_transcript_ts(bad), repr(bad))
 
 
+# The real promo table is empty since Sonnet 5's launch rate became the
+# standard price, so promo-mechanism tests inject a synthetic entry. The
+# numbers deliberately match no real model's rates.
+_SYNTHETIC_PROMO = {
+    "claude-sonnet-5": {
+        "until": "2026-08-31",
+        "pricing": {"input": 1.5, "output": 7.5,
+                    "cache_read": 0.15, "cache_write": 1.875},
+    },
+}
+
+
 class PromoPricingTest(unittest.TestCase):
     """Promotional rates expire on a date, so they live outside API_PRICING."""
 
-    def test_sonnet_5_intro_rate_applies_before_the_cutoff(self):
+    def test_promo_rate_applies_through_the_cutoff(self):
         from datetime import date
-        self.assertEqual(cs._pricing_for("claude-sonnet-5", date(2026, 7, 1))["input"], 2.0)
-        self.assertEqual(cs._pricing_for("claude-sonnet-5", date(2026, 8, 31))["input"], 2.0)
+        with mock.patch.dict(cs.API_PRICING_PROMOS, _SYNTHETIC_PROMO, clear=True):
+            self.assertEqual(cs._pricing_for("claude-sonnet-5", date(2026, 7, 1))["input"], 1.5)
+            self.assertEqual(cs._pricing_for("claude-sonnet-5", date(2026, 8, 31))["input"], 1.5)
 
     def test_reverts_to_list_price_after_the_cutoff(self):
         from datetime import date
-        self.assertEqual(cs._pricing_for("claude-sonnet-5", date(2026, 9, 1))["input"], 3.0)
+        with mock.patch.dict(cs.API_PRICING_PROMOS, _SYNTHETIC_PROMO, clear=True):
+            self.assertEqual(cs._pricing_for("claude-sonnet-5", date(2026, 9, 1))["input"], 2.0)
 
     def test_models_without_a_promo_use_the_table(self):
         from datetime import date
-        self.assertEqual(cs._pricing_for("claude-opus-5", date(2026, 7, 1))["input"], 5.0)
+        with mock.patch.dict(cs.API_PRICING_PROMOS, _SYNTHETIC_PROMO, clear=True):
+            self.assertEqual(cs._pricing_for("claude-opus-5", date(2026, 7, 1))["input"], 5.0)
+
+    def test_sonnet_5_launch_rate_is_the_standard_price(self):
+        """Anthropic cancelled the scheduled 2026-09-01 increase to $3/$15;
+        $2/$10 is the list price on any date, with no promo entry involved."""
+        from datetime import date
+        self.assertEqual(cs.API_PRICING_PROMOS, {})
+        self.assertEqual(cs._pricing_for("claude-sonnet-5", date(2026, 8, 15))["input"], 2.0)
+        self.assertEqual(cs._pricing_for("claude-sonnet-5", date(2026, 9, 15))["input"], 2.0)
+        self.assertEqual(cs._pricing_for("claude-sonnet-5", date(2026, 9, 15))["output"], 10.0)
 
     def test_unknown_model_returns_none(self):
         self.assertIsNone(cs._pricing_for("not-a-model"))
 
     def test_mythos_preview_is_priced_and_sized(self):
-        self.assertIsNotNone(cs._pricing_for("claude-mythos-preview"))
+        # $25/$125 was the real Glasswing-preview rate; transcripts naming
+        # this id date from that window, so the historical price must stay.
+        self.assertEqual(cs._pricing_for("claude-mythos-preview")["input"], 25.0)
         self.assertEqual(cs.MODEL_CONTEXT_WINDOWS["Mythos Preview"], 1_000_000)
 
 
@@ -196,13 +222,14 @@ class ScanPricesEntriesByTheirOwnDateTest(unittest.TestCase):
     """The cost scanner must price each transcript entry at the rates that
     were in force when the entry was made, not on the day the scan runs.
 
-    Otherwise, once the Sonnet 5 intro period lapses, every August turn gets
-    retroactively repriced at $3/$15 — the cumulative widget's history would
-    silently inflate by 50% overnight.
+    Otherwise, once a promo period lapses, every promo-era turn gets
+    retroactively repriced at the list rate — the cumulative widget's
+    history would silently inflate overnight. Exercised with the synthetic
+    promo above, since the real promo table is currently empty.
     """
 
     class _FrozenDatetime(cs.datetime):
-        """datetime whose now() sits after the Sonnet 5 promo cutoff."""
+        """datetime whose now() sits after the synthetic promo cutoff."""
         @classmethod
         def now(cls, tz=None):
             return cls(2026, 10, 1, 12, 0, 0, tzinfo=tz)
@@ -217,7 +244,9 @@ class ScanPricesEntriesByTheirOwnDateTest(unittest.TestCase):
                 "\n".join(_json.dumps(e) for e in entries), encoding="utf-8"
             )
             with mock.patch.object(cs, "datetime", self._FrozenDatetime), \
-                    mock.patch.object(cs, "_claude_config_dir", lambda: Path(td)):
+                    mock.patch.object(cs, "_claude_config_dir", lambda: Path(td)), \
+                    mock.patch.dict(cs.API_PRICING_PROMOS, _SYNTHETIC_PROMO,
+                                    clear=True):
                 return cs._scan_session_costs(since_ts=since_ts)
 
     @staticmethod
@@ -233,22 +262,23 @@ class ScanPricesEntriesByTheirOwnDateTest(unittest.TestCase):
 
     def test_promo_era_entries_keep_promo_pricing_after_the_cutoff(self):
         result = self._scan([
-            # In the promo window: must cost $2/MTok even though "now" is October.
+            # In the (synthetic) promo window: $1.50/MTok even though "now"
+            # is October.
             self._entry("claude-sonnet-5", "2026-08-15T12:00:00Z"),
-            # After the cutoff: list price $3/MTok.
+            # After the cutoff: list price $2/MTok.
             self._entry("claude-sonnet-5", "2026-09-15T12:00:00Z"),
             # Promo must also survive the longest-prefix fallback resolution.
             self._entry("claude-sonnet-5-20260601", "2026-08-20T12:00:00Z"),
         ])
         self.assertAlmostEqual(
-            result["models"]["claude-sonnet-5"]["cost_usd"], 2.0 + 3.0 + 2.0
+            result["models"]["claude-sonnet-5"]["cost_usd"], 1.5 + 2.0 + 1.5
         )
 
     def test_undated_entries_still_price_at_the_scan_day(self):
         """No timestamp means no better information — the scan-day default
         stands, which after the cutoff is the list price."""
         result = self._scan([self._entry("claude-sonnet-5", None)])
-        self.assertAlmostEqual(result["models"]["claude-sonnet-5"]["cost_usd"], 3.0)
+        self.assertAlmostEqual(result["models"]["claude-sonnet-5"]["cost_usd"], 2.0)
 
 
 class StaleCacheShapeTest(unittest.TestCase):
