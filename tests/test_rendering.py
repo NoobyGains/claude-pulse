@@ -15,6 +15,7 @@ Run: ``python tests/test_rendering.py``
 """
 import sys
 import unittest
+from unittest import mock
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -136,9 +137,24 @@ class RefreshIntervalTest(unittest.TestCase):
             cs._desired_refresh_interval({"animate": "rainbow"}), cs.REFRESH_ANIMATED
         )
 
-    def test_time_based_widget_gets_the_slow_tick(self):
+    def test_live_heartbeat_gets_the_slow_tick(self):
+        """A timer is warranted only once the widget is actually on screen."""
         cfg = {"animate": "off", "show": {"heartbeat": True, "pomodoro": False}}
-        self.assertEqual(cs._desired_refresh_interval(cfg), cs.REFRESH_TIMED)
+        with mock.patch.object(cs, "_read_hook_state", return_value={"tool_count": 1}),              mock.patch.object(cs, "_is_hook_state_fresh", return_value=True):
+            self.assertEqual(cs._desired_refresh_interval(cfg), cs.REFRESH_TIMED)
+
+    def test_running_focus_timer_gets_the_slow_tick(self):
+        cfg = {"animate": "off", "show": {"heartbeat": False, "pomodoro": True}}
+        with mock.patch.object(cs, "_read_pomodoro", return_value={"active": True}):
+            self.assertEqual(cs._desired_refresh_interval(cfg), cs.REFRESH_TIMED)
+
+    def test_enabled_but_idle_widgets_need_no_timer(self):
+        """Regression: heartbeat and pomodoro are on by default but render
+        nothing while idle. Asking for a timer on the setting alone relaunched
+        Python every 15s — 240 times an hour — to redraw an unchanged bar."""
+        cfg = {"animate": "off", "show": {"heartbeat": True, "pomodoro": True}}
+        with mock.patch.object(cs, "_is_hook_state_fresh", return_value=False),              mock.patch.object(cs, "_read_pomodoro", return_value=None):
+            self.assertIsNone(cs._desired_refresh_interval(cfg))
 
     def test_static_bar_needs_no_timer(self):
         cfg = {"animate": "off", "show": {"heartbeat": False, "pomodoro": False}}
@@ -280,6 +296,132 @@ class EffortFormatTest(unittest.TestCase):
     def test_invalid_format_falls_back_to_default(self):
         self.assertEqual(cs._format_effort("medium", "bogus"),
                          cs._format_effort("medium", cs.DEFAULT_EFFORT_FORMAT))
+
+
+class PrBadgeMarkerTest(unittest.TestCase):
+    """GitLab merge requests are written !N; GitHub pull requests #N."""
+
+    def _badge_line(self, stdin_ctx):
+        import os
+        import tempfile
+        cfg = {"show": {"pr": True}}
+        with tempfile.TemporaryDirectory() as td:
+            # The state dir lives under LOCALAPPDATA / XDG_CACHE_HOME, not
+            # CLAUDE_CONFIG_DIR — all three must point at the sandbox or the
+            # test reads and writes the developer's real bar state.
+            env = {"CLAUDE_CONFIG_DIR": td, "LOCALAPPDATA": td,
+                   "XDG_CACHE_HOME": td}
+            with mock.patch.dict(os.environ, env):
+                return cs.build_status_line({}, "", cfg, stdin_ctx)
+
+    def test_github_pr_renders_hash(self):
+        line = self._badge_line({"pr_number": 42})
+        self.assertIn("#42", line)
+
+    def test_gitlab_mr_renders_bang(self):
+        line = self._badge_line({"pr_number": 42, "pr_kind": "mr"})
+        self.assertIn("!42", line)
+        self.assertNotIn("#42", line)
+
+
+class RefreshSyncTransitionsTest(unittest.TestCase):
+    """Every transition that changes whether a repaint timer is needed must
+    re-evaluate `refreshInterval`; a missed one leaves a stale 15s timer
+    armed (or a live countdown frozen) until some unrelated event syncs it."""
+
+    def test_hook_refresh_resyncs_the_timer(self):
+        import io
+        import tempfile
+        stdin = io.StringIO("")  # isatty() is False; empty JSON payload
+        with tempfile.TemporaryDirectory() as td:
+            with mock.patch.object(cs, "sync_status_line_refresh") as sync, \
+                    mock.patch.object(
+                        cs, "_get_hook_state_path",
+                        return_value=Path(td) / "hook_state.json"), \
+                    mock.patch.object(sys, "stdin", stdin):
+                cs.hook_refresh("Bash")
+            self.assertTrue(sync.called)
+
+    def test_hook_refresh_syncs_after_persisting_the_state(self):
+        """The sync decides by re-reading the persisted hook state, so it
+        must run after the write — syncing first judges a just-woken
+        heartbeat by its stale on-disk timestamp and leaves the timer
+        unarmed until some other repaint happens along."""
+        import io
+        import tempfile
+        order = []
+        with tempfile.TemporaryDirectory() as td:
+            with mock.patch.object(
+                        cs, "sync_status_line_refresh",
+                        side_effect=lambda *a, **k: order.append("sync")), \
+                    mock.patch.object(
+                        cs, "_atomic_json_write",
+                        side_effect=lambda *a, **k: order.append("write")), \
+                    mock.patch.object(
+                        cs, "_get_hook_state_path",
+                        return_value=Path(td) / "hook_state.json"), \
+                    mock.patch.object(sys, "stdin", io.StringIO("")):
+                cs.hook_refresh("Bash")
+        self.assertEqual(order, ["write", "sync"])
+
+    def test_cmd_pomodoro_resyncs_on_every_path(self):
+        with mock.patch.object(cs, "sync_status_line_refresh") as sync, \
+                mock.patch.object(cs, "_cmd_pomodoro_inner", return_value=None):
+            cs.cmd_pomodoro("start")
+        self.assertTrue(sync.called)
+
+        with mock.patch.object(cs, "sync_status_line_refresh") as sync, \
+                mock.patch.object(cs, "_cmd_pomodoro_inner",
+                                  side_effect=RuntimeError("boom")):
+            with self.assertRaises(RuntimeError):
+                cs.cmd_pomodoro("start")
+        self.assertTrue(sync.called)
+
+    def test_pomodoro_expiry_drops_the_timer(self):
+        """A focus timer that runs out on its own leaves the screen without
+        any command running — the render path itself must drop the timer."""
+        expired = {"active": True, "start": 1.0, "duration_minutes": 1}
+        with mock.patch.object(cs, "sync_status_line_refresh") as sync, \
+                mock.patch.object(cs, "_write_pomodoro") as write:
+            out = cs._render_pomodoro(expired, cs.THEMES["default"])
+        self.assertEqual(out, "")
+        self.assertTrue(write.called)
+        self.assertTrue(sync.called)
+
+    def test_status_line_render_self_heals_the_timer(self):
+        """The heartbeat ageing past its TTL is observed by nothing but the
+        repaints themselves, so the render path re-syncs on every run."""
+        import io
+        import os
+        import tempfile
+        fake_stdout = mock.Mock()
+        fake_stdout.buffer = io.BytesIO()
+        tty_stdin = mock.Mock()
+        tty_stdin.isatty.return_value = True
+        passthrough = lambda line, *a, **k: line
+        with tempfile.TemporaryDirectory() as td:
+            # Sandbox the state dir too (LOCALAPPDATA / XDG_CACHE_HOME), so
+            # the run cannot touch — or be satisfied by — real bar state
+            # such as an expired pomodoro syncing from the render widget.
+            env = {"CLAUDE_CONFIG_DIR": td, "LOCALAPPDATA": td,
+                   "XDG_CACHE_HOME": td}
+            with mock.patch.dict(os.environ, env), \
+                    mock.patch.object(sys, "argv", ["claude_status.py"]), \
+                    mock.patch.object(sys, "stdin", tty_stdin), \
+                    mock.patch.object(sys, "stdout", fake_stdout), \
+                    mock.patch.object(cs, "sync_status_line_refresh",
+                                      return_value=False) as sync, \
+                    mock.patch.object(cs, "get_credentials",
+                                      return_value=(None, "")), \
+                    mock.patch.object(cs, "append_update_indicator",
+                                      side_effect=passthrough), \
+                    mock.patch.object(cs, "append_claude_update_indicator",
+                                      side_effect=passthrough):
+                cs.main()
+        # The self-heal call is the one that passes the loaded config as an
+        # argument; widget-level calls take none. Asserting on the args pins
+        # this to the top-of-render sync specifically.
+        self.assertTrue(any(c.args for c in sync.call_args_list))
 
 
 if __name__ == "__main__":

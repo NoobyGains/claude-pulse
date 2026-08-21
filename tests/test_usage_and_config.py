@@ -168,5 +168,139 @@ class TranscriptTimestampTest(unittest.TestCase):
             self.assertIsNone(cs._parse_transcript_ts(bad), repr(bad))
 
 
+# The real promo table is empty since Sonnet 5's launch rate became the
+# standard price, so promo-mechanism tests inject a synthetic entry. The
+# numbers deliberately match no real model's rates.
+_SYNTHETIC_PROMO = {
+    "claude-sonnet-5": {
+        "until": "2026-08-31",
+        "pricing": {"input": 1.5, "output": 7.5,
+                    "cache_read": 0.15, "cache_write": 1.875},
+    },
+}
+
+
+class PromoPricingTest(unittest.TestCase):
+    """Promotional rates expire on a date, so they live outside API_PRICING."""
+
+    def test_promo_rate_applies_through_the_cutoff(self):
+        from datetime import date
+        with mock.patch.dict(cs.API_PRICING_PROMOS, _SYNTHETIC_PROMO, clear=True):
+            self.assertEqual(cs._pricing_for("claude-sonnet-5", date(2026, 7, 1))["input"], 1.5)
+            self.assertEqual(cs._pricing_for("claude-sonnet-5", date(2026, 8, 31))["input"], 1.5)
+
+    def test_reverts_to_list_price_after_the_cutoff(self):
+        from datetime import date
+        with mock.patch.dict(cs.API_PRICING_PROMOS, _SYNTHETIC_PROMO, clear=True):
+            self.assertEqual(cs._pricing_for("claude-sonnet-5", date(2026, 9, 1))["input"], 2.0)
+
+    def test_models_without_a_promo_use_the_table(self):
+        from datetime import date
+        with mock.patch.dict(cs.API_PRICING_PROMOS, _SYNTHETIC_PROMO, clear=True):
+            self.assertEqual(cs._pricing_for("claude-opus-5", date(2026, 7, 1))["input"], 5.0)
+
+    def test_sonnet_5_launch_rate_is_the_standard_price(self):
+        """Anthropic cancelled the scheduled 2026-09-01 increase to $3/$15;
+        $2/$10 is the list price on any date, with no promo entry involved."""
+        from datetime import date
+        self.assertEqual(cs.API_PRICING_PROMOS, {})
+        self.assertEqual(cs._pricing_for("claude-sonnet-5", date(2026, 8, 15))["input"], 2.0)
+        self.assertEqual(cs._pricing_for("claude-sonnet-5", date(2026, 9, 15))["input"], 2.0)
+        self.assertEqual(cs._pricing_for("claude-sonnet-5", date(2026, 9, 15))["output"], 10.0)
+
+    def test_unknown_model_returns_none(self):
+        self.assertIsNone(cs._pricing_for("not-a-model"))
+
+    def test_mythos_preview_is_priced_and_sized(self):
+        # $25/$125 was the real Glasswing-preview rate; transcripts naming
+        # this id date from that window, so the historical price must stay.
+        self.assertEqual(cs._pricing_for("claude-mythos-preview")["input"], 25.0)
+        self.assertEqual(cs.MODEL_CONTEXT_WINDOWS["Mythos Preview"], 1_000_000)
+
+
+class ScanPricesEntriesByTheirOwnDateTest(unittest.TestCase):
+    """The cost scanner must price each transcript entry at the rates that
+    were in force when the entry was made, not on the day the scan runs.
+
+    Otherwise, once a promo period lapses, every promo-era turn gets
+    retroactively repriced at the list rate — the cumulative widget's
+    history would silently inflate overnight. Exercised with the synthetic
+    promo above, since the real promo table is currently empty.
+    """
+
+    class _FrozenDatetime(cs.datetime):
+        """datetime whose now() sits after the synthetic promo cutoff."""
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 10, 1, 12, 0, 0, tzinfo=tz)
+
+    def _scan(self, entries, since_ts=None):
+        import json as _json
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            sess = Path(td) / "projects" / "proj" / "session.jsonl"
+            sess.parent.mkdir(parents=True)
+            sess.write_text(
+                "\n".join(_json.dumps(e) for e in entries), encoding="utf-8"
+            )
+            with mock.patch.object(cs, "datetime", self._FrozenDatetime), \
+                    mock.patch.object(cs, "_claude_config_dir", lambda: Path(td)), \
+                    mock.patch.dict(cs.API_PRICING_PROMOS, _SYNTHETIC_PROMO,
+                                    clear=True):
+                return cs._scan_session_costs(since_ts=since_ts)
+
+    @staticmethod
+    def _entry(model, ts, input_tokens=1_000_000):
+        e = {
+            "type": "assistant",
+            "message": {"model": model, "usage": {"input_tokens": input_tokens,
+                                                  "output_tokens": 0}},
+        }
+        if ts is not None:
+            e["timestamp"] = ts
+        return e
+
+    def test_promo_era_entries_keep_promo_pricing_after_the_cutoff(self):
+        result = self._scan([
+            # In the (synthetic) promo window: $1.50/MTok even though "now"
+            # is October.
+            self._entry("claude-sonnet-5", "2026-08-15T12:00:00Z"),
+            # After the cutoff: list price $2/MTok.
+            self._entry("claude-sonnet-5", "2026-09-15T12:00:00Z"),
+            # Promo must also survive the longest-prefix fallback resolution.
+            self._entry("claude-sonnet-5-20260601", "2026-08-20T12:00:00Z"),
+        ])
+        self.assertAlmostEqual(
+            result["models"]["claude-sonnet-5"]["cost_usd"], 1.5 + 2.0 + 1.5
+        )
+
+    def test_undated_entries_still_price_at_the_scan_day(self):
+        """No timestamp means no better information — the scan-day default
+        stands, which after the cutoff is the list price."""
+        result = self._scan([self._entry("claude-sonnet-5", None)])
+        self.assertAlmostEqual(result["models"]["claude-sonnet-5"]["cost_usd"], 2.0)
+
+
+class StaleCacheShapeTest(unittest.TestCase):
+    """_read_stale_cache feeds the 429 fallback; raising there prints nothing."""
+
+    def test_wrong_shaped_cache_returns_none(self):
+        import json
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "c.json"
+            for junk in ("42", '"s"', "[1,2]", "null", "true"):
+                p.write_text(junk, encoding="utf-8")
+                self.assertIsNone(cs._read_stale_cache(p), junk)
+
+    def test_valid_cache_still_returned(self):
+        import json
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "c.json"
+            p.write_text(json.dumps({"line": "x", "timestamp": 1}), encoding="utf-8")
+            self.assertIsNotNone(cs._read_stale_cache(p))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

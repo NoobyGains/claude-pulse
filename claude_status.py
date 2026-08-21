@@ -118,6 +118,7 @@ PLAN_NAMES = {
 MODEL_SHORT_NAMES = {
     "claude-fable-5": "Fable",
     "claude-mythos-5": "Mythos",
+    "claude-mythos-preview": "Mythos",
     "claude-opus-5": "Opus",
     "claude-opus-4-8": "Opus",
     "claude-opus-4-7": "Opus",
@@ -146,6 +147,7 @@ MODEL_CONTEXT_WINDOWS = {
     "Fable": 1_000_000,
     "Fable 5": 1_000_000,
     "Mythos": 1_000_000,
+    "Mythos Preview": 1_000_000,
     "Mythos 5": 1_000_000,
     "Opus": 1_000_000,
     "Opus 5": 1_000_000,
@@ -169,13 +171,18 @@ DEFAULT_CONTEXT_WINDOW = 200_000
 API_PRICING = {
     "claude-fable-5": {"input": 10.0, "output": 50.0, "cache_read": 1.0, "cache_write": 12.5},
     "claude-mythos-5": {"input": 10.0, "output": 50.0, "cache_read": 1.0, "cache_write": 12.5},
+    "claude-mythos-preview": {"input": 25.0, "output": 125.0, "cache_read": 2.5, "cache_write": 31.25},
     "claude-opus-5": {"input": 5.0, "output": 25.0, "cache_read": 0.50, "cache_write": 6.25},
     "claude-opus-4-8": {"input": 5.0, "output": 25.0, "cache_read": 0.50, "cache_write": 6.25},
     "claude-opus-4-7": {"input": 5.0, "output": 25.0, "cache_read": 0.50, "cache_write": 6.25},
     "claude-opus-4-6": {"input": 5.0, "output": 25.0, "cache_read": 0.50, "cache_write": 6.25},
     "claude-opus-4-5": {"input": 5.0, "output": 25.0, "cache_read": 0.50, "cache_write": 6.25},
     "claude-opus-4": {"input": 15.0, "output": 75.0, "cache_read": 1.5, "cache_write": 18.75},
-    "claude-sonnet-5": {"input": 3.0, "output": 15.0, "cache_read": 0.30, "cache_write": 3.75},
+    # Sonnet 5 launched at a $2/$10 introductory rate due to rise to $3/$15
+    # on 2026-09-01; Anthropic cancelled the increase and made the launch
+    # rate the standard price (pricing docs, note
+    # "claude-sonnet-5-introductory-pricing"), so $2/$10 is the list price.
+    "claude-sonnet-5": {"input": 2.0, "output": 10.0, "cache_read": 0.20, "cache_write": 2.5},
     "claude-sonnet-4-6": {"input": 3.0, "output": 15.0, "cache_read": 0.30, "cache_write": 3.75},
     "claude-sonnet-4-5": {"input": 3.0, "output": 15.0, "cache_read": 0.30, "cache_write": 3.75},
     "claude-sonnet-4": {"input": 3.0, "output": 15.0, "cache_read": 0.30, "cache_write": 3.75},
@@ -189,6 +196,7 @@ API_PRICING = {
 API_PRICING_DISPLAY = {
     "claude-fable-5": "Fable 5",
     "claude-mythos-5": "Mythos 5",
+    "claude-mythos-preview": "Mythos Preview",
     "claude-opus-5": "Opus 5",
     "claude-opus-4-8": "Opus 4.8",
     "claude-opus-4-7": "Opus 4.7",
@@ -205,6 +213,43 @@ API_PRICING_DISPLAY = {
     "claude-3-5-haiku": "Haiku 3.5",
     "claude-3-opus": "Opus 3",
 }
+
+
+# Introductory / promotional rates, applied until the stated UTC date.
+# Keeping these separate from API_PRICING means the table remains the list
+# price and the promo simply expires on its own without a code change.
+# Currently empty: Sonnet 5's $2/$10 launch rate became the standard price
+# (the scheduled 2026-09-01 increase was cancelled), so it lives in
+# API_PRICING proper. Shape, keyed by model id:
+#     "model-id": {"until": "YYYY-MM-DD", "pricing": {...API_PRICING shape...}},
+API_PRICING_PROMOS = {}
+
+
+def _pricing_for(model_id, at=None):
+    """Return the per-MTok rates for *model_id*, honouring active promos.
+
+    *at* is a UTC date (defaults to today). A promo whose end date has passed
+    falls back to the list price automatically.
+
+    Known limitation: fast mode bills Opus 5 / 4.8 at $10/$50 rather than
+    $5/$25, but transcripts do not record whether a request used it, so
+    historical scans price fast-mode turns at the standard rate and will
+    under-report them.
+    """
+    base = API_PRICING.get(model_id)
+    if base is None:
+        return None
+    promo = API_PRICING_PROMOS.get(model_id)
+    if not promo:
+        return base
+    try:
+        until = date.fromisoformat(promo["until"])
+        today = at or datetime.now(timezone.utc).date()
+        if today <= until:
+            return promo["pricing"]
+    except (ValueError, TypeError, KeyError):
+        pass
+    return base
 
 
 def _model_short_name(model_id):
@@ -443,7 +488,7 @@ WIDGET_PRIORITY = {
     "thinking": 124, "agent": 126, "worktree": 130,
     "heartbeat": 140, "activity": 150, "last_tool": 160, "branch": 170,
     "pr": 175,
-    "sessions": 180, "pomodoro": 190, "git_drift": 200, "files_changed": 210,
+    "subagents": 178, "sessions": 180, "budget": 185, "pomodoro": 190, "git_drift": 200, "files_changed": 210,
 }
 
 # Reasoning-effort display. Claude Code reports low|medium|high|xhigh|max.
@@ -498,6 +543,16 @@ PR_STATE_COLOURS = {
     "pending": YELLOW,
 }
 
+# Claude Code enforces its own per-session caps but exposes them neither on
+# stdin nor in settings.json, so these are claude-pulse's own denominators.
+# They default to Claude Code's documented values; override under "limits" in
+# config.json if your setup differs. Set any to 0 to hide that denominator.
+DEFAULT_LIMITS = {
+    "subagent_spawns": 200,      # per-session subagent spawn cap
+    "subagent_concurrent": 20,   # concurrently-running subagent cap
+    "web_searches": 200,         # per-session WebSearch call cap
+}
+
 DEFAULT_SHOW = {
     # Core bars — always visible
     "session": True,
@@ -509,8 +564,12 @@ DEFAULT_SHOW = {
     "cost": True,
     "model": True,
     "branch": True,
-    "heartbeat": True,
-    "activity": True,
+    # Opt-in: the spinner and tool counter are noise for most people, and both
+    # need the PostToolUse hook anyway. --show heartbeat (or /pulse) turns them
+    # on. Leaving them off by default also means a stock config asks for no
+    # repaint timer at all.
+    "heartbeat": False,
+    "activity": False,
     "update": True,
     "claude_update": True,
     # Per-model caps (show when available)
@@ -533,6 +592,8 @@ DEFAULT_SHOW = {
     "cumulative_cost": False,
     "weekly_cost": False,
     "cache": False,
+    "subagents": True,
+    "budget": True,
     "pr": False,
     "burn_rate": False,
     "sessions": False,
@@ -1037,6 +1098,13 @@ def load_config():
     data.setdefault("layout", DEFAULT_LAYOUT)
     data.setdefault("context_format", "percent")
     data.setdefault("effort_format", DEFAULT_EFFORT_FORMAT)
+    data.setdefault("budget_usd", 0)
+    limits = data.get("limits", {})
+    if not isinstance(limits, dict):
+        limits = {}
+    for _k, _v in DEFAULT_LIMITS.items():
+        limits.setdefault(_k, _v)
+    data["limits"] = limits
     data.setdefault("extra_display", "auto")
     if "currency" not in data:
         data["currency"] = _detect_default_currency()
@@ -1222,6 +1290,17 @@ def hook_refresh(tool_name_arg):
     except OSError:
         pass
 
+    # The heartbeat becoming live (or going idle) changes whether the status
+    # line needs a repaint timer, and this hook fires at exactly those moments.
+    # Must run AFTER the state write above: the sync decides by reading the
+    # persisted state, so syncing first would judge a just-woken heartbeat by
+    # its stale on-disk timestamp and leave the timer unarmed. It is a no-op
+    # when the answer is unchanged, so this costs one small read per tool call.
+    try:
+        sync_status_line_refresh()
+    except Exception:
+        pass
+
 
 def install_hooks():
     """Install a PostToolUse hook into ~/.claude/settings.json."""
@@ -1255,6 +1334,24 @@ def install_hooks():
             filtered.append(h)
     filtered.append(hook_entry)
     hooks["PostToolUse"] = filtered
+
+    # SubagentStart / SubagentStop drive the live agent counter. They carry
+    # agent_id and agent_type, so no polling is needed.
+    for event, flag in (("SubagentStart", "--hook-subagent-start"),
+                        ("SubagentStop", "--hook-subagent-stop")):
+        command = f'{python_cmd} "{script_path}" {flag}'
+        existing = hooks.setdefault(event, [])
+        kept = []
+        for h in existing:
+            is_pulse = any(
+                "claude_status.py" in inner.get("command", "") and flag in inner.get("command", "")
+                for inner in h.get("hooks", [])
+            )
+            if not is_pulse:
+                kept.append(h)
+        kept.append({"matcher": "", "hooks": [{"type": "command", "command": command}]})
+        hooks[event] = kept
+
     settings["hooks"] = hooks
     _secure_mkdir(settings_path.parent)
     _atomic_json_write(settings_path, settings)
@@ -1296,6 +1393,7 @@ def get_cache_path():
 # Update checker — compares local git HEAD to GitHub remote (cached 1 hour)
 # ---------------------------------------------------------------------------
 
+_UPDATE_CHECK_BUDGET = 6  # seconds; hard ceiling on one update check
 UPDATE_CHECK_TTL = 3600  # check at most once per hour
 GITHUB_REPO = "NoobyGains/claude-pulse"
 _GIT_PATH = shutil.which("git") or "git"  # resolve once at import time
@@ -1333,13 +1431,33 @@ def _detect_status_bar_conflict():
     return False
 
 
-def get_local_commit():
+def _capped_timeout(default, deadline):
+    """Cap *default* to the seconds left before *deadline* (an epoch).
+
+    Returns None when the budget is spent, so callers can skip a blocking
+    operation entirely instead of starting one they have no time for. This is
+    what makes _UPDATE_CHECK_BUDGET a real ceiling: checking the deadline only
+    *between* operations still lets each one run its full fixed timeout, and
+    the sum of those (~13s) is far past the advertised budget.
+    """
+    if deadline is None:
+        return default
+    remaining = deadline - time.time()
+    if remaining < 0.05:
+        return None
+    return min(default, remaining)
+
+
+def get_local_commit(deadline=None):
     """Get the local git HEAD commit hash (short). Returns None on failure."""
+    timeout = _capped_timeout(2, deadline)
+    if timeout is None:
+        return None
     repo_dir = Path(__file__).resolve().parent
     try:
         result = subprocess.run(
             [_GIT_PATH, "rev-parse", "HEAD"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, text=True, timeout=timeout,
             cwd=str(repo_dir),
         )
         if result.returncode == 0:
@@ -1349,15 +1467,45 @@ def get_local_commit():
     return None
 
 
-def get_remote_commit():
+def _on_default_branch(deadline=None):
+    """True when this checkout sits on main/master; False otherwise; None on error.
+
+    A checkout parked on a topic or preview branch is a developer or a preview
+    tester, and is typically *ahead* of upstream main — where "update
+    available" is not just noise but actively wrong. Detached HEADs are a
+    deliberate pin, not a plain tracking install, so they don't nag either.
+    """
+    timeout = _capped_timeout(2, deadline)
+    if timeout is None:
+        return None
+    repo_dir = Path(__file__).resolve().parent
+    try:
+        result = subprocess.run(
+            [_GIT_PATH, "symbolic-ref", "--short", "-q", "HEAD"],
+            capture_output=True, text=True, timeout=timeout,
+            cwd=str(repo_dir),
+        )
+        if result.returncode == 1:
+            return False  # -q's documented "not a symbolic ref": detached HEAD
+        if result.returncode != 0:
+            return None  # broken repo/permissions — unknown, don't cache a verdict
+        return result.stdout.strip() in ("main", "master")
+    except Exception:
+        return None
+
+
+def get_remote_commit(deadline=None):
     """Fetch the latest commit hash from GitHub API. Returns None on failure."""
+    timeout = _capped_timeout(3, deadline)
+    if timeout is None:
+        return None
     try:
         url = f"https://api.github.com/repos/{GITHUB_REPO}/commits/main"
         req = urllib.request.Request(url, headers={
             "Accept": "application/vnd.github.sha",
             "User-Agent": "claude-pulse-update-checker",
         })
-        with urllib.request.urlopen(req, timeout=3) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             sha = resp.read(1024).decode().strip()
         if re.fullmatch(r'[0-9a-f]{40}', sha):
             return sha
@@ -1366,8 +1514,17 @@ def get_remote_commit():
         return None
 
 
-def _git(*args, timeout=5):
-    """Run git in the install dir, returning stripped stdout or None."""
+def _git(*args, timeout=2, deadline=None):
+    """Run git in the install dir, returning stripped stdout or None.
+
+    The default timeout is deliberately short: these calls sit behind the
+    hourly update check, and several run in series, so a slow filesystem or a
+    hung git could otherwise stall a repaint for tens of seconds. *deadline*
+    caps it further to whatever remains of the caller's overall budget.
+    """
+    timeout = _capped_timeout(timeout, deadline)
+    if timeout is None:
+        return None
     repo_dir = Path(__file__).resolve().parent
     try:
         result = subprocess.run(
@@ -1382,14 +1539,14 @@ def _git(*args, timeout=5):
     return None
 
 
-def _tracks_upstream():
+def _tracks_upstream(deadline=None):
     """True when this checkout's origin is the upstream claude-pulse repo.
 
     A fork's origin points somewhere else, and its own commits are never on
     upstream's main, so the plain ``local != remote`` comparison flagged an
     update forever. Returns None when origin can't be read at all.
     """
-    url = _git("remote", "get-url", "origin", timeout=3)
+    url = _git("remote", "get-url", "origin", timeout=3, deadline=deadline)
     if url is None:
         return None
     owner_repo = GITHUB_REPO.lower()
@@ -1400,19 +1557,23 @@ def _tracks_upstream():
     return normalised.endswith(owner_repo)
 
 
-def _remote_is_ancestor(remote):
+def _remote_is_ancestor(remote, deadline=None):
     """True when *remote* is already contained in local history (we're ahead).
 
     Returns None when the commit isn't present locally, so ancestry can't be
     decided without fetching — which the status line must never do.
     """
-    if _git("cat-file", "-e", f"{remote}^{{commit}}", timeout=3) is None:
+    if _git("cat-file", "-e", f"{remote}^{{commit}}", timeout=3,
+            deadline=deadline) is None:
+        return None
+    timeout = _capped_timeout(2, deadline)
+    if timeout is None:
         return None
     repo_dir = Path(__file__).resolve().parent
     try:
         result = subprocess.run(
             [_GIT_PATH, "merge-base", "--is-ancestor", remote, "HEAD"],
-            capture_output=True, text=True, timeout=5, cwd=str(repo_dir),
+            capture_output=True, text=True, timeout=timeout, cwd=str(repo_dir),
         )
     except Exception:
         return None
@@ -1466,8 +1627,14 @@ def check_for_update():
         if script_mtime is not None and cached.get("script_mtime") == script_mtime:
             return cached.get("update_available", False)
 
-    # Cache is stale or unverifiable — now it's worth asking git.
-    local = get_local_commit()
+    # Cache is stale or unverifiable — now it's worth asking git. Everything
+    # from here is bounded by _UPDATE_CHECK_BUDGET: the deadline is threaded
+    # into every blocking call, capping each one's timeout to the budget that
+    # remains, so a slow git or a slow GitHub can never hold a repaint open
+    # for the sum of the individual timeouts.
+    _deadline = time.time() + _UPDATE_CHECK_BUDGET
+
+    local = get_local_commit(deadline=_deadline)
     if not local:
         return None  # not a git install, skip silently
 
@@ -1476,22 +1643,54 @@ def check_for_update():
             and cached.get("local") == local[:8]):
         return cached.get("update_available", False)
 
+    # Only a main/master checkout gets the nag; topic and preview branches are
+    # developers, usually ahead of upstream. Cache the verdict — returning
+    # None uncached would re-run git on every repaint once the TTL lapses.
+    # Known tradeoff: the cache keys on commit + script mtime, not branch, so
+    # switching branches at the *same* commit serves the old verdict for up to
+    # one TTL. Keying on branch would cost a git subprocess per repaint.
+    on_default = _on_default_branch(deadline=_deadline)
+    if on_default is None:
+        return None
+    if not on_default:
+        try:
+            with _secure_open_write(update_cache) as f:
+                json.dump({
+                    "timestamp": time.time(),
+                    "update_available": False,
+                    "local": local[:8],
+                    "script_mtime": script_mtime,
+                }, f)
+        except OSError:
+            pass
+        return False
+
     # A fork's own commits are never on upstream main, so a bare inequality
     # would nag forever. Only ever prompt a checkout that actually tracks
     # upstream (issue: forks false-positive on the update indicator).
-    if _tracks_upstream() is False:
+    if time.time() > _deadline:
+        return None
+    if _tracks_upstream(deadline=_deadline) is False:
         return None
 
     # Perform the check
-    remote = get_remote_commit()
+    if time.time() > _deadline:
+        return None
+    remote = get_remote_commit(deadline=_deadline)
     if not remote:
         return None  # network error, skip silently
 
     if local == remote:
         update_available = False
     else:
-        ancestor = _remote_is_ancestor(remote)
+        ancestor = _remote_is_ancestor(remote, deadline=_deadline)
         if ancestor is None:
+            if _deadline - time.time() < 0.05:
+                # The budget ran out mid-ancestry-check: that is a lack of
+                # time, not of information. Caching the pessimistic guess
+                # would pin a false "update available" on an ahead-of-main
+                # checkout for an hour, so skip silently and retry next time.
+                return None
             # Can't decide locally (commit not fetched) — fall back to the
             # simple comparison, which is right for a plain tracking install.
             update_available = True
@@ -1794,6 +1993,10 @@ def read_cache(cache_path, ttl):
     try:
         with open(cache_path, "r", encoding="utf-8") as f:
             cached = json.load(f)
+        # Same untrusted-shape rule as read_cache: this feeds the 429 fallback,
+        # where a raise means no status line at all.
+        if not isinstance(cached, dict):
+            return None
         # The file is ours, but it is still untrusted input: a truncated write,
         # a disk error, or a hand-edit can leave valid JSON of the wrong shape.
         # Anything other than a dict is treated as a cache miss rather than
@@ -1839,9 +2042,14 @@ def _read_stale_cache(cache_path):
     try:
         with open(cache_path, "r", encoding="utf-8") as f:
             cached = json.load(f)
+        # Same untrusted-shape rule as read_cache. This one feeds the 429
+        # fallback, where raising means no status line is printed at all:
+        # a cache file containing bare `42` made `"usage" in cached` raise.
+        if not isinstance(cached, dict):
+            return None
         if "usage" in cached or "line" in cached:
             return cached
-    except (FileNotFoundError, json.JSONDecodeError, KeyError, OSError):
+    except (FileNotFoundError, json.JSONDecodeError, KeyError, OSError, TypeError):
         pass
     return None
 
@@ -1852,16 +2060,22 @@ _USAGE_CACHE_KEYS = {
 }
 
 def write_cache(cache_path, line, usage=None, plan=None,
-                rate_limited_until=None, rate_limit_fails=None):
+                rate_limited_until=None, rate_limit_fails=None,
+                data_timestamp=None):
     """Persist the rendered line plus optional usage/plan and 429 backoff state.
 
     ``rate_limited_until`` is an epoch after which it is worth calling the API
     again; ``rate_limit_fails`` is the consecutive-429 count that produced it.
     Both are omitted on a normal write, which is what clears the backoff once a
     request succeeds.
+
+    ``data_timestamp`` is the epoch the usage was actually fetched. The 429
+    fallback re-writes usage it just read from a stale cache, and stamping
+    that copy with the current time made old quota data look freshly fetched
+    on every failed retry — the staleness warning could never fire.
     """
     try:
-        data = {"timestamp": time.time(), "line": line}
+        data = {"timestamp": data_timestamp or time.time(), "line": line}
         # `usage` can arrive from a stale cache file (the 429 fallback path
         # re-writes what it just read), so it is not guaranteed to be a dict.
         if isinstance(usage, dict):
@@ -3110,19 +3324,31 @@ def _scan_session_costs(since_ts=None):
                         usage = msg.get("usage", {})
                         if not usage or "input_tokens" not in usage:
                             continue
+                        entry_ts = _parse_transcript_ts(entry.get("timestamp"))
                         if since_ts is not None:
-                            entry_ts = _parse_transcript_ts(entry.get("timestamp"))
                             # Drop undated entries too: counting them would
                             # inflate a "last 7 days" figure with history.
                             if entry_ts is None or entry_ts < since_ts:
                                 continue
+                        # Price at the rates in force when the entry was made,
+                        # not on the scan day — otherwise a promo's expiry
+                        # retroactively reprices every turn from the promo era.
+                        # Undated entries fall back to today inside _pricing_for.
+                        entry_date = None
+                        if entry_ts is not None:
+                            try:
+                                entry_date = datetime.fromtimestamp(
+                                    entry_ts, tz=timezone.utc
+                                ).date()
+                            except (OSError, OverflowError, ValueError):
+                                pass
                         model_id = msg.get("model", "")
                         # Normalise: strip version suffix variants for matching
                         # e.g. "claude-sonnet-4-5-20251022" → "claude-sonnet-4-5".
                         # Longest prefix wins — a first-match scan would let the
                         # bare "claude-opus-4" key ($15/$75) swallow
                         # "claude-opus-4-8" ($5/$25) and treble the reported cost.
-                        pricing = API_PRICING.get(model_id)
+                        pricing = _pricing_for(model_id, entry_date)
                         if pricing is None:
                             best_key = None
                             for key in API_PRICING:
@@ -3131,7 +3357,7 @@ def _scan_session_costs(since_ts=None):
                                 ):
                                     best_key = key
                             if best_key is not None:
-                                pricing = API_PRICING[best_key]
+                                pricing = _pricing_for(best_key, entry_date)
                                 model_id = best_key
                         if pricing is None:
                             continue
@@ -3301,6 +3527,13 @@ def _parse_stdin_context(raw_stdin):
     except (AttributeError, TypeError):
         _payload, _full = {}, False
     if _full:
+        # The session's own identity, used to scope per-session widgets (the
+        # subagent counter) to the window being painted. Deliberately absent
+        # from _STDIN_CTX_KEYS: persisting it would hand this session's id to
+        # every other session's fragment repaints.
+        sid = _sanitize(str(_payload.get("session_id") or ""))[:64]
+        if sid:
+            result["session_id"] = sid
         # Defaults for session state; each block below overwrites when present.
         result["fast_mode"] = False
         result["effort"] = None
@@ -3309,6 +3542,9 @@ def _parse_stdin_context(raw_stdin):
         result["pr_number"] = None
         result["pr_url"] = None
         result["pr_review_state"] = None
+        result["pr_kind"] = None
+        result["cache_hit_pct"] = None
+        result["cache_read_tokens"] = None
 
     # Model name
     try:
@@ -3418,6 +3654,7 @@ def _parse_stdin_context(raw_stdin):
             result["pr_number"] = None
             result["pr_url"] = None
             result["pr_review_state"] = None
+            result["pr_kind"] = None
         if isinstance(pr, dict) and pr.get("number") is not None:
             result["pr_number"] = int(pr["number"])
             url = _sanitize(pr.get("url", ""))
@@ -3425,9 +3662,17 @@ def _parse_stdin_context(raw_stdin):
             # so a javascript:/file: scheme must never reach the terminal.
             if url.startswith(("https://", "http://")):
                 result["pr_url"] = url
+            # review_state and kind must be written even when absent: the
+            # persistence layer treats a missing key as "unchanged", so a
+            # GitHub PR arriving after a GitLab MR (kind omitted ⇒ GitHub)
+            # would otherwise keep rendering the stale !N marker, and a PR
+            # whose review disappeared would keep its old glyph.
             state = _sanitize(pr.get("review_state", ""))
-            if state:
-                result["pr_review_state"] = state
+            result["pr_review_state"] = state if state else None
+            # v2.1.234+: "mr" marks a GitLab merge request, so the badge can
+            # use GitLab's !N notation instead of #N.
+            kind = _sanitize(pr.get("kind", ""))
+            result["pr_kind"] = kind if kind else None
     except (AttributeError, KeyError, TypeError, ValueError):
         pass
 
@@ -3792,6 +4037,10 @@ def _render_pomodoro(pomo, theme, bar_width=8):
         try:
             pomo["active"] = False
             _write_pomodoro(pomo)
+            # The countdown just left the screen; without this the 15s
+            # repaint timer it asked for would stay armed until the next
+            # tool call or config save.
+            sync_status_line_refresh()
         except Exception:
             pass
         return ""
@@ -3809,6 +4058,21 @@ def _render_pomodoro(pomo, theme, bar_width=8):
 
 
 def cmd_pomodoro(action, minutes=None):
+    """Run the focus-timer command, then re-evaluate the repaint timer.
+
+    Starting or stopping a timer flips whether a countdown is on screen, which
+    is one of the two things `refreshInterval` exists for.
+    """
+    try:
+        return _cmd_pomodoro_inner(action, minutes)
+    finally:
+        try:
+            sync_status_line_refresh()
+        except Exception:
+            pass
+
+
+def _cmd_pomodoro_inner(action, minutes=None):
     if action == "start":
         duration = POMODORO_DEFAULT_MINUTES
         if minutes is not None:
@@ -4363,7 +4627,9 @@ def build_status_line(usage, plan, config=None, stdin_ctx=None, cache_age=None):
         if pr_number is not None:
             state = stdin_ctx.get("pr_review_state", "")
             colour = PR_STATE_COLOURS.get(state, CYAN)
-            label = f"#{pr_number}"
+            # GitLab merge requests are conventionally written !N, not #N.
+            marker = "!" if stdin_ctx.get("pr_kind") == "mr" else "#"
+            label = f"{marker}{pr_number}"
             if state:
                 label += f" {PR_STATE_GLYPHS.get(state, state)}"
             parts.append((_pri("pr"), _osc8(stdin_ctx.get("pr_url"), f"{colour}{label}{RESET}")))
@@ -4378,7 +4644,7 @@ def build_status_line(usage, plan, config=None, stdin_ctx=None, cache_age=None):
     hook_state = _read_hook_state()
     hook_fresh = _is_hook_state_fresh(hook_state)
 
-    if show.get("heartbeat", True) and hook_fresh:
+    if show.get("heartbeat", False) and hook_fresh:
         tool_count = hook_state.get("tool_count", 0)
         session_start = hook_state.get("session_start", time.time())
         elapsed = time.time() - session_start
@@ -4386,7 +4652,7 @@ def build_status_line(usage, plan, config=None, stdin_ctx=None, cache_age=None):
         spinner = HEARTBEAT_SPINNER[frame_idx]
         parts.append((_pri("heartbeat"), f"[{spinner}] {tool_count} tools {_format_elapsed(elapsed)}"))
 
-    if show.get("activity", True) and hook_fresh:
+    if show.get("activity", False) and hook_fresh:
         if hook_state.get("rapid_calls", 0) > 3:
             parts.append((_pri("activity"), f"\u26a1 Active"))
 
@@ -4418,6 +4684,23 @@ def build_status_line(usage, plan, config=None, stdin_ctx=None, cache_age=None):
                 pomo_str = _render_pomodoro(pomo, theme, bar_width=min(bw, 8))
                 if pomo_str:
                     parts.append((_pri("pomodoro"), pomo_str))
+        except Exception:
+            pass
+
+    if show.get("subagents", True):
+        try:
+            sub_str = _render_subagents(
+                config, (stdin_ctx or {}).get("session_id"))
+            if sub_str:
+                parts.append((_pri("subagents"), sub_str))
+        except Exception:
+            pass
+
+    if show.get("budget", True):
+        try:
+            budget_str = _render_budget(config, stdin_ctx)
+            if budget_str:
+                parts.append((_pri("budget"), budget_str))
         except Exception:
             pass
 
@@ -4480,10 +4763,10 @@ def _join_parts(parts, config):
         return " | ".join(p[1] for p in parts)
     line1_ids = config.get("line1_widgets") or []
     line2_ids = config.get("line2_widgets") or []
-    if not isinstance(line1_ids, list):
-        line1_ids = []
-    if not isinstance(line2_ids, list):
-        line2_ids = []
+    # Only str ids are usable; a nested list/dict would make set() raise
+    # TypeError: unhashable type and blank the bar.
+    line1_ids = [w for w in line1_ids if isinstance(w, str)] if isinstance(line1_ids, list) else []
+    line2_ids = [w for w in line2_ids if isinstance(w, str)] if isinstance(line2_ids, list) else []
     if not line1_ids and not line2_ids:
         return " | ".join(p[1] for p in parts)
 
@@ -4680,6 +4963,440 @@ def _fit_line(line, config):
 
 
 # ---------------------------------------------------------------------------
+# Subagent tracking
+# ---------------------------------------------------------------------------
+# Claude Code v2.1.198+ runs subagents in the background by default and lets
+# them nest (depth 3 by default), so a session can quietly accumulate a lot of
+# them. SubagentStart / SubagentStop carry `agent_id` and `agent_type`, which is
+# everything needed to keep a live count without polling anything.
+#
+# State is one directory per session holding one marker file per agent:
+# ``subagents/<session_id>/<agent_id>.live``, renamed to ``.done`` on stop.
+# Every write is an atomic create or rename of a distinct path. The obvious
+# single-JSON design failed two ways in practice: concurrent Start hooks lost
+# increments to the read-modify-write race (a parallel fan-out of ten agents
+# recorded two), and with several Claude Code windows open — or a session id
+# rotation after compaction — whichever session wrote last clobbered the
+# counters that every other session then displayed.
+
+SUBAGENT_STATE_TTL = 6 * 3600  # forget stragglers whose Stop hook never fired
+
+
+def _subagent_root():
+    return get_state_dir() / "subagents"
+
+
+def _safe_path_id(text, limit=64):
+    """Reduce an untrusted hook field to a filesystem-safe path component."""
+    return re.sub(r"[^A-Za-z0-9._-]", "", str(text or ""))[:limit].strip(".")
+
+
+def hook_subagent(event):
+    """Handle --hook-subagent-start / --hook-subagent-stop. Writes no stdout.
+
+    Hooks must stay silent: anything on stdout for these events lands in the
+    transcript as context. Errors are swallowed for the same reason — a
+    bookkeeping failure must never surface as a hook error to the user.
+    """
+    raw = ""
+    try:
+        if not sys.stdin.isatty():
+            raw = sys.stdin.read(65536)
+    except (OSError, ValueError):
+        pass
+    data = {}
+    try:
+        if raw.strip():
+            data = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    try:
+        _record_subagent_event(event, data)
+    except Exception:
+        pass
+
+
+def _record_subagent_event(event, data):
+    """Record one Start/Stop event as a marker file. Concurrency-safe.
+
+    Ordering is not guaranteed between the two hook processes of a fast agent:
+    its Stop can land before its Start. A ``.done`` marker therefore blocks a
+    late ``.live`` from being created, and a Start that loses the race anyway
+    heals itself by demoting its own marker.
+    """
+    agent_id = _safe_path_id(data.get("agent_id"))
+    session_id = _safe_path_id(data.get("session_id"))
+    if not session_id:
+        return
+    if event == "start" and not agent_id:
+        # The spawn still counts toward the cap; give it a unique name.
+        agent_id = "noid-%d-%d" % (os.getpid(), time.monotonic_ns())
+    elif event == "stop" and not agent_id:
+        return
+
+    session_dir = _subagent_root() / session_id
+    live = session_dir / (agent_id + ".live")
+    done = session_dir / (agent_id + ".done")
+    # A pruner in another process can sweep this dir between the mkdir and
+    # the marker write (TOCTOU on the staleness check); the second attempt
+    # restores the event rather than silently losing it.
+    for _attempt in (0, 1):
+        _secure_mkdir(session_dir)
+        if event == "start":
+            if not done.exists():
+                try:
+                    with open(live, "x", encoding="utf-8") as f:
+                        json.dump({"type": _sanitize(str(data.get("agent_type") or ""))[:40],
+                                   "started": time.time()}, f)
+                except (FileExistsError, OSError):
+                    pass
+                # Stop may have slipped in between the check and the create.
+                if done.exists():
+                    try:
+                        os.replace(live, done)
+                    except OSError:
+                        pass
+        elif event == "stop":
+            try:
+                os.replace(live, done)
+                # os.replace preserves mtime: an agent that ran past the TTL
+                # would otherwise leave a marker that looks ancient, and the
+                # next prune would erase the session's whole history.
+                os.utime(done, None)
+            except OSError:
+                # Stop arrived before Start (or Start never made it): leave a
+                # tombstone so the late Start can't mark the agent live.
+                try:
+                    with open(done, "w", encoding="utf-8") as f:
+                        json.dump({"stopped": time.time()}, f)
+                except OSError:
+                    pass
+        if live.exists() or done.exists():
+            break
+
+    _prune_subagent_dirs(_subagent_root())
+    # One-time migration: the pre-3.2.1 single-file state is dead weight now.
+    try:
+        os.unlink(get_state_dir() / "subagents.json")
+    except OSError:
+        pass
+
+
+def _prune_subagent_dirs(root, now=None):
+    """Remove session dirs with no marker newer than the TTL.
+
+    Sessions end without a goodbye event, so their dirs would otherwise
+    accumulate forever. Anything recent enough to still be rendered is kept.
+    """
+    now = now or time.time()
+    try:
+        entries = list(os.scandir(root))
+    except OSError:
+        return
+    for entry in entries:
+        try:
+            if not entry.is_dir(follow_symlinks=False):
+                continue
+            # The newest marker decides; the dir's own mtime only matters for
+            # an empty dir (a concurrent hook mid-mkdir must not be swept).
+            newest = max((c.stat().st_mtime for c in os.scandir(entry.path)),
+                         default=entry.stat().st_mtime)
+            if now - newest > SUBAGENT_STATE_TTL:
+                shutil.rmtree(entry.path, ignore_errors=True)
+        except OSError:
+            continue
+
+
+def _count_subagents(session_id, now=None):
+    """Return (live, spawned) for one session from its marker files."""
+    session_id = _safe_path_id(session_id)
+    if not session_id:
+        return 0, 0
+    now = now or time.time()
+    try:
+        entries = list(os.scandir(_subagent_root() / session_id))
+    except OSError:
+        return 0, 0
+    # An agent can transiently own both markers (Stop's rename fails against
+    # Start's open handle, then tombstones after Start's heal check). The
+    # .done twin wins: one spawn, not live.
+    done_ids = {e.name[:-5] for e in entries if e.name.endswith(".done")}
+    live = 0
+    live_ids = set()
+    for entry in entries:
+        if not entry.name.endswith(".live"):
+            continue
+        agent = entry.name[:-5]
+        live_ids.add(agent)
+        if agent in done_ids:
+            continue
+        try:
+            # A marker past the TTL is a crashed agent whose Stop never
+            # fired, not a live one.
+            if now - entry.stat().st_mtime < SUBAGENT_STATE_TTL:
+                live += 1
+        except OSError:
+            pass
+    return live, len(live_ids | done_ids)
+
+
+def _render_subagents(config, session_id=None):
+    """Return the subagent segment, or None when there is nothing to say.
+
+    Counts are scoped to *session_id* — the session this repaint belongs to —
+    so one window never displays another window's agents. Claude Code enforces
+    its own caps (spawns and concurrency) but does not expose them on stdin or
+    in settings, so the denominators come from ``limits`` in claude-pulse's
+    own config and default to Claude Code's documented values.
+    """
+    if not session_id:
+        return None
+    live, spawned = _count_subagents(session_id)
+    if not live and not spawned:
+        return None
+
+    limits = config.get("limits", {})
+    if not isinstance(limits, dict):
+        limits = {}
+    spawn_cap = limits.get("subagent_spawns", DEFAULT_LIMITS["subagent_spawns"])
+    conc_cap = limits.get("subagent_concurrent", DEFAULT_LIMITS["subagent_concurrent"])
+
+    def _tint(value, cap):
+        """Green under half, yellow past half, red past 80% of the cap."""
+        if not isinstance(cap, int) or cap <= 0:
+            return ""
+        ratio = value / cap
+        if ratio >= 0.8:
+            return RED
+        if ratio >= 0.5:
+            return YELLOW
+        return GREEN
+
+    layout = config.get("layout", DEFAULT_LAYOUT)
+    live_part = f"{_tint(live, conc_cap)}{live}{RESET}"
+    if isinstance(spawn_cap, int) and spawn_cap > 0:
+        total_part = f"{_tint(spawned, spawn_cap)}{spawned}{RESET}{DIM}/{spawn_cap}{RESET}"
+    else:
+        total_part = f"{spawned}"
+    if layout == "minimal":
+        return f"⚇{live_part}"
+    if layout == "compact":
+        return f"⚇{live_part} {total_part}"
+    return f"{DIM}agents{RESET} {live_part} live {DIM}·{RESET} {total_part}"
+
+
+def _render_budget(config, stdin_ctx):
+    """Return a spend-against-budget segment, or None.
+
+    ``--max-budget-usd`` is a Claude Code CLI flag with no settings key and no
+    environment variable, so its value cannot be discovered from here. The
+    ceiling is therefore claude-pulse's own ``budget_usd`` setting, which the
+    user sets to match whatever they pass on the command line.
+    """
+    try:
+        budget = float(config.get("budget_usd") or 0)
+    except (TypeError, ValueError):
+        return None
+    if budget <= 0:
+        return None
+    spent = (stdin_ctx or {}).get("cost_usd")
+    if spent is None:
+        return None
+    try:
+        spent = float(spent)
+    except (TypeError, ValueError):
+        return None
+
+    pct = min(100.0, (spent / budget) * 100.0) if budget else 0.0
+    theme = get_theme_colours(config.get("theme", "default"))
+    bw = BAR_SIZES.get(config.get("bar_size", DEFAULT_BAR_SIZE), BAR_SIZES[DEFAULT_BAR_SIZE])
+    bar = make_bar(pct, theme, width=max(2, bw // 2),
+                   bar_style=config.get("bar_style", DEFAULT_BAR_STYLE))
+    currency = _sanitize(config.get("currency", "$"))[:5]
+    rate, code = _get_exchange_rate(currency)
+    sym = "$" if code == "USD" else currency
+    layout = config.get("layout", DEFAULT_LAYOUT)
+    if layout == "minimal":
+        return f"{bar} {pct:.0f}%"
+    return f"{DIM}budget{RESET} {bar} {sym}{spent * rate:,.2f}{DIM}/{sym}{budget * rate:,.2f}{RESET}"
+
+
+# ---------------------------------------------------------------------------
+# Subagent status line (the `subagentStatusLine` setting)
+# ---------------------------------------------------------------------------
+
+SUBAGENT_STATUS_GLYPHS = {
+    "running": "▸",    # ▸
+    "active": "▸",
+    "pending": "·",    # ·
+    "queued": "·",
+    "done": "✓",       # ✓
+    "completed": "✓",
+    "success": "✓",
+    "failed": "✗",     # ✗
+    "error": "✗",
+    "cancelled": "✗",
+}
+SUBAGENT_STATUS_COLOURS = {
+    "running": CYAN, "active": CYAN,
+    "pending": DIM, "queued": DIM,
+    "done": GREEN, "completed": GREEN, "success": GREEN,
+    "failed": RED, "error": RED, "cancelled": YELLOW,
+}
+
+
+def _elapsed_from_start(start_time):
+    """Seconds since *start_time*, which may be epoch ms, epoch s, or ISO."""
+    if start_time is None:
+        return None
+    try:
+        value = float(start_time)
+        # Anything past ~2001 in milliseconds is far beyond a plausible epoch
+        # second, so treat large values as ms.
+        if value > 1e11:
+            value /= 1000.0
+        delta = time.time() - value
+        return delta if delta >= 0 else None
+    except (TypeError, ValueError):
+        pass
+    ts = _parse_transcript_ts(start_time)
+    if ts is None:
+        return None
+    delta = time.time() - ts
+    return delta if delta >= 0 else None
+
+
+def _render_subagent_row(task, config, columns=None):
+    """Build one subagent row body, or "" to hide it.
+
+    Mirrors the main bar's vocabulary — same theme, same bar style — so the
+    agent panel reads as part of the same tool rather than a separate widget.
+    """
+    if not isinstance(task, dict):
+        return ""
+    name = _sanitize(str(task.get("name") or task.get("type") or "agent"))[:28]
+    status = _sanitize(str(task.get("status") or "")).lower()
+    glyph = SUBAGENT_STATUS_GLYPHS.get(status, "·")
+    colour = SUBAGENT_STATUS_COLOURS.get(status, "")
+
+    parts = [f"{colour}{glyph}{RESET} {name}" if colour else f"{glyph} {name}"]
+
+    model_short = _model_short_name(str(task.get("model") or ""))
+    if model_short:
+        parts.append(f"{DIM}{model_short}{RESET}")
+
+    effort = task.get("effort")
+    if effort not in (None, "", "unset"):
+        # Either a level string or a numeric token budget.
+        if isinstance(effort, (int, float)) and not isinstance(effort, bool):
+            parts.append(f"{DIM}{_fmt_tokens(int(effort))}{RESET}")
+        else:
+            rendered = _format_effort(
+                _sanitize(str(effort)).lower(),
+                config.get("effort_format", DEFAULT_EFFORT_FORMAT),
+            )
+            if rendered:
+                parts.append(f"{DIM}{rendered}{RESET}")
+
+    # Context bar, when Claude Code resolved the model's window (v2.1.205+).
+    try:
+        tokens = int(task.get("tokenCount") or 0)
+        window = int(task.get("contextWindowSize") or 0)
+    except (TypeError, ValueError):
+        tokens, window = 0, 0
+    if tokens and window > 0:
+        pct = max(0.0, min(100.0, (tokens / window) * 100.0))
+        theme = get_theme_colours(config.get("theme", "default"))
+        bw = BAR_SIZES.get(config.get("bar_size", DEFAULT_BAR_SIZE), BAR_SIZES[DEFAULT_BAR_SIZE])
+        bar = make_bar(pct, theme, width=max(2, bw // 2),
+                       bar_style=config.get("bar_style", DEFAULT_BAR_STYLE))
+        parts.append(f"{bar} {pct:.0f}%")
+    elif tokens:
+        parts.append(f"{DIM}{_fmt_tokens(tokens)}{RESET}")
+
+    elapsed = _elapsed_from_start(task.get("startTime"))
+    if elapsed is not None:
+        parts.append(f"{DIM}{_format_elapsed(elapsed)}{RESET}")
+
+    row = f" {DIM}·{RESET} ".join(parts)
+
+    # `columns` is the usable row width Claude Code offers; respect it.
+    try:
+        width = int(columns or 0)
+    except (TypeError, ValueError):
+        width = 0
+    if width > 0 and _visible_len(row) > width:
+        row = _clip_visible(row, width)
+    return row
+
+
+def _clip_visible(text, width):
+    """Clip to *width* visible columns, keeping escapes intact and resetting."""
+    count = 0
+    i = 0
+    while i < len(text):
+        if text[i] == "":
+            i = _skip_escape(text, i)
+            continue
+        count += 1
+        if count > width:
+            return text[:i] + RESET
+        i += 1
+    return text
+
+
+def cmd_subagent_status_line():
+    """Handle --subagent-status-line: render the agent panel's rows.
+
+    Claude Code sends every visible subagent row as one JSON object on stdin
+    and expects one JSON line of ``{"id", "content"}`` per row we want to
+    override. Rows we say nothing about keep their default rendering, so any
+    failure here degrades to Claude Code's own display rather than a blank
+    panel — which is why the whole body is defensive.
+    """
+    try:
+        raw = sys.stdin.read(1_000_000) if not sys.stdin.isatty() else ""
+    except (OSError, ValueError):
+        return
+    if not raw or not raw.strip():
+        return
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return
+    if not isinstance(data, dict):
+        return
+
+    tasks = data.get("tasks")
+    if not isinstance(tasks, list):
+        return
+    columns = data.get("columns")
+
+    try:
+        config = load_config()
+    except Exception:
+        config = {}
+
+    out = []
+    for task in tasks[:64]:  # a sane ceiling; the panel never shows more
+        if not isinstance(task, dict):
+            continue
+        task_id = task.get("id")
+        if not task_id:
+            continue
+        try:
+            content = _render_subagent_row(task, config, columns)
+        except Exception:
+            continue  # leave this row's default rendering alone
+        if not content:
+            continue
+        out.append(json.dumps({"id": str(task_id), "content": content}))
+    if out:
+        sys.stdout.buffer.write(("\n".join(out) + "\n").encode("utf-8"))
+
+# ---------------------------------------------------------------------------
 # Install
 # ---------------------------------------------------------------------------
 
@@ -4740,8 +5457,23 @@ def _desired_refresh_interval(config):
     show = config.get("show", {})
     if not isinstance(show, dict):
         show = {}
-    if show.get("heartbeat", True) or show.get("pomodoro", True):
-        return REFRESH_TIMED
+    # `heartbeat` and `pomodoro` are enabled by default but render nothing
+    # unless a hook is currently firing or a focus timer is actually running.
+    # Asking for a timer on the strength of the *setting* alone meant a stock
+    # config relaunched Python every 15s — 240 times an hour — to redraw a bar
+    # that never changed. Only ask once one of them is genuinely on screen.
+    try:
+        if show.get("heartbeat", False) and _is_hook_state_fresh(_read_hook_state()):
+            return REFRESH_TIMED
+    except Exception:
+        pass
+    try:
+        if show.get("pomodoro", True):
+            pomo = _read_pomodoro()
+            if pomo and pomo.get("active"):
+                return REFRESH_TIMED
+    except Exception:
+        pass
     return REFRESH_STATIC
 
 
@@ -4822,6 +5554,13 @@ def install_status_line():
         status_line["refreshInterval"] = interval
     settings["statusLine"] = status_line
 
+    # Render the agent-panel rows too. Claude Code falls back to its own row
+    # rendering for anything we don't emit, so this can only add information.
+    settings["subagentStatusLine"] = {
+        "type": "command",
+        "command": f'{python_cmd} "{script_path}" --subagent-status-line',
+    }
+
     # No hooks installed here — static status bar by default.
     # Use --animate on for always-on animation (installs hooks automatically)
     # Use --install-hooks for animate-while-working mode
@@ -4830,6 +5569,7 @@ def install_status_line():
     _atomic_json_write(settings_path, settings)
 
     utf8_print(f"Installed status line to {settings_path}")
+    utf8_print("Installed subagent status line (per-agent rows in the agent panel)")
     utf8_print(f"Command: {python_cmd} \"{script_path}\"")
     if interval is not None:
         utf8_print(f"Refresh: every {interval}s (plus Claude Code's own events)")
@@ -5890,6 +6630,68 @@ def main():
             utf8_print("Usage: --animation-speed <slow|normal|fast>")
         return
 
+    if "--subagent-status-line" in args:
+        cmd_subagent_status_line()
+        return
+
+    if "--hook-subagent-start" in args:
+        hook_subagent("start")
+        return
+
+    if "--hook-subagent-stop" in args:
+        hook_subagent("stop")
+        return
+
+    if "--budget" in args:
+        idx = args.index("--budget")
+        config = load_config()
+        if idx + 1 < len(args):
+            raw = args[idx + 1]
+            try:
+                value = 0.0 if raw.lower() in ("off", "none", "0") else float(raw.lstrip("$£€"))
+            except ValueError:
+                utf8_print("Usage: --budget <amount|off>   e.g. --budget 25  (matches --max-budget-usd)")
+                return
+            config["budget_usd"] = value
+            save_config(config)
+            if value > 0:
+                utf8_print(f"Budget: {BOLD}${value:,.2f}{RESET}  (set this to match your --max-budget-usd)")
+            else:
+                utf8_print(f"Budget: {RED}off{RESET}")
+        else:
+            cur = config.get("budget_usd", 0)
+            state = f"${cur:,.2f}" if cur else f"{RED}off{RESET}"
+            utf8_print(f"Budget: {BOLD}{state}{RESET}")
+        return
+
+    if "--limits" in args:
+        idx = args.index("--limits")
+        config = load_config()
+        limits = config.get("limits", dict(DEFAULT_LIMITS))
+        if idx + 1 < len(args) and "=" in args[idx + 1]:
+            for pair in args[idx + 1].split(","):
+                if "=" not in pair:
+                    continue
+                key, _, val = pair.partition("=")
+                key = key.strip()
+                if key not in DEFAULT_LIMITS:
+                    utf8_print(f"Unknown limit '{key}'. Known: {', '.join(DEFAULT_LIMITS)}")
+                    return
+                try:
+                    limits[key] = max(0, int(val))
+                except ValueError:
+                    utf8_print(f"Limit '{key}' must be a whole number (0 hides the denominator).")
+                    return
+            config["limits"] = limits
+            save_config(config)
+        utf8_print(f"{BOLD}Caps{RESET} {DIM}(Claude Code enforces these; it does not report them,{RESET}")
+        utf8_print(f"{DIM}     so set them here to match your setup){RESET}")
+        for key, default in DEFAULT_LIMITS.items():
+            cur = limits.get(key, default)
+            mark = "" if cur == default else f"  {DIM}(default {default}){RESET}"
+            utf8_print(f"  {key:<22} {BOLD}{cur or 'hidden'}{RESET}{mark}")
+        return
+
     if "--effort-format" in args:
         idx = args.index("--effort-format")
         if idx + 1 < len(args):
@@ -5917,6 +6719,17 @@ def main():
     # Normal status line mode
     config = load_config()
     cache_ttl = config.get("cache_ttl_seconds", DEFAULT_CACHE_TTL)
+
+    # Self-heal the repaint timer. Transitions that no command observes —
+    # the heartbeat ageing past its freshness TTL is the main one — would
+    # otherwise leave a stale 15s `refreshInterval` armed indefinitely.
+    # Each repaint (including the timed ones that stale timer causes) checks
+    # whether the timer is still wanted; a no-op costs one settings.json
+    # read and never blocks on anything but local disk.
+    try:
+        sync_status_line_refresh(config)
+    except Exception:
+        pass
 
     # Note: _detect_status_bar_conflict() removed — it suppressed all output
     # when leftover npm @anthropic-ai/claude-code files existed on disk,
@@ -5950,7 +6763,7 @@ def main():
         "lines_added", "lines_removed",
         "effort", "fast_mode", "thinking", "cc_version",
         "cache_hit_pct", "cache_read_tokens",
-        "pr_number", "pr_url", "pr_review_state",
+        "pr_number", "pr_url", "pr_review_state", "pr_kind",
     }
     stdin_ctx_path = get_state_dir() / "stdin_ctx.json"
     persisted = {}
@@ -5998,7 +6811,14 @@ def main():
                 if key == "extra_usage":
                     has_model_caps = has_model_caps or True
 
-        if not has_model_caps and "extra_usage" not in usage_from_stdin:
+        # Only reach for the API when stdin left us with nothing to draw.
+        # Previously any payload without model-scoped caps triggered a blocking
+        # OAuth request — which is every Claude Pro session, on every repaint
+        # with a cold cache, for data that only enriches an already-complete
+        # bar. extra_usage and per-model caps are both nice-to-have; the
+        # five-hour and weekly windows are the status line.
+        has_core = "five_hour" in usage_from_stdin or "seven_day" in usage_from_stdin
+        if not has_core and not has_model_caps and "extra_usage" not in usage_from_stdin:
             try:
                 token, api_plan = get_credentials()
                 if token:
@@ -6093,6 +6913,7 @@ def main():
                 write_cache(
                     cache_path, line, usage, stale.get("plan", plan),
                     rate_limited_until=retry_at, rate_limit_fails=fails,
+                    data_timestamp=stale.get("timestamp"),
                 )
             else:
                 mins = max(1, int(delay // 60))

@@ -87,6 +87,20 @@ class AgentAndPrTest(unittest.TestCase):
     def test_pr_without_number_clears_the_badge(self):
         self.assertIsNone(parse({"pr": {"url": "https://x/y"}})["pr_number"])
 
+    def test_gitlab_mr_kind_parsed(self):
+        """v2.1.234+ sets pr.kind to "mr" for GitLab merge requests."""
+        ctx = parse({"pr": {"number": 7, "kind": "mr"}})
+        self.assertEqual(ctx["pr_kind"], "mr")
+
+    def test_github_pr_explicitly_clears_kind_and_review_state(self):
+        """kind is omitted on GitHub and review_state on unreviewed PRs.
+        Both must be written as None, not left absent: the persistence layer
+        treats a missing key as "unchanged", so a GitHub PR arriving after a
+        GitLab MR would otherwise keep rendering the stale !N marker."""
+        ctx = parse({"pr": {"number": 7}})
+        self.assertIsNone(ctx["pr_kind"])
+        self.assertIsNone(ctx["pr_review_state"])
+
 
 class CacheEfficiencyTest(unittest.TestCase):
     def test_cache_hit_pct_over_billable_input(self):
