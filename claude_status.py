@@ -2403,6 +2403,287 @@ def _parse_minimax_quota(mmx_json):
 
 
 # ---------------------------------------------------------------------------
+# Kimi provider extension (additive, mirrors the MiniMax block above)
+# ---------------------------------------------------------------------------
+# `kimiclaude` points the same `claude` binary at Kimi's Anthropic-compatible
+# endpoints, and the same stdin fields end up describing the wrong session:
+#
+#   1 + 2. `context_window_size` / `used_percentage` carry the shim's 200K
+#          assumption rather than Kimi's real window (256K on the Kimi Code
+#          plan, 1M for K3 on the open platform).
+#   3.     `cost.total_cost_usd` is Anthropic-priced.
+#   4.     The `rate_limits` block is absent, so the Session/Weekly bars fall
+#          back to the user's unrelated Anthropic-subscription usage.
+#
+# Two backends are handled, told apart by host:
+#
+#   * Kimi Code subscription — api.kimi.ai/coding (global) or
+#     api.kimi.com/coding (mainland). A flat-rate plan, so tokens carry no
+#     marginal cost, and the plan's own quota is readable from
+#     `GET {base}/v1/usages`.
+#   * Kimi open platform — api.moonshot.ai/anthropic. Pay-per-token, so cost
+#     is recomputed from published rates; there is no plan quota to fetch.
+#
+# Like the MiniMax block, this is feature-gated on the env (`ANTHROPIC_BASE_URL`
+# host + a Kimi `ANTHROPIC_MODEL`), so it cannot activate for anyone else.
+
+_KIMI_SUBSCRIPTION_HOSTS = frozenset({"api.kimi.ai", "api.kimi.com"})
+_KIMI_PLATFORM_HOSTS = frozenset({"api.moonshot.ai", "api.moonshot.cn"})
+
+# Per-model context windows. Don't trust the shim's stdin value. Plan sizes
+# verified against `GET {base}/v1/models`; the platform's K3 window is
+# 1,048,576 per https://www.kimi.ai/resources/kimi-k3-pricing.
+KIMI_CONTEXT_SIZES = {
+    "k3":                        262_144,
+    "k3-256k":                   262_144,
+    "kimi-for-coding":           262_144,
+    "kimi-for-coding-highspeed": 262_144,
+    "kimi-k3":                 1_048_576,
+}
+
+# Every current Kimi model is at least 256K, so falling back to that for an
+# unrecognised id still lands far closer than the shim's 200K.
+KIMI_DEFAULT_CONTEXT = 262_144
+
+# USD per 1M tokens on the open platform, flat across the whole context window.
+# Per https://www.kimi.ai/resources/kimi-k3-pricing (checked 2026-08-22):
+# input $3.00 cache-miss, $0.30 cache-hit, output $15.00.
+#
+# The cache-hit rate is deliberately NOT applied: stdin exposes the cache
+# breakdown only as a snapshot of the current context (`current_usage`), never
+# cumulatively, while cost has to be computed from the cumulative
+# total_input/total_output counters. Mixing the two would understate cost by an
+# unknown amount, so this figure is a clean upper bound instead.
+KIMI_PLATFORM_PRICING = {"in_per_m": 3.00, "out_per_m": 15.00}
+
+# The quota endpoint is a network call and a status line repaints often, so
+# results are cached — including failures, which keeps a flaky endpoint or an
+# expired token from firing a request on every repaint.
+_KIMI_USAGE_CACHE_TTL = 60  # seconds
+_kimi_usage_mem = {"ts": 0, "base": None, "data": None}
+
+
+def _kimi_backend(base_url):
+    """Return "subscription", "platform" or None for an ANTHROPIC_BASE_URL."""
+    host = urlparse(base_url).hostname or ""
+    if host in _KIMI_SUBSCRIPTION_HOSTS:
+        return "subscription"
+    if host in _KIMI_PLATFORM_HOSTS:
+        return "platform"
+    return None
+
+
+def _is_kimi_model(model):
+    """True for Kimi model ids: k3, k3-256k, kimi-for-coding, kimi-k3[1m], ..."""
+    return bool(model) and model.startswith(("kimi-", "k3"))
+
+
+def _kimi_context_size(model):
+    """Real context window for a Kimi model id, ignoring the shim's value."""
+    if model in KIMI_CONTEXT_SIZES:
+        return KIMI_CONTEXT_SIZES[model]
+    # Claude Code's "[1m]" suffix selects the 1M-context variant.
+    if "[1m]" in model:
+        return 1_048_576
+    return KIMI_DEFAULT_CONTEXT
+
+
+def _kimi_window_minutes(window):
+    """Length of a usage window in minutes, or +inf when it can't be read."""
+    if not isinstance(window, dict):
+        return float("inf")
+    try:
+        duration = float(window.get("duration"))
+    except (TypeError, ValueError):
+        return float("inf")
+    factor = {
+        "TIME_UNIT_SECOND": 1.0 / 60.0,
+        "TIME_UNIT_MINUTE": 1.0,
+        "TIME_UNIT_HOUR":   60.0,
+        "TIME_UNIT_DAY":    1440.0,
+    }.get(window.get("timeUnit") or "")
+    if factor is None:
+        return float("inf")
+    return duration * factor
+
+
+def _kimi_usage_bucket(detail):
+    """Turn one {limit, used, resetTime} bucket into a Pulse rate-limit entry.
+
+    Counts arrive as strings ("100", "21"), so everything is coerced; anything
+    unusable returns None so the caller can drop just this window.
+    """
+    if not isinstance(detail, dict):
+        return None
+    try:
+        limit = float(detail.get("limit"))
+        used = float(detail.get("used"))
+    except (TypeError, ValueError):
+        return None
+    if limit <= 0:
+        return None
+    resets_iso = None
+    raw_reset = detail.get("resetTime")
+    if isinstance(raw_reset, str) and raw_reset:
+        try:
+            # A trailing "Z" only parses on 3.11+; normalise it so the
+            # supported 3.9/3.10 range works too.
+            resets_iso = datetime.fromisoformat(
+                raw_reset.replace("Z", "+00:00")
+            ).isoformat()
+        except ValueError:
+            resets_iso = None
+    return {
+        # Clamp: the plan reports used == limit at exhaustion and the renderer
+        # expects a percentage it can draw.
+        "utilization": max(0.0, min(100.0, (used / limit) * 100.0)),
+        "resets_at": resets_iso,
+    }
+
+
+def _parse_kimi_usage(payload):
+    """Convert `GET {base}/v1/usages` into Pulse's _rate_limits shape.
+
+    The plan reports two windows: a rolling short one under `limits` (300
+    minutes today) which maps to Pulse's Session bar, and the plan period under
+    `usage` which maps to the Weekly bar. Each is guarded independently so one
+    malformed bucket can't lose the other (or crash the status line).
+    """
+    out = {}
+    if not isinstance(payload, dict):
+        return out
+
+    # Plan period -> Weekly bar.
+    bucket = _kimi_usage_bucket(payload.get("usage"))
+    if bucket:
+        out["seven_day"] = bucket
+
+    # Shortest rolling window -> Session bar. Pick the shortest rather than the
+    # first so a future extra window can't displace the 5-hour one.
+    limits = payload.get("limits")
+    if isinstance(limits, list):
+        best = None
+        for item in limits:
+            if not isinstance(item, dict):
+                continue
+            bucket = _kimi_usage_bucket(item.get("detail"))
+            if not bucket:
+                continue
+            minutes = _kimi_window_minutes(item.get("window"))
+            if best is None or minutes < best[0]:
+                best = (minutes, bucket)
+        if best:
+            out["five_hour"] = best[1]
+    return out
+
+
+def _kimi_access_token(now=None):
+    """Return the Kimi Code CLI's cached OAuth access token, or None.
+
+    Strictly read-only. Pulse never refreshes the token: Kimi's refresh
+    endpoint rotates BOTH the access and the refresh token, so a status line
+    racing the `kimi` CLI (or kimiclaude's own helper) would invalidate their
+    session. An already-expired token simply means no quota bars this repaint.
+    """
+    home = os.environ.get("KIMI_CODE_HOME") or (Path.home() / ".kimi-code")
+    try:
+        candidates = sorted(
+            Path(home).joinpath("credentials").glob("*.json"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+    except OSError:
+        return None
+    now = time.time() if now is None else now
+    for path in candidates:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                creds = json.load(f)
+            token = creds.get("access_token")
+            expires_at = creds.get("expires_at")
+            if not token or not isinstance(token, str):
+                continue
+            if expires_at is not None and float(expires_at) <= now:
+                continue  # expired; refreshing is the CLI's job, not ours
+            return token
+        except (OSError, json.JSONDecodeError, AttributeError, TypeError, ValueError):
+            continue
+    return None
+
+
+def _fetch_kimi_usage(base_url, token, timeout=3):
+    """GET {base_url}/v1/usages and return the decoded JSON, or None.
+
+    The bearer token goes only to the Kimi host already named by
+    ANTHROPIC_BASE_URL, and `_safe_opener` refuses every redirect (its
+    allowlist holds Anthropic domains only), so the token cannot be bounced on
+    to a third party.
+    """
+    if urlparse(base_url).hostname not in _KIMI_SUBSCRIPTION_HOSTS:
+        return None
+    base = base_url.rstrip("/")
+    if base.endswith("/v1"):
+        base = base[:-3].rstrip("/")
+    req = urllib.request.Request(base + "/v1/usages", headers={
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+        "User-Agent": f"claude-pulse/{VERSION}",
+    })
+    try:
+        with _safe_opener.open(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError,
+            OSError, ValueError):
+        return None
+
+
+def _get_cached_kimi_usage(base_url):
+    """Plan quota reshaped for the renderer, with the same two-tier cache the
+    cost figures use: in-memory for the hot path, then a short disk cache so a
+    repaint storm makes at most one request per minute.
+    """
+    now = time.time()
+    # Both tiers are keyed on the base URL as well as the clock: the global and
+    # mainland hosts are separate accounts, so an answer cached for one must
+    # never be served for the other.
+    if (_kimi_usage_mem["data"] is not None
+            and _kimi_usage_mem["base"] == base_url
+            and now - _kimi_usage_mem["ts"] < _KIMI_USAGE_CACHE_TTL):
+        return _kimi_usage_mem["data"]
+
+    # get_state_dir() creates the directory, so it can fail on a read-only or
+    # full disk. Keep it inside the guard: losing the disk tier just means
+    # falling back to a live fetch, never a broken status line.
+    cache_path = None
+    try:
+        cache_path = get_state_dir() / "kimi_usage_cache.json"
+        with open(cache_path, "r", encoding="utf-8") as f:
+            cached = json.load(f)
+        if _cache_age(cached) < _KIMI_USAGE_CACHE_TTL and cached.get("base") == base_url:
+            data = cached.get("data") or {}
+            _kimi_usage_mem.update(ts=now, base=base_url, data=data)
+            return data
+    except (FileNotFoundError, json.JSONDecodeError, OSError, AttributeError):
+        pass
+
+    token = _kimi_access_token()
+    data = _parse_kimi_usage(_fetch_kimi_usage(base_url, token)) if token else {}
+    # Cache empty results too, so a missing token or a flaky endpoint doesn't
+    # mean an HTTP attempt on every single repaint.
+    _kimi_usage_mem.update(ts=now, base=base_url, data=data)
+    if cache_path is not None:
+        try:
+            _atomic_json_write(
+                cache_path,
+                {"timestamp": now, "base": base_url, "data": data},
+                indent=None,
+            )
+        except OSError:
+            pass
+    return data
+
+
+# ---------------------------------------------------------------------------
 # Status line rendering
 # ---------------------------------------------------------------------------
 
@@ -3801,6 +4082,49 @@ def _parse_stdin_context(raw_stdin):
                             result["_rate_limits"] = parsed
                 except (subprocess.TimeoutExpired, FileNotFoundError, json.JSONDecodeError):
                     pass  # renderer will simply not show rate bars
+    except (AttributeError, KeyError, ValueError, TypeError, OSError):
+        pass
+
+    # Kimi provider: when running under kimiclaude, fix the four stdin
+    # mismatches described in the Kimi provider block above. Wrapped like every
+    # sibling block so malformed stdin can never crash the status line — on any
+    # error we simply leave the Anthropic-shaped values untouched.
+    try:
+        kimi_base = os.environ.get("ANTHROPIC_BASE_URL", "")
+        kimi_model = os.environ.get("ANTHROPIC_MODEL", "")
+        kimi_backend = _kimi_backend(kimi_base)
+        if kimi_backend and _is_kimi_model(kimi_model):
+            ctx = data.get("data", data).get("context_window", {}) or {}
+            in_tok = int(ctx.get("total_input_tokens") or 0)
+            out_tok = int(ctx.get("total_output_tokens") or 0)
+            total = in_tok + out_tok
+
+            # 1 + 2: Recompute Context %% from (input + output) against the real
+            # per-model window, and keep tokens-display mode consistent with it.
+            ctx_size = _kimi_context_size(kimi_model)
+            if ctx_size > 0:
+                result["context_pct"] = (total / ctx_size) * 100.0
+                result["context_used"] = total
+                result["context_limit"] = ctx_size
+
+            # 3: Anthropic-priced `cost.total_cost_usd` is wrong under either
+            # backend, but for different reasons.
+            if kimi_backend == "platform":
+                result["cost_usd"] = (
+                    in_tok * KIMI_PLATFORM_PRICING["in_per_m"] / 1_000_000.0
+                    + out_tok * KIMI_PLATFORM_PRICING["out_per_m"] / 1_000_000.0
+                )
+            else:
+                # Kimi Code is a flat-rate plan: tokens carry no marginal cost,
+                # so anything other than zero would be inventing a number.
+                result["cost_usd"] = 0.0
+
+            # 4: Fetch the plan's own quota and reshape to Pulse's schema. Only
+            # override if stdin didn't already provide rate_limits.
+            if kimi_backend == "subscription" and not result.get("_rate_limits"):
+                parsed = _get_cached_kimi_usage(kimi_base)
+                if parsed:
+                    result["_rate_limits"] = parsed
     except (AttributeError, KeyError, ValueError, TypeError, OSError):
         pass
 
