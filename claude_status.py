@@ -1987,6 +1987,15 @@ def cmd_update():
 _ERROR_CACHE_TTL = 10   # seconds — retry errors faster than normal data
 _RATE_LIMIT_CACHE_TTL = 120  # seconds — back off longer on 429 to avoid retry storms
 
+# Per-model weekly caps (seven_day_opus/_sonnet/_fable) are not on stdin and
+# must come from the OAuth usage endpoint. They are refreshed at most this
+# often, and served from the last cached value in between, so a repaint costs
+# a network call once every 5 minutes rather than on every draw.
+_MODEL_CAPS_TTL = 300  # seconds
+# Hard ceiling on that request. The status line blocks on it, so it must be
+# short — matches the spirit of _UPDATE_CHECK_BUDGET (6s) for the same reason.
+_MODEL_CAPS_TIMEOUT = 5  # seconds
+
 
 def read_cache(cache_path, ttl):
     """Return the full cache dict if fresh, else None."""
@@ -2061,7 +2070,7 @@ _USAGE_CACHE_KEYS = {
 
 def write_cache(cache_path, line, usage=None, plan=None,
                 rate_limited_until=None, rate_limit_fails=None,
-                data_timestamp=None):
+                data_timestamp=None, model_caps_fetched_at=None):
     """Persist the rendered line plus optional usage/plan and 429 backoff state.
 
     ``rate_limited_until`` is an epoch after which it is worth calling the API
@@ -2087,6 +2096,8 @@ def write_cache(cache_path, line, usage=None, plan=None,
             data["rate_limited"] = True
         if rate_limit_fails:
             data["rate_limit_fails"] = rate_limit_fails
+        if model_caps_fetched_at:
+            data["model_caps_fetched_at"] = model_caps_fetched_at
         with _secure_open_write(cache_path) as f:
             json.dump(data, f)
     except OSError:
@@ -2308,11 +2319,12 @@ def _normalize_usage(usage):
     return usage
 
 
-def fetch_usage(token):
+def fetch_usage(token, timeout=10):
     with _authorized_request(
         "https://api.anthropic.com/api/oauth/usage",
         token,
         headers={"anthropic-beta": "oauth-2025-04-20", "Accept": "application/json"},
+        timeout=timeout,
     ) as resp:
         return _normalize_usage(json.loads(resp.read(1_000_000)))  # 1 MB max
 
@@ -6815,24 +6827,101 @@ def main():
                 if key == "extra_usage":
                     has_model_caps = has_model_caps or True
 
-        # Only reach for the API when stdin left us with nothing to draw.
-        # Previously any payload without model-scoped caps triggered a blocking
-        # OAuth request — which is every Claude Pro session, on every repaint
-        # with a cold cache, for data that only enriches an already-complete
-        # bar. extra_usage and per-model caps are both nice-to-have; the
-        # five-hour and weekly windows are the status line.
+        # Carry model-scoped caps and extra_usage forward from an EXPIRED
+        # cache. read_cache() above returns None once the 60s TTL lapses, so
+        # without this the Fable/Opus/Sonnet bars vanish on every repaint after
+        # the first minute and reappear only when the refresh below happens to
+        # run — a visible flicker. Weekly quotas move over days, so a value a
+        # few minutes old is honest; the five-hour and weekly windows always
+        # come fresh from stdin and are never overwritten here.
+        _stale = _read_stale_cache(cache_path)
+        _stale_usage = (_stale or {}).get("usage")
+        if isinstance(_stale_usage, dict):
+            for key, value in _stale_usage.items():
+                if key in _USAGE_CACHE_KEYS and key not in usage_from_stdin:
+                    usage_from_stdin[key] = value
+                    if key.startswith("seven_day_") or key == "extra_usage":
+                        has_model_caps = True
+            if not plan_from_cache:
+                plan_from_cache = (_stale or {}).get("plan", "") or ""
+
+        # Only reach for the API when stdin left us with nothing to draw, or
+        # when the model-scoped caps we do have are older than
+        # _MODEL_CAPS_TTL.
+        #
+        # Claude Code puts only five_hour and seven_day on stdin. A Fable
+        # weekly cap arrives from the API solely inside the `limits[]` array
+        # (as {"kind": "weekly_scoped", "scope": {"model": {"display_name":
+        # "Fable"}}}), which _normalize_usage folds into seven_day_fable.
+        # Because has_core was already true from stdin, the old guard skipped
+        # the fetch forever and the Fable bar could never appear — the
+        # widget was enabled and simply starved of data. Same starvation gave
+        # "Extra: n/a" and the "check failed" credits line.
         has_core = "five_hour" in usage_from_stdin or "seven_day" in usage_from_stdin
-        if not has_core and not has_model_caps and "extra_usage" not in usage_from_stdin:
+        _caps_age = time.time() - float((_stale or {}).get("model_caps_fetched_at") or 0)
+        _caps_stale = _caps_age > _MODEL_CAPS_TTL
+        # Only refresh if a widget that consumes this data is actually on
+        # screen. Without this gate every Claude Pro user pays a network call
+        # every _MODEL_CAPS_TTL for windows the API returns as null for them,
+        # which is the per-repaint fetch #47 removed, just slower.
+        _caps_show = config.get("show", {})
+        _caps_wanted = any(_caps_show.get(k, DEFAULT_SHOW.get(k, True))
+                           for k in ("opus", "sonnet", "fable", "extra"))
+        # Preserve across the end-of-branch write_cache below. Without this the
+        # final write drops the field, the age reads as 0 on the next repaint,
+        # and the "stale" test fires every single draw — a fetch per repaint,
+        # which is what the 5-minute TTL exists to prevent.
+        _caps_ts = (_stale or {}).get("model_caps_fetched_at") or None
+        # Same reason: the end-of-branch write must not erase 429 backoff.
+        _rl_until = (_stale or {}).get("rate_limited_until") or None
+        _rl_fails = (_stale or {}).get("rate_limit_fails") or None
+        _blocked_until = float((_stale or {}).get("rate_limited_until") or 0)
+        _backoff_active = time.time() < _blocked_until
+        if (not has_core and not has_model_caps and "extra_usage" not in usage_from_stdin) or \
+                (_caps_wanted and _caps_stale and not _backoff_active):
             try:
                 token, api_plan = get_credentials()
                 if token:
-                    api_usage = fetch_usage(token)
+                    api_usage = fetch_usage(token, timeout=_MODEL_CAPS_TIMEOUT)
                     for key, value in api_usage.items():
-                        if key in _USAGE_CACHE_KEYS and key not in usage_from_stdin:
-                            usage_from_stdin[key] = value
+                        # Model caps refresh in place: an expired carried-over
+                        # value must be replaced, not kept. five_hour and
+                        # seven_day still come from stdin and are left alone.
+                        if key not in _USAGE_CACHE_KEYS:
+                            continue
+                        if key in ("five_hour", "seven_day") and key in usage_from_stdin:
+                            continue
+                        usage_from_stdin[key] = value
                     if api_plan:
                         plan_from_cache = api_plan
-                    write_cache(cache_path, "", usage=api_usage, plan=plan_from_cache)
+                    _caps_ts = time.time()
+                    _rl_until = None   # success clears the backoff
+                    _rl_fails = None
+                    write_cache(cache_path, "", usage=usage_from_stdin,
+                                plan=plan_from_cache,
+                                model_caps_fetched_at=_caps_ts)
+            except urllib.error.HTTPError as exc:
+                # A 429 here must set the shared backoff. Without it this path
+                # retried on every repaint: each draw saw no timestamp, judged
+                # the caps stale, and called again — which is exactly how a
+                # burst of repaints earns a multi-thousand-second retry-after
+                # from the endpoint. Honour Retry-After when the server sends
+                # one, else fall back to the existing exponential schedule.
+                if getattr(exc, "code", None) == 429:
+                    try:
+                        _ra = float(exc.headers.get("retry-after") or 0)
+                    except (TypeError, ValueError):
+                        _ra = 0
+                    _delay, _fails = _rate_limit_backoff(
+                        (_stale or {}).get("rate_limit_fails"))
+                    _delay = max(_delay, _ra)
+                    _rl_until = time.time() + _delay
+                    _rl_fails = _fails
+                    write_cache(cache_path, "", usage=usage_from_stdin,
+                                plan=plan_from_cache,
+                                model_caps_fetched_at=_caps_ts,
+                                rate_limited_until=_rl_until,
+                                rate_limit_fails=_rl_fails)
             except Exception:
                 pass
 
@@ -6848,7 +6937,9 @@ def main():
             _append_context_history(stdin_ctx["context_pct"])
 
         # Write to cache so staleness tracking works
-        write_cache(cache_path, line, usage_from_stdin, plan_from_cache)
+        write_cache(cache_path, line, usage_from_stdin, plan_from_cache,
+                    model_caps_fetched_at=_caps_ts,
+                    rate_limited_until=_rl_until, rate_limit_fails=_rl_fails)
 
         line = append_update_indicator(line, config)
         line = append_claude_update_indicator(line, config, stdin_ctx)
