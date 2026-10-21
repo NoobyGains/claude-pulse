@@ -67,8 +67,12 @@ class ModelCapsStdinPath(unittest.TestCase):
         state.mkdir()
         cfg_dir = Path(self._td.name) / "claude"
         cfg_dir.mkdir()
+        # config.json too: without this the test read the developer's real
+        # config, and failed on any machine where the cap bars were switched on.
+        user_config = Path(self._td.name) / "config.json"
         for target, value in (("get_state_dir", lambda: state),
                               ("_claude_config_dir", lambda: cfg_dir),
+                              ("get_config_path", lambda: user_config),
                               ("check_for_update", lambda: False),
                               ("check_claude_code_update", lambda: False)):
             patcher = mock.patch.object(cs, target, value)

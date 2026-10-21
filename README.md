@@ -405,7 +405,7 @@ Claude Code repaints the status line on its own events (a prompt, a tool call). 
 This is the output of `python claude_status.py --help`:
 
 ```
-claude-pulse 3.4.0 — usage status line for Claude Code
+claude-pulse 3.4.1 — usage status line for Claude Code
 
 Usage: python claude_status.py [flag [args]]
 With no flag and JSON on stdin (how Claude Code runs it) it prints the status line.

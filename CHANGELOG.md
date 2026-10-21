@@ -13,6 +13,17 @@ Ideas, not promises:
 - Live Codex limits through its app-server instead of the last session file.
 - A `skills/` layout for the plugin.
 
+## [3.4.1] - 2026-10-21
+
+### Fixed
+
+- **`--update` no longer fails on GitHub's API rate limit.** The updater and the hourly update indicator look up the latest commit through the GitHub API, which allows 60 unauthenticated requests an hour per address. On a machine where several tools poll GitHub that runs out, and `--update` stopped with "Could not reach GitHub API" although the network was fine. A failed API call now falls back to `git ls-remote`, which has no such limit.
+- **The per-model cap tests no longer read the developer's own `config.json`.** They failed on any machine where the cap bars were switched on.
+
+### Added
+
+- **The setup wizard is tested on a real terminal.** `tests/test_setup_wizard_tty.py` runs `--setup` on a pseudo terminal (ConPTY, the console behind Windows Terminal and PowerShell), presses the keys a person would and checks the files the wizard writes. On Windows it needs `pip install pywinpty` and is skipped without it; the POSIX transport is opt-in with `CLAUDE_PULSE_TTY_TESTS=1`.
+
 ## [3.4.0] - 2026-10-21
 
 ### Added

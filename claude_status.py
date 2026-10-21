@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Claude Code status line — reads usage data from Claude Code's stdin and displays real-time bars."""
 
-VERSION = "3.4.0"
+VERSION = "3.4.1"
 
 import hashlib
 import json
@@ -1838,10 +1838,18 @@ def _on_default_branch(deadline=None):
 
 
 def get_remote_commit(deadline=None):
-    """Fetch the latest commit hash from GitHub API. Returns None on failure."""
+    """Latest commit hash of upstream main. Returns None on failure.
+
+    Asks the GitHub API first: one small request, no git process. The API
+    allows only 60 unauthenticated requests an hour per address, and a
+    machine running several tools can use them all, so a failed or odd API
+    answer falls back to ``git ls-remote`` against origin, which GitHub serves
+    without that limit. Callers verify that origin is the upstream repo first.
+    """
     timeout = _capped_timeout(3, deadline)
     if timeout is None:
         return None
+    sha = ""
     try:
         url = f"https://api.github.com/repos/{GITHUB_REPO}/commits/main"
         req = urllib.request.Request(url, headers={
@@ -1850,30 +1858,44 @@ def get_remote_commit(deadline=None):
         })
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             sha = resp.read(1024).decode().strip()
-        if re.fullmatch(r'[0-9a-f]{40}', sha):
-            return sha
-        return None  # not a valid SHA — rate-limited, error page, etc.
     except Exception:
+        sha = ""
+    if re.fullmatch(r'[0-9a-f]{40}', sha):
+        return sha
+    # Not a SHA (rate-limited, error page, offline): ask git instead.
+    return _git_remote_commit(deadline=deadline)
+
+
+def _git_remote_commit(deadline=None):
+    """``git ls-remote origin refs/heads/main`` as a 40-hex SHA, or None."""
+    env = dict(os.environ)
+    env["GIT_TERMINAL_PROMPT"] = "0"   # never hang on a credential prompt
+    out = _git("ls-remote", "origin", "refs/heads/main", timeout=8, deadline=deadline, env=env)
+    if not out:
         return None
+    sha = out.split()[0]
+    return sha if re.fullmatch(r'[0-9a-f]{40}', sha) else None
 
 
-def _git(*args, timeout=2, deadline=None):
+def _git(*args, timeout=2, deadline=None, env=None):
     """Run git in the install dir, returning stripped stdout or None.
 
     The default timeout is deliberately short: these calls sit behind the
     hourly update check, and several run in series, so a slow filesystem or a
     hung git could otherwise stall a repaint for tens of seconds. *deadline*
     caps it further to whatever remains of the caller's overall budget.
+    *env* replaces the child's environment (None inherits ours).
     """
     timeout = _capped_timeout(timeout, deadline)
     if timeout is None:
         return None
     repo_dir = Path(__file__).resolve().parent
+    extra = {"env": env} if env is not None else {}
     try:
         result = subprocess.run(
             [_GIT_PATH, *args],
             capture_output=True, text=True, timeout=timeout,
-            cwd=str(repo_dir),
+            cwd=str(repo_dir), **extra,
         )
         if result.returncode == 0:
             return result.stdout.strip()
@@ -2227,7 +2249,7 @@ def cmd_update():
     remote = get_remote_commit()
 
     if remote is None:
-        utf8_print(f"  {RED}Could not reach GitHub API to verify update integrity.{RESET}")
+        utf8_print(f"  {RED}Could not reach GitHub to verify the update (API and git both failed).{RESET}")
         utf8_print(f"  Check your network connection and try again.")
         return
 
