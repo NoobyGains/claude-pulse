@@ -1,276 +1,159 @@
-Configure your Claude status bars — themes, colours, animations, widgets, and more. $ARGUMENTS
+Configure your Claude status bars — setup, themes, widgets, providers, hooks and more. $ARGUMENTS
 
 ---
 
-**Finding the script:** Before running any command below, you need the full path to `claude_status.py`. Do this ONCE at the start:
+## 1. Find the script (once, before anything else)
 
-1. Read `~/.claude/settings.json`. If `statusLine.command` contains `claude_status.py`, extract the full script path from that string.
-2. If not found, use the Glob tool to search for `**/claude_status.py` inside `~/.claude/plugins/` — pick the result containing `claude-pulse`.
-3. If neither works, tell the user: "Run `/claude-pulse:setup` first to install the status bar."
+1. Read `settings.json` in Claude Code's config dir (`$CLAUDE_CONFIG_DIR` if it is set, otherwise `~/.claude`). If `statusLine.command` contains `claude_status.py`, take the script path from it: strip the quotes and expand `$HOME`. Keep the interpreter at the start of that same command as PY (for example `C:/Users/me/AppData/Local/Programs/Python/Python313/python.exe` or `python3`).
+2. Otherwise use the Glob tool for `**/claude_status.py` under `~/.claude/plugins/` and pick the result whose path contains `claude-pulse`.
+3. Otherwise try `~/.claude-pulse/claude_status.py`.
+4. If nothing is found, say: "claude-pulse isn't installed yet. Run `/claude-pulse:setup` (plugin) or the installer from the README, then `/pulse setup`." and stop.
 
-Save the found path as SCRIPT_PATH. Use `python "SCRIPT_PATH"` for all commands below.
+Save the path as SCRIPT_PATH. If no PY was found, use `python` (Windows) or `python3` (macOS/Linux). Every command below is `PY "SCRIPT_PATH" <flag>`.
 
----
+## 2. Rules
 
-## ROUTING — decide what to do based on $ARGUMENTS
+- After any change, say it shows on the status line's next refresh.
+- Never paste raw `--config` output (it is ANSI). Summarise it in words.
+- Ask with AskUserQuestion: one question per step, at most 4 options, "Other…" last when free text makes sense.
+- The live theme picker and the full-screen wizard need a real terminal, which you don't have. When the user wants them, give them the line to type themselves, prefixed with `!`:
+  `!PY "SCRIPT_PATH" --pick-theme` or `!PY "SCRIPT_PATH" --setup`
+  If they see a static list instead, their terminal isn't interactive; carry on with the questions here.
+- Hook or status-line changes need a Claude Code restart; say so when you make one.
+- `PY "SCRIPT_PATH" --help` lists every flag. Use it when a request doesn't match the table below.
 
-### Direct commands (skip the menu, run immediately):
+## 3. Routing — what to do with $ARGUMENTS
 
-If $ARGUMENTS matches a **theme name** (`default`, `ocean`, `sunset`, `mono`, `neon`, `pride`, `frost`, `ember`, `candy`, `rainbow`):
--> Run `python "SCRIPT_PATH" --theme <name>` directly, no menu.
--> Confirm: "Theme set to **<name>**. The status line will update on the next refresh."
+| $ARGUMENTS | Do this |
+|---|---|
+| empty, `menu`, `themes`, `theme` | Top menu (section 4) |
+| `setup`, `wizard`, `install`, `start` | Setup path (section 5) |
+| a theme name: `default` `ocean` `sunset` `mono` `neon` `pride` `frost` `ember` `candy` `rainbow` | `--theme <name>` |
+| `pick`, `picker`, `pick-theme` | Give the user `!PY "SCRIPT_PATH" --pick-theme` to type. Controls: ↑/↓ or j/k move, Enter keep, Esc cancel |
+| `show`, `show all`, `preview`, `colors`, `colours` | Run `--show-themes` and `--show-colors` (two Bash calls in parallel), show the output, then say only: "Press **Ctrl+O** to expand and see the colours." |
+| `show <parts>` / `hide <parts>` | `--show <parts>` / `--hide <parts>` (comma-separated, see the list below) |
+| `animate <off/rainbow/pulse/glow/shift/on>` | `--animate <mode>` |
+| `speed <slow/normal/fast>`, `animation-speed …` | `--animation-speed <speed>` |
+| `text-color <name>`, `text-colour <name>` | `--text-color <name>` |
+| `bar-size <size>`, `size <size>` | `--bar-size <size>` (small, small-medium, medium, medium-large, large) |
+| `bar-style <name>`, `style <name>` | `--bar-style <name>` |
+| `layout <name>` | `--layout <standard/compact/minimal/percent-first>` |
+| `wrap <off/auto>`, `max-width <20-100>` | `--wrap …`, `--max-width …` |
+| `currency <symbol>` | `--currency <symbol>` (costs are converted from USD at a daily rate) |
+| `clock <12h/24h>` | `--clock-format <12h/24h>` |
+| `effort-format <labeled/full/short>` | `--effort-format <value>` |
+| `weekly-timer <auto/countdown/date/full>` | `--weekly-timer-format <value>` |
+| `context-format <percent/tokens>` | `--context-format <value>` |
+| `extra-display <auto/full/amount>` | `--extra-display <value>` |
+| `streak-style <fire/text>` | `--streak-style <value>` |
+| `caps`, `models`, `model caps` | Caps question (5.4), then `--show`/`--hide opus,sonnet,fable` |
+| `providers`, `accounts`, `detect` | Providers path (section 6) |
+| `providers label <id> <text>` | `--providers label <id> "<text>"` |
+| `providers enable <ids>` / `disable <ids>` | `--providers enable <ids>` / `--providers disable <ids>` |
+| `hooks` | Hooks question (5.2) |
+| `hooks heartbeat`, `hooks agents`, `hooks team`, `hooks all` | `--install-hooks --only <group>` (`all` = `--install-hooks`) |
+| `focus start [min]`, `focus stop`, `focus status` | `--focus <action> [minutes]` (default 25 minutes) |
+| `budget <amount/off>` | `--budget <value>`. It mirrors Claude Code's `--max-budget-usd`, which can't be read automatically |
+| `limits`, `limits k=v,…` | `--limits <value>` (keys: subagent_spawns, subagent_concurrent, web_searches) |
+| `preset <name>`, `minimal` | `--preset <name>` (`default` is a full factory reset: confirm first) |
+| `priority <widget=N,…>` | `--priority <value>` |
+| `update` | `--update`, show the output |
+| `stats`, `heatmap` | `--stats` / `--heatmap`, show the output |
+| `config`, `settings` | `--config`, then summarise |
+| `help` | `--help`, show the output |
 
-If $ARGUMENTS is `pick`, `picker`, or `pick-theme`:
--> This is the **live arrow-key theme picker**: one screen, scroll through all 10 themes, and the status-bar preview recolours live. It needs an interactive terminal, so the **user must launch it themselves** — you cannot drive the keypresses for them.
--> Tell the user to type this in their prompt to launch it:
-   `!python "SCRIPT_PATH" --pick-theme`
--> Explain the controls in one line: "↑/↓ (or j/k) to move · Enter to keep · Esc to cancel — your bar recolours live as you move."
--> Add the fallback note: "If you see a static coloured list instead of a moving cursor, this terminal isn't interactive here — just note the name you like and run `/pulse <name>`."
+Valid parts: session, weekly, context, timer, weekly_timer, cost, model, branch, heartbeat, activity, update, claude_update, opus, sonnet, fable, plan, extra, effort, fast_mode, thinking, agent, worktree, pomodoro, context_warning, staleness, lines, cumulative_cost, weekly_cost, cache, cache_warm, spend_limit, repo, session_name, providers, subagents, team, budget, pr, burn_rate, sessions, last_tool, sparkline, runway, status_message, streak, pace, git_drift, files_changed
 
-If $ARGUMENTS is `config` or `settings`:
--> Run `python "SCRIPT_PATH" --config` silently.
--> Summarise the settings in your response text (don't show raw ANSI output).
+If `--show` answers "Unknown part", the installed version predates that widget: suggest `/pulse update`.
 
-If $ARGUMENTS is exactly `show` (no parts after it), or `show all`, or `colors`, or `colours`, or `preview`:
--> Run TWO separate Bash commands (in parallel):
-   1. `python "SCRIPT_PATH" --show-themes`
-   2. `python "SCRIPT_PATH" --show-colors`
--> Show the raw output to the user (coloured ANSI text with live previews).
--> After both commands, say ONLY: "Press **Ctrl+O** to expand and see the colours."
+## 4. Top menu
 
-If $ARGUMENTS contains `hide <parts>` or `show <parts>` (with specific parts):
--> Run the corresponding `--hide` or `--show` command directly.
--> Valid parts: session, weekly, context, timer, weekly_timer, cost, model, branch, heartbeat, activity, update, claude_update, opus, sonnet, effort, worktree, pomodoro, context_warning, staleness, plan, extra, burn_rate, sessions, last_tool, sparkline, runway, status_message, streak, pace, git_drift, files_changed
+Run `PY "SCRIPT_PATH" --config` silently (it also reveals a pending update; mention one if shown). Then ask:
 
-If $ARGUMENTS matches `animate <mode>` (where mode is `off`, `rainbow`, `pulse`, `glow`, `shift`, `on`):
--> Run `--animate <mode>` directly.
--> Explain what the mode does:
-  - **off** — Static, no animation
-  - **rainbow** — Flowing rainbow gradient across the entire bar
-  - **pulse** — Bars cycle through vivid colours each refresh
-  - **glow** — Per-character gradient that shifts across the bar
-  - **shift** — Bright highlight slides across the bar
-
-If $ARGUMENTS matches `text-color <name>` or `text-colour <name>`:
--> Run `--text-color <name>` directly.
-
-If $ARGUMENTS matches `currency <symbol>` (e.g. `currency £`, `currency €`, `currency $`):
--> Run `--currency <symbol>` directly.
--> Explain: cost is auto-converted from USD using a live exchange rate (cached 24h).
-
-If $ARGUMENTS matches `bar-size <size>`:
--> Run `--bar-size <size>` directly.
-
-If $ARGUMENTS matches `bar-style <name>` or `style <name>`:
--> Run `--bar-style <name>` directly.
-
-If $ARGUMENTS matches `layout <name>`:
--> Run `--layout <name>` directly.
-
-If $ARGUMENTS matches `animation-speed <speed>` or `speed <speed>`:
--> Run `--animation-speed <speed>` directly.
-
-If $ARGUMENTS matches `focus start [minutes]` or `focus stop` or `focus status`:
--> Run `--focus <action> [minutes]` directly.
--> Default is 25 minutes if no duration given.
-
-If $ARGUMENTS matches `budget <amount|off>`:
--> Run `--budget <value>` directly. Explain it mirrors Claude Code's `--max-budget-usd`,
-   which is CLI-only and cannot be read automatically.
-
-If $ARGUMENTS matches `limits` or `limits <k>=<v>,...`:
--> Run `--limits <value>` directly. Keys: subagent_spawns, subagent_concurrent, web_searches.
-
-If $ARGUMENTS matches `effort-format <value>`:
--> Run `--effort-format <value>` directly.
--> Values: `labeled` (default, "Effort: Medium"), `full` ("Medium"), `short` ("med")
-
-If $ARGUMENTS matches `clock <format>` (where format is `12h` or `24h`):
--> Run `--clock-format <format>` directly.
-
-If $ARGUMENTS matches `preset <name>` or `minimal` or `default preset`:
--> Run the corresponding `--preset` command.
-
-If $ARGUMENTS is `update`:
--> Run `python "SCRIPT_PATH" --update` and show the output.
-
-If $ARGUMENTS is `hooks` or `install-hooks`:
--> Run `python "SCRIPT_PATH" --install-hooks` and show the output.
--> Remind user to restart Claude Code.
-
-If $ARGUMENTS is `stats`:
--> Run `python "SCRIPT_PATH" --stats` and show the output.
-
-If $ARGUMENTS is `heatmap`:
--> Run `python "SCRIPT_PATH" --heatmap` and show the output.
-
-### Interactive menu (when $ARGUMENTS is empty, `themes`, `theme`, or `menu`):
-
-**Step 0 — Quick tips:**
-
-> **Quick commands:** `/pulse show` preview all themes · `/pulse ocean` set a theme · `/pulse config` see settings · `/pulse update` check for updates · `/pulse focus start` start a focus timer
-
-Run `python "SCRIPT_PATH" --config` silently to check for updates.
-
-**Step 1:** Run `python "SCRIPT_PATH" --themes-demo` and show the output.
-
-**Step 2:** Theme — offer the **live picker** first.
-
-Say: "For the best experience, launch the live picker — type  `!python "SCRIPT_PATH" --pick-theme`  in your prompt. Arrow keys move through all 10 themes, your bar recolours live, Enter keeps it, Esc cancels. (If it shows a static list instead of a moving cursor, this terminal isn't interactive — use the quick picker below.)"
-
-If the user would rather pick from a list right here (or the live picker isn't available in their terminal), use the paginated picker below.
-
-Theme picker (paginated as 3 pages):
-
-Page 1:
 ```
-Question: "Pick a theme from the preview above"
+Question: "What would you like to set up?"
 Options:
-  - "rainbow" — "Full-spectrum flowing colours"
-  - "default" — "Classic green → yellow → red"
-  - "ocean" — "Cool cyan → blue → magenta"
-  - "More themes..." — "See all 10 themes"
+  - "Setup" — "Guided setup: status line, hooks, providers, theme, widgets"
+  - "Look" — "Theme, animation, bar size and style, layout"
+  - "Widgets" — "What the bar shows, model caps, budget"
+  - "Other…" — "Providers, hooks, or settings/stats"
 ```
 
-Page 2 (if "More themes..."):
-```
-Options:
-  - "frost" — "Icy blue → steel → white"
-  - "ember" — "Gold → hot orange → red"
-  - "candy" — "Pink → purple → cyan"
-  - "More themes..." — "See neon, sunset, pride, mono"
-```
+Setup → section 5. Look → 5.5 and 5.6, then the animation question below. Widgets → 5.8, then 5.4. For "Other…", ask: Providers (section 6) · Hooks (5.2) · Info (summarise `--config` and show `--stats`).
 
-Page 3 (if "More themes..." again):
-```
-Options:
-  - "neon" — "Vivid bright green → yellow → red"
-  - "sunset" — "Warm yellow → orange → red"
-  - "pride" — "Violet → green → pink"
-  - "mono" — "White → white → bright white"
-```
-
-Apply with `--theme <name>`.
-
-**Step 3:** Text colour (skip for rainbow):
-
-Theme-specific recommendations: ocean→cyan, sunset/ember→yellow, frost→cyan, candy→pink, neon→green, pride→violet, default/mono→white.
-
-```
-Question: "What colour for labels and percentages?"
-Options:
-  - "<recommendation> (Recommended)" — "<reason>"
-  - "White" — "Neutral, works with any theme"
-  - "Auto" — "Best match for your theme"
-```
-
-Apply with `--text-color <colour>`.
-
-**Step 4:** Animation:
-
+Animation question:
 ```
 Question: "Choose an animation style"
 Options:
-  - "Off (Recommended)" — "Static theme colours, clean and simple"
+  - "Off (Recommended)" — "Static theme colours"
   - "Rainbow" — "Flowing rainbow gradient"
-  - "Pulse" — "Bars cycle through vivid colours"
-  - "Glow" — "Gradient shifts across the bar"
-  - "Shift" — "Bright highlight slides across"
+  - "Pulse" — "Bars fade to white and back"
+  - "Other…" — "glow (brighten and dim) or shift (highlight slides across)"
 ```
-
 Apply with `--animate <mode>`.
 
-**Step 5:** Bar size:
+Tip line to show once: **Quick commands:** `/pulse ocean` set a theme · `/pulse show` preview all · `/pulse providers` other accounts · `/pulse hooks` live agents · `/pulse config` settings
 
+## 5. Setup path
+
+This mirrors the terminal wizard. First offer it: "For the full-screen version with live previews, type `!PY "SCRIPT_PATH" --setup`. Or answer a few questions here." Continue here unless they switch.
+
+**5.1 Status line.** Read settings.json. If `statusLine.command` contains `claude_status.py`, it is installed: skip to 5.2. If another command is there, ask whether to replace it and tell them what it is. Then run `PY "SCRIPT_PATH" --install` (adds statusLine, the agent-panel rows via subagentStatusLine, and /pulse).
+
+**5.2 Hooks** (multi-select):
 ```
-Question: "How wide should the progress bars be?"
-Options:
-  - "Large (Recommended)" — "12 characters — detailed bars"
-  - "Medium" — "8 characters — balanced"
-  - "Small" — "4 characters — compact"
-```
-
-Apply with `--bar-size <size>`.
-
-**Step 6:** Currency:
-
-```
-Question: "What currency for the cost ticker?"
-Options:
-  - "$ (USD)" — "US Dollar (base currency)"
-  - "£ (GBP)" — "British Pound (auto-converted)"
-  - "€ (EUR)" — "Euro (auto-converted)"
-  - "Other" — "Type any symbol (¥, ₹, C$, kr, etc.)"
-```
-
-Apply with `--currency <symbol>`. Explain: the cost shows what this session would cost at API rates, converted to their currency via live exchange rate.
-
-**Step 7:** Clock format:
-
-```
-Question: "Clock format for timers?"
-Options:
-  - "12h" — "Fri 5pm"
-  - "24h" — "Fri 17:00"
-```
-
-Apply with `--clock-format <12h|24h>`.
-
-**Step 8:** Reasoning effort display:
-
-```
-Question: "How should the reasoning-effort level be written?"
-Options:
-  - "Effort: Medium (Recommended)" — "Unambiguous at a glance"
-  - "Medium" — "Just the word"
-  - "med" — "Shortest, saves width on a busy bar"
-```
-
-Apply with `--effort-format <labeled|full|short>`.
-
-**Step 9:** Optional widgets — ask which extras they want, multi-select:
-
-```
-Question: "Any optional widgets? (all off by default)"
+Question: "Which live widgets do you want? Each installs a hook"
 Options (multi-select):
-  - "Live heartbeat" — "[/] 42 tools 5m spinner during active work. Needs the PostToolUse hook"
-  - "Cache hit rate" — "Share of input served from cache — the clearest cost signal"
-  - "PR badge" — "Clickable #123 with review state (needs a terminal with hyperlink support)"
-  - "7-day cost" — "Rolling weekly API-equivalent spend"
-  - "Thinking state" — "Whether extended thinking is on"
+  - "Live agents (Recommended)" — "agents 3 live · 47/200 — SubagentStart/SubagentStop"
+  - "Agent team (Recommended)" — "team 3 · tasks 4/7 — TeammateIdle/TaskCreated/TaskCompleted"
+  - "Heartbeat" — "spinner + tool count; runs Python after every tool call"
 ```
+Run one command with the chosen groups: `--install-hooks --only agents,team` (add `heartbeat` if picked). If heartbeat was picked, also run `--show heartbeat`. Hooks never block Claude: the events that could are pinned to exit 0. Restart needed.
 
-Apply each with `--show <name>`: `heartbeat` (also `activity`), `cache`, `pr`,
-`weekly_cost`, `thinking`. If heartbeat was chosen, also run
-`python "SCRIPT_PATH" --install-hooks`.
+**5.3 Providers.** Follow section 6.
 
-**Step 10:** Budget (optional):
-
+**5.4 Per-model caps** (multi-select, all off by default):
 ```
-Question: "Track spend against a budget?"
-Options:
-  - "No (Recommended)" — "Skip"
-  - "Yes" — "Set an amount to match Claude Code's --max-budget-usd"
+Question: "Show per-model weekly cap bars?"
+Options (multi-select):
+  - "Opus" — "Opus weekly cap"
+  - "Sonnet" — "Sonnet weekly cap"
+  - "Fable" — "Fable weekly cap"
 ```
+Explain before asking: Claude Code's status-line input only carries the 5-hour and weekly windows, so these bars cost one usage-API call every 5 minutes with your Claude Code OAuth token. Apply `--show <picked>` and `--hide <the rest>`.
 
-If "Yes", ask for the amount and apply `--budget <amount>`. Explain that
-`--max-budget-usd` is CLI-only and cannot be read automatically, so this number
-has to be kept in step with it by hand.
+**5.5 Theme.** Run `--themes-demo` and show it, or offer the live picker line. Ask in pages of 3 + "More themes…":
+- Page 1: rainbow (full-spectrum flowing colours) · default (green → yellow → red) · ocean (cyan → blue → magenta)
+- Page 2: frost (icy blue → steel → white) · ember (gold → hot orange → red) · candy (pink → purple → cyan)
+- Page 3: neon (vivid green → yellow → red) · sunset (yellow → orange → red) · pride (violet → green → pink) · mono (white → bright white)
 
-**Step 11:** Confirm everything:
-"All set! Your status bar is configured with **<theme>**, **<animation>** animation,
-and **<currency>** cost tracking. It updates on every interaction."
+Apply with `--theme <name>`. Note: `--theme default` also resets every other look setting to factory values. If they already changed size or style in this session, set those again afterwards.
 
-Mention anything switched on in Step 9/10. If hooks were installed, add:
-"Restart Claude Code to activate the live heartbeat."
+**5.6 Size and style.** Two questions: bar size (Large (Recommended) 12 chars · Medium 8 · Small 4) → `--bar-size`; bar style (classic ━─ · block █░ · dot ●○ · Other… for shade, pipe, square, star, braille) → `--bar-style`.
 
-Also note that subagent rows in the agent panel are installed automatically —
-each running subagent shows its model, effort, context bar and elapsed time.
+**5.7 Units.** Three questions: currency ($ · £ · € · Other…) → `--currency`; clock (12h "Fri 5pm" · 24h "Fri 17:00") → `--clock-format`; effort (Effort: High (Recommended) · High · hi) → `--effort-format labeled/full/short`.
+
+**5.8 Widgets** (two multi-select pages, all optional):
+- Page 1: Cache hit rate (`cache`) · PR badge (`pr`) · 7-day cost (`weekly_cost`) · Budget (`budget`)
+- Page 2: Cache warmth (`cache_warm`) · Repo badge (`repo`) · Session name (`session_name`) · Thinking state (`thinking`)
+
+Apply with one `--show a,b,c`. If Budget was picked, ask for the amount and run `--budget <amount>`. If `--show` rejects a part, skip it and mention it needs a newer version.
+
+**5.9 Wrap up.** Summarise what changed in one short list. Say: "Restart Claude Code to load the status line and hooks. Change anything later with /pulse."
+
+## 6. Providers path (other accounts and tools)
+
+Providers add one row each under the main line: another Claude account (a second `CLAUDE_CONFIG_DIR`), Codex, Gemini/Antigravity, MiniMax, or a JSON file you point at.
+
+1. Run `PY "SCRIPT_PATH" --detect-providers --json`. It prints a JSON list of rows: `id`, `type`, `label`, `path`, `active`, `enabled`, `tier`, `age_seconds`, `note`. If the flag is unknown, the version is too old: suggest `/pulse update`.
+2. If the list is empty, say what was looked for: other `~/.claude*` account dirs, Codex sessions in `~/.codex`, Antigravity's status file in `~/.gemini`, and the `mmx` CLI. Mention `--providers add-file <id> <path> [label]` for anything else that can write a `five_hour`/`seven_day` JSON file. Stop.
+3. Ask a multi-select of the found rows (at most 4 per page): label as the option, `type · path` as the description. Pre-select rows already `enabled`, plus new non-`active` ones except MiniMax. Mark the `active` row as "this account, already the main line".
+4. Run `--providers enable <ids>` for the newly picked and `--providers disable <ids>` for unpicked rows that were enabled.
+5. Offer renames: "Want different labels?" If yes, run `--providers label <id> "<text>"` for each (24 characters max).
+6. Explain: rows are read-only. Codex and Gemini rows read local files. Another Claude account's row asks api.anthropic.com with that account's own token, at most every few minutes, and never refreshes the token. MiniMax runs its `mmx` CLI, so it is only on when you pick it.
+
+`--providers list` shows the current set.
 
 ---
 
-## DISPLAY RULES
-
-- After any change, tell the user it will update on the next refresh.
-- When running `--config`, summarise — don't show raw ANSI.
-- Be brief and enthusiastic.
+Be brief and friendly.

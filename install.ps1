@@ -1,7 +1,7 @@
 $ErrorActionPreference = "Stop"
 
 $RepoSlug = "NoobyGains/claude-pulse"
-$RepoUrl = "https://github.com/$RepoSlug.git"
+$RepoUrl = if ($env:CLAUDE_PULSE_REPO_URL) { $env:CLAUDE_PULSE_REPO_URL } else { "https://github.com/$RepoSlug.git" }
 $RawBaseUrl = "https://raw.githubusercontent.com/$RepoSlug/main"
 
 $InstallDir = if ($env:CLAUDE_PULSE_DIR) { $env:CLAUDE_PULSE_DIR } else { Join-Path $HOME ".claude-pulse" }
@@ -73,13 +73,28 @@ if (Test-Path $PulseCommandPath) {
 }
 
 $StatusScriptPath = Join-Path $InstallDir "claude_status.py"
+
+# The wizard needs a real console on both ends. `irm | iex` runs in the
+# caller's console, so it qualifies; redirected or console-less hosts (CI,
+# ISE) get the defaults. CLAUDE_PULSE_NONINTERACTIVE=1 always takes them.
+$Interactive = $false
+if (-not $env:CLAUDE_PULSE_NONINTERACTIVE) {
+  try {
+    $Interactive = (-not [Console]::IsInputRedirected) -and (-not [Console]::IsOutputRedirected)
+  }
+  catch {
+    $Interactive = $false
+  }
+}
+$SetupArgs = if ($Interactive) { @("--setup") } else { @("--setup", "--non-interactive") }
+
 if (Get-Command python -ErrorAction SilentlyContinue) {
-  & python $StatusScriptPath --install
-  Throw-IfFailed "Python installer command failed"
+  & python $StatusScriptPath @SetupArgs
+  Throw-IfFailed "claude-pulse setup failed"
 }
 elseif (Get-Command py -ErrorAction SilentlyContinue) {
-  & py -3 $StatusScriptPath --install
-  Throw-IfFailed "Python launcher installer command failed"
+  & py -3 $StatusScriptPath @SetupArgs
+  Throw-IfFailed "claude-pulse setup failed"
 }
 else {
   throw "Python 3 is required. Install Python, then run this installer again."
@@ -87,7 +102,7 @@ else {
 
 Write-Host ""
 Write-Host "claude-pulse installed in: $InstallDir"
-Write-Host "Restart Claude Code, then run /pulse to configure your status bar."
+Write-Host "Restart Claude Code. Change anything later with /pulse (or /pulse setup)."
 if ($InstallMethod -eq "raw") {
   Write-Host "Note: installed without git. /pulse update expects a git clone."
 }
