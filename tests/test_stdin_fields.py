@@ -300,5 +300,177 @@ class SessionStateClearsTest(unittest.TestCase):
         self.assertIsNone(parse(self.FULL)["thinking"])
 
 
+class PromptCacheFieldTest(unittest.TestCase):
+    """stdin `prompt_cache{warm, hit_ratio, expires_at}` (Claude Code 2.1.251+)."""
+
+    FULL = SessionStateClearsTest.FULL
+
+    def test_warm_cache_is_read(self):
+        r = parse({"prompt_cache": {"warm": True, "hit_ratio": 0.91,
+                                    "expires_at": 1738429200, "ttl": "1h"}})
+        self.assertIs(r["prompt_cache_warm"], True)
+        self.assertAlmostEqual(r["prompt_cache_hit_pct"], 91.0)
+        self.assertEqual(r["prompt_cache_expires_at"], 1738429200.0)
+
+    def test_cold_cache_has_no_expiry(self):
+        r = parse({"prompt_cache": {"warm": False, "hit_ratio": None, "expires_at": None}})
+        self.assertIs(r["prompt_cache_warm"], False)
+        self.assertIsNone(r["prompt_cache_hit_pct"])
+        self.assertIsNone(r["prompt_cache_expires_at"])
+
+    def test_ratio_is_clamped_to_a_percentage(self):
+        self.assertEqual(parse({"prompt_cache": {"hit_ratio": 7}})["prompt_cache_hit_pct"], 100.0)
+        self.assertEqual(parse({"prompt_cache": {"hit_ratio": -1}})["prompt_cache_hit_pct"], 0.0)
+
+    def test_absence_clears_on_a_full_payload(self):
+        r = parse(self.FULL)
+        for key in ("prompt_cache_warm", "prompt_cache_hit_pct", "prompt_cache_expires_at"):
+            self.assertIn(key, r)
+            self.assertIsNone(r[key])
+
+    def test_present_but_not_a_dict_clears(self):
+        for bad in (None, "x", 5, [], True):
+            r = parse({**self.FULL, "prompt_cache": bad})
+            self.assertIsNone(r["prompt_cache_warm"], repr(bad))
+            self.assertIsNone(r["prompt_cache_expires_at"], repr(bad))
+
+    def test_fragment_without_the_block_changes_nothing(self):
+        r = parse({"cost": {"total_cost_usd": 1.0}})
+        self.assertNotIn("prompt_cache_warm", r)
+
+    def test_malformed_values_never_raise(self):
+        for bad in ("x", True, [], {}, None, -5, 0):
+            r = parse({"prompt_cache": {"warm": bad, "hit_ratio": bad, "expires_at": bad}})
+            self.assertIsNone(r["prompt_cache_expires_at"], repr(bad))
+            # warm only accepts a real boolean.
+            if not isinstance(bad, bool):
+                self.assertIsNone(r["prompt_cache_warm"], repr(bad))
+        # NaN/Infinity survive json.loads, so they must be handled too.
+        raw = '{"prompt_cache": {"warm": true, "hit_ratio": NaN, "expires_at": Infinity}}'
+        r = cs._parse_stdin_context(raw)
+        self.assertIsNone(r["prompt_cache_hit_pct"])
+        self.assertIsNone(r["prompt_cache_expires_at"])
+
+    def test_envelope_variant(self):
+        r = parse({"data": {"prompt_cache": {"warm": True, "hit_ratio": 0.5}}})
+        self.assertAlmostEqual(r["prompt_cache_hit_pct"], 50.0)
+
+
+class SpendLimitFieldTest(unittest.TestCase):
+    """stdin `rate_limits.spend_limit`, kept apart from the usage-bar windows."""
+
+    FULL = SessionStateClearsTest.FULL
+    SPEND = {"used_percentage": 62.8, "resets_at": 1740787200,
+             "used_usd": 314.12, "limit_usd": 500, "period": "monthly"}
+
+    def test_all_fields_read(self):
+        r = parse({"rate_limits": {"spend_limit": self.SPEND}})
+        sl = r["spend_limit"]
+        self.assertAlmostEqual(sl["used_percentage"], 62.8)
+        self.assertAlmostEqual(sl["used_usd"], 314.12)
+        self.assertEqual(sl["limit_usd"], 500.0)
+        self.assertEqual(sl["period"], "monthly")
+        self.assertTrue(sl["resets_at"].startswith("2025-03-01"))   # ISO string
+
+    def test_not_leaked_into_the_usage_bar_windows(self):
+        r = parse({"rate_limits": {"five_hour": {"used_percentage": 5},
+                                   "spend_limit": self.SPEND}})
+        self.assertEqual(set(r["_rate_limits"]), {"five_hour"})
+
+    def test_usd_fields_and_period_are_optional(self):
+        r = parse({"rate_limits": {"spend_limit": {"used_percentage": 25, "resets_at": 1740787200}}})
+        sl = r["spend_limit"]
+        self.assertEqual(sl["used_percentage"], 25.0)
+        self.assertIsNone(sl["used_usd"])
+        self.assertIsNone(sl["limit_usd"])
+        self.assertIsNone(sl["period"])
+
+    def test_zero_or_negative_limit_is_dropped(self):
+        r = parse({"rate_limits": {"spend_limit": {**self.SPEND, "limit_usd": 0, "used_usd": -3}}})
+        self.assertIsNone(r["spend_limit"]["limit_usd"])
+        self.assertIsNone(r["spend_limit"]["used_usd"])
+
+    def test_over_100_percent_is_kept(self):
+        r = parse({"rate_limits": {"spend_limit": {**self.SPEND, "used_percentage": 130}}})
+        self.assertEqual(r["spend_limit"]["used_percentage"], 130.0)
+
+    def test_window_dropped_by_claude_code_clears_it(self):
+        r = parse({"rate_limits": {"five_hour": {"used_percentage": 5}}})
+        self.assertIn("spend_limit", r)
+        self.assertIsNone(r["spend_limit"])
+
+    def test_absence_clears_on_a_full_payload(self):
+        self.assertIsNone(parse(self.FULL)["spend_limit"])
+
+    def test_fragment_without_rate_limits_changes_nothing(self):
+        self.assertNotIn("spend_limit", parse({"cost": {"total_cost_usd": 1.0}}))
+
+    def test_period_is_sanitised(self):
+        r = parse({"rate_limits": {"spend_limit": {**self.SPEND,
+                                                   "period": "\x1b[31mWEEKLY\x07" + "x" * 50}}})
+        self.assertNotIn("\x1b", r["spend_limit"]["period"])
+        self.assertLessEqual(len(r["spend_limit"]["period"]), 16)
+
+    def test_malformed_values_never_raise(self):
+        for bad in ("x", True, [], {}, None, 5):
+            r = parse({"rate_limits": {"spend_limit": bad}})
+            self.assertIsNone(r["spend_limit"], repr(bad))
+            r = parse({"rate_limits": {"spend_limit": {"used_percentage": bad, "resets_at": bad,
+                                                       "used_usd": bad, "limit_usd": bad,
+                                                       "period": bad}}})
+            self.assertIn("spend_limit", r)
+        self.assertIsNone(parse({"rate_limits": "x"})["spend_limit"])
+        self.assertIsNone(parse({"rate_limits": None})["spend_limit"])
+        # Absurd epoch must not raise out of datetime.fromtimestamp.
+        r = parse({"rate_limits": {"spend_limit": {"used_percentage": 1, "resets_at": 1e30}}})
+        self.assertIsNone(r["spend_limit"]["resets_at"])
+
+
+class RepoAndSessionNameFieldTest(unittest.TestCase):
+    FULL = SessionStateClearsTest.FULL
+
+    def test_repo_slug_from_owner_and_name(self):
+        r = parse({"workspace": {"repo": {"host": "github.com", "owner": "anthropics",
+                                          "name": "claude-code"}}})
+        self.assertEqual(r["repo_slug"], "anthropics/claude-code")
+
+    def test_nested_gitlab_namespace_is_kept(self):
+        r = parse({"workspace": {"repo": {"host": "gitlab.com", "owner": "group/subgroup",
+                                          "name": "proj"}}})
+        self.assertEqual(r["repo_slug"], "group/subgroup/proj")
+
+    def test_repo_slug_is_sanitised_and_capped(self):
+        r = parse({"workspace": {"repo": {"owner": "\x1b[31mevil\x07", "name": "n" * 200}}})
+        self.assertNotIn("\x1b", r["repo_slug"])
+        self.assertNotIn("\x07", r["repo_slug"])
+        self.assertLessEqual(len(r["repo_slug"]), 60)
+
+    def test_missing_repo_clears_the_slug(self):
+        self.assertIsNone(parse({"workspace": {"current_dir": "."}})["repo_slug"])
+        self.assertIsNone(parse(self.FULL)["repo_slug"])
+        for bad in (None, "x", 7, [], {}, {"owner": "o"}, {"name": "n"},
+                    {"owner": 1, "name": 2}, {"owner": "", "name": ""}):
+            r = parse({"workspace": {"repo": bad}})
+            self.assertIsNone(r["repo_slug"], repr(bad))
+
+    def test_workspace_of_the_wrong_type_never_raises(self):
+        for bad in (None, "x", 7, []):
+            parse({"workspace": bad})
+
+    def test_session_name_read_sanitised_and_capped(self):
+        self.assertEqual(parse({"session_name": "my-session"})["session_name"], "my-session")
+        r = parse({"session_name": "\x1b[31mred\x07 " + "w" * 100})
+        self.assertNotIn("\x1b", r["session_name"])
+        self.assertLessEqual(len(r["session_name"]), 40)
+
+    def test_session_name_absence_clears_on_a_full_payload(self):
+        self.assertIsNone(parse(self.FULL)["session_name"])
+        self.assertNotIn("session_name", parse({"cost": {"total_cost_usd": 1.0}}))
+
+    def test_session_name_malformed_clears_without_raising(self):
+        for bad in (None, "", "   ", 7, [], {}, True):
+            self.assertIsNone(parse({"session_name": bad})["session_name"], repr(bad))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
