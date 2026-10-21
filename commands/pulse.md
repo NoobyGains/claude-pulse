@@ -39,7 +39,7 @@ Save the path as SCRIPT_PATH. If no PY was found, use `python` (Windows) or `pyt
 | `animate <off/rainbow/pulse/glow/shift/on>` | `--animate <mode>` |
 | `speed <slow/normal/fast>`, `animation-speed …` | `--animation-speed <speed>` |
 | `text-color <name>`, `text-colour <name>` | `--text-color <name>` |
-| `bar-size <size>`, `size <size>` | `--bar-size <size>` (small, small-medium, medium, medium-large, large) |
+| `bar-size <size>`, `size <size>` | `--bar-size <size>` (small, small-medium, medium, medium-large, large, or auto to shrink to fit) |
 | `bar-style <name>`, `style <name>` | `--bar-style <name>` |
 | `layout <name>` | `--layout <standard/compact/minimal/percent-first>` |
 | `wrap <off/auto>`, `max-width <20-100>` | `--wrap …`, `--max-width …` |
@@ -50,6 +50,7 @@ Save the path as SCRIPT_PATH. If no PY was found, use `python` (Windows) or `pyt
 | `context-format <percent/tokens>` | `--context-format <value>` |
 | `extra-display <auto/full/amount>` | `--extra-display <value>` |
 | `streak-style <fire/text>` | `--streak-style <value>` |
+| `pace-style <arrows/percent>` | `--pace-style <value>` |
 | `caps`, `models`, `model caps` | Caps question (5.4), then `--show`/`--hide opus,sonnet,fable` |
 | `providers`, `accounts`, `detect` | Providers path (section 6) |
 | `providers label <id> <text>` | `--providers label <id> "<text>"` |
@@ -66,7 +67,7 @@ Save the path as SCRIPT_PATH. If no PY was found, use `python` (Windows) or `pyt
 | `config`, `settings` | `--config`, then summarise |
 | `help` | `--help`, show the output |
 
-Valid parts: session, weekly, context, timer, weekly_timer, cost, model, branch, heartbeat, activity, update, claude_update, opus, sonnet, fable, plan, extra, effort, fast_mode, thinking, agent, worktree, pomodoro, context_warning, staleness, lines, cumulative_cost, weekly_cost, cache, cache_warm, spend_limit, repo, session_name, providers, subagents, team, budget, pr, burn_rate, sessions, last_tool, sparkline, runway, status_message, streak, pace, git_drift, files_changed
+Valid parts: session, weekly, context, timer, weekly_timer, session_bar, weekly_bar, context_bar, cost, model, branch, heartbeat, activity, update, claude_update, opus, sonnet, fable, plan, extra, effort, fast_mode, thinking, agent, worktree, pomodoro, context_warning, staleness, lines, cumulative_cost, weekly_cost, cache, cache_warm, spend_limit, repo, session_name, providers, subagents, team, budget, pr, burn_rate, sessions, last_tool, sparkline, runway, status_message, streak, pace, git_drift, files_changed
 
 If `--show` answers "Unknown part", the installed version predates that widget: suggest `/pulse update`.
 
@@ -133,7 +134,7 @@ Explain before asking: Claude Code's status-line input only carries the 5-hour a
 
 Apply with `--theme <name>`. Note: `--theme default` also resets every other look setting to factory values. If they already changed size or style in this session, set those again afterwards.
 
-**5.6 Size and style.** Two questions: bar size (Large (Recommended) 12 chars · Medium 8 · Small 4) → `--bar-size`; bar style (classic ━─ · block █░ · dot ●○ · Other… for shade, pipe, square, star, braille) → `--bar-style`.
+**5.6 Size and style.** Two questions: bar size (Large (Recommended) 12 chars · Medium 8 · Small 4 · Other… for auto, which shrinks to fit the window) → `--bar-size`; bar style (classic ━─ · block █░ · dot ●○ · Other… for shade, pipe, square, star, braille) → `--bar-style`.
 
 **5.7 Units.** Three questions: currency ($ · £ · € · Other…) → `--currency`; clock (12h "Fri 5pm" · 24h "Fri 17:00") → `--clock-format`; effort (Effort: High (Recommended) · High · hi) → `--effort-format labeled/full/short`.
 

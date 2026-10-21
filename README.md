@@ -245,7 +245,7 @@ State that belongs to one account (usage cache, stdin context, history, sessions
 
 `--animation-speed` takes `slow`, `normal` or `fast`. Animation needs repaints, so setup writes a 2-second `refreshInterval` while animation is on.
 
-**8 bar styles** with `--bar-style <name>`: classic, block, shade, pipe, dot, square, star, braille. If Unicode looks wrong in your terminal, `block` is the safe one. **Bar sizes**: small, small-medium, medium, medium-large, large (`--bar-size`).
+**8 bar styles** with `--bar-style <name>`: classic, block, shade, pipe, dot, square, star, braille. If Unicode looks wrong in your terminal, `block` is the safe one. **Bar sizes**: small, small-medium, medium, medium-large, large (`--bar-size`). A named size is exactly that wide whatever the window does; `--bar-size auto` shrinks the bars to fit a narrow window instead, and `--wrap auto` moves what does not fit onto a second row.
 
 **Layouts** (`--layout`): `standard` has full labels, `compact` one-letter labels, `minimal` no labels, and `percent-first` puts the number before the bar. `--max-width` sets the share of the terminal the bar may use and `--wrap auto` wraps onto a second row instead of cutting the line. For a deliberate two-row split, set `line2_widgets` (these go to row 2) or `line1_widgets` (an allowlist for row 1, the rest flows to row 2) in `config.json`.
 
@@ -262,6 +262,7 @@ Switch any of them with `--show` and `--hide`, or tick them in the wizard. Most 
 | `timer` | on | Time until the session window resets |
 | `weekly` | on | The 7-day window as a bar |
 | `weekly_timer` | on | When the weekly window resets (`--weekly-timer-format`, `--weekly-timer-prefix`) |
+| `session_bar`, `weekly_bar`, `context_bar` | on | The bars themselves. `--hide weekly_bar` keeps that window's percentage and timer and drops the bar |
 | `context` | on | Context window usage, as a percentage or in tokens (`--context-format`) |
 | `context_warning` | on | The `⚠ Context` label and a fast-rising arrow as the window fills |
 | `cost` | on | Session cost at API prices, in your currency |
@@ -296,7 +297,7 @@ Switch any of them with `--show` and `--hide`, or tick them in the wizard. Most 
 | `runway` | off | Estimated time until the window is full |
 | `sparkline` | off | A small chart of recent session usage |
 | `status_message` | off | Replaces the `Session` label with a short message such as `Cruising` |
-| `pace` | off | How much of the window's time has passed, next to the bar |
+| `pace` | off | `↑` or `↓` after the percentage: usage ahead of or behind the window's clock, doubled when it is well off the pace, `→` when on track (`--pace-style`) |
 | `streak` | off | Days in a row you have used Claude Code (`--streak-style`) |
 | `sessions` | off | `+2 sessions` when other windows are open |
 | `git_drift` | off | Commits behind and ahead of upstream |
@@ -363,7 +364,7 @@ Agent teams need `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`, and task counts need 
 ```bash
 --theme ocean              # default, ocean, sunset, mono, neon, pride, frost, ember, candy, rainbow
 --animate rainbow          # off, rainbow, pulse, glow, shift
---bar-size large           # small, small-medium, medium, medium-large, large
+--bar-size large           # small, small-medium, medium, medium-large, large, auto
 --bar-style block          # classic, block, shade, pipe, dot, square, star, braille
 --layout compact           # standard, compact, minimal, percent-first
 --currency £               # $, £, €, ¥, C$, A$, ₹, kr, and 20+ more
@@ -398,7 +399,7 @@ Agent teams need `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`, and task counts need 
 | `widget_priority` | Widget order, for example `{"model": 5}` |
 | `line1_widgets`, `line2_widgets` | Two-row split |
 | `currency`, `budget_usd`, `limits` | Cost display |
-| `clock_format`, `effort_format`, `context_format`, `extra_display`, `streak_style` | Number and time formats |
+| `clock_format`, `effort_format`, `context_format`, `extra_display`, `streak_style`, `pace_style` | Number and time formats |
 | `weekly_timer_format`, `weekly_timer_prefix` | The weekly reset timer |
 | `providers` | List of `{id, type, enabled, label?, dir or path, bucket?}`. Manage it with `--providers` |
 | `providers_label_main` | `true` by default. Names the main line `Claude (<label>) 5h` on the standard layout |
@@ -414,7 +415,7 @@ Agent teams need `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`, and task counts need 
 This is the output of `python claude_status.py --help`:
 
 ```
-usage-pulse 3.5.0 — usage status line for Claude Code
+usage-pulse 3.6.0 — usage status line for Claude Code
 
 Usage: python claude_status.py [flag [args]]
 With no flag and JSON on stdin (how Claude Code runs it) it prints the status line.
@@ -439,8 +440,8 @@ Look
                                       Bar animation
   --animation-speed <slow|normal|fast>
                                       Animation speed
-  --bar-size <small|small-medium|medium|medium-large|large>
-                                      Bar width
+  --bar-size <small|small-medium|medium|medium-large|large|auto>
+                                      Bar width (auto shrinks to fit)
   --bar-style <name>                  Bar characters (classic, block, dot, braille, ...)
   --layout <standard|compact|minimal|percent-first>
                                       How labels, bars and numbers are arranged
@@ -462,6 +463,7 @@ Widgets
                                       Weekly reset timer style
   --weekly-timer-prefix <text>        Text before the weekly reset time (e.g. R:)
   --streak-style <fire|text>          Usage streak style
+  --pace-style <arrows|percent>       Pace widget: arrows against the clock, or the elapsed share
   --budget <amount|off>               Spend budget to match --max-budget-usd
   --limits [key=N,...]                Subagent and web-search caps used as denominators
   --focus <start [min]|stop|status>   Focus (pomodoro) timer
@@ -555,6 +557,7 @@ Claude Code sends `rate_limits` on stdin, so the main bars need no OAuth call an
 | A provider row shows `--` | The source could not be read yet: no token, a missing file, or no rate-limit data in the newest Codex session |
 | "Rate limited" message | The main bars read stdin, so they keep working. API-backed parts back off before retrying |
 | `--update` says it cannot reach GitHub | Both the GitHub API and `git ls-remote` failed. Check the network; the unauthenticated API alone is not needed since 3.4.1 |
+| The bars are two characters wide | `--bar-size auto` is on, or the version is older than 3.6.0, which shrank bars to fit the window. Set a named size with `--bar-size large`; in a narrow window, `--wrap auto` puts the rest of the line on a second row |
 | Animation or timer frozen when idle | Run `--setup` again. The real setting is `statusLine.refreshInterval` |
 | Opus/Sonnet/Fable bar missing | They are off by default (`--show fable`). They also render only when your plan reports that cap, and Claude Pro returns none |
 | Heartbeat not showing | Run `--install-hooks --only heartbeat`, switch the widget on with `--show heartbeat`, and restart Claude Code. It shows after the first tool call |
@@ -568,7 +571,7 @@ Claude Code sends `rate_limits` on stdin, so the main bars need no OAuth call an
 
 ## Thanks
 
-Per-model weekly caps came from [@thedanielmay](https://github.com/thedanielmay) in PR #53, and the project has picked up ideas from its forks and issue reporters along the way. Bug reports and pull requests are welcome; the test suite (`python -m unittest discover -s tests`) runs in about a minute, and `python tests/test_readme_claims.py` keeps this page honest. What changed in each release is in [CHANGELOG.md](CHANGELOG.md).
+Per-model weekly caps came from [@thedanielmay](https://github.com/thedanielmay) in PR #53, the pace arrows started in [@marcelosanchez](https://github.com/marcelosanchez)'s fork and the per-bar toggles in [@lucachitayat](https://github.com/lucachitayat)'s, and the project has picked up more ideas from its forks and issue reporters along the way. Bug reports and pull requests are welcome; the test suite (`python -m unittest discover -s tests`) runs in about a minute, and `python tests/test_readme_claims.py` keeps this page honest. What changed in each release is in [CHANGELOG.md](CHANGELOG.md).
 
 If Usage Pulse earns its place under your prompt, star the repo, tell someone who lives in Claude Code, or buy me a coffee.
 

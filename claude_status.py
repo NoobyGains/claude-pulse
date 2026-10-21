@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Claude Code status line — reads usage data from Claude Code's stdin and displays real-time bars."""
 
-VERSION = "3.5.0"
+VERSION = "3.6.0"
 
 import hashlib
 import json
@@ -23,6 +23,21 @@ from urllib.parse import urlparse
 DEFAULT_CACHE_TTL = 60
 BAR_SIZES = {"small": 4, "small-medium": 6, "medium": 8, "medium-large": 10, "large": 12}
 DEFAULT_BAR_SIZE = "large"
+# "auto" is the shrink-to-fit mode: bars start at the large size and narrow
+# until every section fits the width budget. A named size is exactly that
+# wide whatever the window does; a line that does not fit is truncated at
+# --max-width or wrapped with --wrap auto instead.
+BAR_SIZE_AUTO = "auto"
+BAR_SIZE_CHOICES = tuple(BAR_SIZES) + (BAR_SIZE_AUTO,)
+
+
+def _bar_width_setting(config):
+    """``(width, fit)`` for the configured ``bar_size``: the bar width in
+    characters, and whether it may shrink to fit the terminal."""
+    name = config.get("bar_size", DEFAULT_BAR_SIZE)
+    if name == BAR_SIZE_AUTO:
+        return BAR_SIZES["large"], True
+    return BAR_SIZES.get(name, BAR_SIZES[DEFAULT_BAR_SIZE]), False
 DEFAULT_MAX_WIDTH_PCT = 80  # percentage of terminal width to use
 FILL = "\u2501"   # ━ (thin horizontal bar)
 EMPTY = "\u2500"   # ─ (thin line)
@@ -403,7 +418,7 @@ def _detect_terminal_width_uncached():
             pass
     # 4. POSIX controlling terminal — works on Linux + macOS even with piped stdio
     try:
-        tty_fd = os.open("/dev/tty", os.O_RDONLY | os.O_NOCTTY)
+        tty_fd = os.open("/dev/tty", os.O_RDONLY | getattr(os, "O_NOCTTY", 0))
         try:
             return os.get_terminal_size(tty_fd).columns
         finally:
@@ -614,6 +629,11 @@ DEFAULT_SHOW = {
     "context": True,
     "timer": True,
     "weekly_timer": True,
+    # The bars themselves. Off keeps that window's percentage and timer and
+    # drops the bar, for a narrower line (idea from @lucachitayat's fork).
+    "session_bar": True,
+    "weekly_bar": True,
+    "context_bar": True,
     # Info line
     "cost": True,
     "model": True,
@@ -1165,6 +1185,7 @@ def load_config():
     data.setdefault("layout", DEFAULT_LAYOUT)
     data.setdefault("context_format", "percent")
     data.setdefault("effort_format", DEFAULT_EFFORT_FORMAT)
+    data.setdefault("pace_style", DEFAULT_PACE_STYLE)
     data.setdefault("budget_usd", 0)
     limits = data.get("limits", {})
     if not isinstance(limits, dict):
@@ -4038,6 +4059,45 @@ def _calc_pace_pct(resets_at_str, window_seconds):
         return None
 
 
+# Pace display (--pace-style). "arrows" compares the window's usage with the
+# share of its time that has passed: five points either way is noise on a
+# 5-hour window; twenty points is a full hour of budget there (about 1.4 days
+# on the weekly window), the point where it runs dry well before it resets.
+# Idea from @marcelosanchez's fork.
+PACE_STYLES = ("arrows", "percent")
+DEFAULT_PACE_STYLE = "arrows"
+PACE_ON_TRACK_PTS = 5
+PACE_STRONG_PTS = 20
+
+
+def _format_pace(pct, pace, style=DEFAULT_PACE_STYLE):
+    """The pace widget's text with its leading space, or "" without a pace.
+
+    percent → `` (43%)``, the share of the window's time that has passed.
+    arrows  → `` ↑`` when usage is ahead of the clock, `` ↓`` behind it,
+              doubled (``⇈`` red, ``⇊`` green) past PACE_STRONG_PTS, and a
+              dim `` →`` when it is on track.
+    """
+    if pace is None:
+        return ""
+    if style not in PACE_STYLES:
+        style = DEFAULT_PACE_STYLE
+    if style == "percent":
+        return f" ({pace:.0f}%)"
+    diff = pct - pace
+    if diff > PACE_STRONG_PTS:
+        glyph, colour = "\u21c8", BRIGHT_RED      # ⇈ well over pace
+    elif diff > PACE_ON_TRACK_PTS:
+        glyph, colour = "\u2191", YELLOW          # ↑ over pace
+    elif diff < -PACE_STRONG_PTS:
+        glyph, colour = "\u21ca", BRIGHT_GREEN    # ⇊ well under pace
+    elif diff < -PACE_ON_TRACK_PTS:
+        glyph, colour = "\u2193", GREEN           # ↓ under pace
+    else:
+        glyph, colour = "\u2192", DIM             # → on track
+    return f" {colour}{glyph}{RESET}"
+
+
 def format_reset_time(resets_at_str):
     if not resets_at_str:
         return None
@@ -5795,6 +5855,40 @@ def _format_spend_amount(usd, currency, rate, code):
     return f"{symbol}{value:.2f}"
 
 
+def _shrink_bar_width(bw, config, show, usage, stdin_ctx):
+    """Narrow *bw* so every bar section fits the width budget (--bar-size auto).
+
+    _detect_terminal_width tries the COLUMNS Claude Code passes, real TTYs,
+    /dev/tty, then /proc on Linux. When all fail the width is unknown and the
+    bars keep their size: the host clips at its own edge.
+    """
+    try:
+        term_width = _detect_terminal_width()
+        if not term_width:
+            return bw
+        max_width_pct = config.get("max_width", DEFAULT_MAX_WIDTH_PCT)
+        if not (isinstance(max_width_pct, int) and 20 <= max_width_pct <= 100):
+            max_width_pct = DEFAULT_MAX_WIDTH_PCT
+        effective_width = (term_width * max_width_pct) // 100
+        # Count the bar sections that will actually draw a bar (session,
+        # weekly, extra, context) so the width budget is split correctly.
+        num_bars = sum(1 for k in ("session", "weekly")
+                       if show.get(k, True) and show.get(f"{k}_bar", True))
+        extra = usage.get("extra_usage")
+        if extra and extra.get("is_enabled") and not config.get("extra_hidden", False):
+            num_bars += 1
+        if stdin_ctx and show.get("context", True) and show.get("context_bar", True):
+            num_bars += 1
+        # Per-bar overhead: label + space + space + pct + timer ≈ 18 chars
+        # Separators between sections: " | " = 3 chars each
+        # Trailing fixed items (model name, update/plan indicators) ≈ 15 chars
+        overhead = num_bars * 18 + max(num_bars - 1, 0) * 3 + 15
+        max_bar_width = max(2, (effective_width - overhead) // max(num_bars, 1))
+        return min(bw, max_bar_width)
+    except Exception:
+        return bw  # if width detection fails, keep the configured size
+
+
 def build_status_line(usage, plan, config=None, stdin_ctx=None, cache_age=None):
     if config is None:
         config = load_config()
@@ -5824,39 +5918,15 @@ def build_status_line(usage, plan, config=None, stdin_ctx=None, cache_age=None):
     anim_mode = animate_raw if animate_raw in ANIMATE_MODES else "off"
 
     show = config.get("show", DEFAULT_SHOW)
-    bar_size = config.get("bar_size", DEFAULT_BAR_SIZE)
-    bw = BAR_SIZES.get(bar_size, BAR_SIZES[DEFAULT_BAR_SIZE])
+    bw, fit_bars = _bar_width_setting(config)
     bstyle = config.get("bar_style", DEFAULT_BAR_STYLE)
     layout = config.get("layout", DEFAULT_LAYOUT)
 
-    # Terminal width clamping — shrink bars proportionally when the viewport
-    # is narrower than the full rendered line.  _detect_terminal_width tries
-    # real TTY, stderr/stdin fds, /dev/tty, COLUMNS env, then /proc on Linux.
-    # When all fail, fall back to shutil's conservative estimate so bars still
-    # shrink to keep all sections visible rather than being truncated.
-    try:
-        term_width = _detect_terminal_width() or shutil.get_terminal_size((120, 24)).columns
-        max_width_pct = config.get("max_width", DEFAULT_MAX_WIDTH_PCT)
-        if not (isinstance(max_width_pct, int) and 20 <= max_width_pct <= 100):
-            max_width_pct = DEFAULT_MAX_WIDTH_PCT
-        effective_width = (term_width * max_width_pct) // 100
-        # Count ALL bar sections that will be rendered (session, weekly,
-        # extra, context) so the width budget is split correctly.
-        num_bars = sum(1 for k in ("session", "weekly") if show.get(k, True))
-        extra = usage.get("extra_usage")
-        if extra and extra.get("is_enabled") and not config.get("extra_hidden", False):
-            num_bars += 1
-        if stdin_ctx and show.get("context", True):
-            num_bars += 1
-        # Per-bar overhead: label + space + space + pct + timer ≈ 18 chars
-        # Separators between sections: " | " = 3 chars each
-        # Trailing fixed items (model name, update/plan indicators) ≈ 15 chars
-        overhead = num_bars * 18 + max(num_bars - 1, 0) * 3 + 15
-        max_bar_width = max(2, (effective_width - overhead) // max(num_bars, 1))
-        if bw > max_bar_width:
-            bw = max_bar_width
-    except Exception:
-        pass  # if width detection/clamping fails, use configured bar size
+    # Shrink-to-fit, only for --bar-size auto. A named size is never narrowed:
+    # on a window too narrow for the line, the line is truncated (--max-width)
+    # or wrapped (--wrap auto) instead, so "large" always means large.
+    if fit_bars:
+        bw = _shrink_bar_width(bw, config, show, usage, stdin_ctx)
 
     # list of ((priority, widget_id), text) tuples — sorted before joining.
     # The key carries the widget id so the two-line splitter can tell which
@@ -5869,6 +5939,16 @@ def build_status_line(usage, plan, config=None, stdin_ctx=None, cache_age=None):
     def _pri(widget_id):
         return (_wpri.get(widget_id, 999), widget_id)
 
+    pace_style = config.get("pace_style", DEFAULT_PACE_STYLE)
+
+    def _bar_fields(widget_id, bar):
+        """``(bar + space, space + bar)`` for the layouts that put the bar
+        before or after the number; both empty when that bar is switched off
+        (--hide session_bar / weekly_bar / context_bar)."""
+        if not show.get(f"{widget_id}_bar", True):
+            return "", ""
+        return f"{bar} ", f" {bar}"
+
     # Current Session (5-hour block)
     if show.get("session", True):
         five = usage.get("five_hour")
@@ -5880,20 +5960,19 @@ def build_status_line(usage, plan, config=None, stdin_ctx=None, cache_age=None):
                 session_flash = _get_flash_color("session", theme, anim_state)
             bar = make_bar(pct, theme, plain=bar_plain, width=bw, bar_style=bstyle,
                            anim_mode=anim_mode, flash_color=session_flash, config=config)
+            bar_before, bar_after = _bar_fields("session", bar)
             reset = format_reset_time(five.get("resets_at")) if show.get("timer", True) else None
             reset_str = f" {reset}" if reset else ""
             pace_str = ""
             if show.get("pace"):
-                pace = _calc_pace_pct(five.get("resets_at"), 18000)
-                if pace is not None:
-                    pace_str = f" ({pace:.0f}%)"
+                pace_str = _format_pace(pct, _calc_pace_pct(five.get("resets_at"), 18000), pace_style)
             _s = _pri("session")
             if layout == "compact":
-                parts.append((_s, f"S {bar} {pct:.0f}%{pace_str}{reset_str}"))
+                parts.append((_s, f"S {bar_before}{pct:.0f}%{pace_str}{reset_str}"))
             elif layout == "minimal":
-                parts.append((_s, f"{bar} {pct:.0f}%{pace_str}{reset_str}"))
+                parts.append((_s, f"{bar_before}{pct:.0f}%{pace_str}{reset_str}"))
             elif layout == "percent-first":
-                parts.append((_s, f"{pct:.0f}%{pace_str} {bar}{reset_str}"))
+                parts.append((_s, f"{pct:.0f}%{pace_str}{bar_after}{reset_str}"))
             else:  # standard
                 history = _read_history() if show.get("sparkline", True) or show.get("runway", True) or show.get("status_message", True) or show.get("burn_rate", True) else []
                 label = "Session"
@@ -5922,18 +6001,19 @@ def build_status_line(usage, plan, config=None, stdin_ctx=None, cache_age=None):
                     burn_str = f" {br}" if br else ""
                 if reset_str and (runway_str or spark_str or burn_str):
                     reset_str = f" \u00b7{reset}"
-                parts.append((_s, f"{label} {bar} {pct:.0f}%{burn_str}{pace_str}{spark_str}{runway_str}{reset_str}"))
+                parts.append((_s, f"{label} {bar_before}{pct:.0f}%{burn_str}{pace_str}{spark_str}{runway_str}{reset_str}"))
         else:
             _s = _pri("session")
             bar = make_bar(0, theme, plain=bar_plain, width=bw, bar_style=bstyle)
+            bar_before, bar_after = _bar_fields("session", bar)
             if layout == "compact":
-                parts.append((_s, f"S {bar} 0%"))
+                parts.append((_s, f"S {bar_before}0%"))
             elif layout == "minimal":
-                parts.append((_s, f"{bar} 0%"))
+                parts.append((_s, f"{bar_before}0%"))
             elif layout == "percent-first":
-                parts.append((_s, f"0% {bar}"))
+                parts.append((_s, f"0%{bar_after}"))
             else:
-                parts.append((_s, f"Session {bar} 0%"))
+                parts.append((_s, f"Session {bar_before}0%"))
 
     # Weekly Limit (7-day all models)
     if show.get("weekly", True):
@@ -5962,21 +6042,20 @@ def build_status_line(usage, plan, config=None, stdin_ctx=None, cache_age=None):
                     weekly_reset_str = f" {wt_prefix}{wr}"
             pace_str = ""
             if show.get("pace"):
-                pace = _calc_pace_pct(seven.get("resets_at"), 604800)
-                if pace is not None:
-                    pace_str = f" ({pace:.0f}%)"
+                pace_str = _format_pace(pct, _calc_pace_pct(seven.get("resets_at"), 604800), pace_style)
+            bar_before, bar_after = _bar_fields("weekly", bar)
             _w = _pri("weekly")
             if celebrating:
                 celeb_label = _render_celebration_label(config)
-                parts.append((_w, f"{celeb_label} {bar} {pct:.0f}%{pace_str}{weekly_reset_str}"))
+                parts.append((_w, f"{celeb_label} {bar_before}{pct:.0f}%{pace_str}{weekly_reset_str}"))
             elif layout == "compact":
-                parts.append((_w, f"W {bar} {pct:.0f}%{pace_str}{weekly_reset_str}"))
+                parts.append((_w, f"W {bar_before}{pct:.0f}%{pace_str}{weekly_reset_str}"))
             elif layout == "minimal":
-                parts.append((_w, f"{bar} {pct:.0f}%{pace_str}{weekly_reset_str}"))
+                parts.append((_w, f"{bar_before}{pct:.0f}%{pace_str}{weekly_reset_str}"))
             elif layout == "percent-first":
-                parts.append((_w, f"{pct:.0f}%{pace_str} {bar}{weekly_reset_str}"))
+                parts.append((_w, f"{pct:.0f}%{pace_str}{bar_after}{weekly_reset_str}"))
             else:
-                parts.append((_w, f"Weekly {bar} {pct:.0f}%{pace_str}{weekly_reset_str}"))
+                parts.append((_w, f"Weekly {bar_before}{pct:.0f}%{pace_str}{weekly_reset_str}"))
 
     # Per-model weekly caps (Opus / Sonnet / Fable).
     #
@@ -5999,9 +6078,7 @@ def build_status_line(usage, plan, config=None, stdin_ctx=None, cache_age=None):
         bar = make_bar(pct, theme, plain=bar_plain, width=bw, bar_style=bstyle)
         pace_str = ""
         if show.get("pace"):
-            pace = _calc_pace_pct(_entry.get("resets_at"), 604800)
-            if pace is not None:
-                pace_str = f" ({pace:.0f}%)"
+            pace_str = _format_pace(pct, _calc_pace_pct(_entry.get("resets_at"), 604800), pace_style)
         _p = _pri(_widget_id)
         if layout == "compact":
             parts.append((_p, f"{_short} {bar} {pct:.0f}%{pace_str}"))
@@ -6077,18 +6154,19 @@ def build_status_line(usage, plan, config=None, stdin_ctx=None, cache_age=None):
                 if ctx_warning_suffix is None:
                     ctx_warning_suffix = ""
             _cx = _pri("context")
+            cbar_before, cbar_after = _bar_fields("context", ctx_bar)
             if layout == "compact":
                 prefix = f"\u26a0 C" if ctx_warning_label else "C"
-                parts.append((_cx, f"{prefix} {ctx_bar} {pct_label}{ctx_warning_suffix}"))
+                parts.append((_cx, f"{prefix} {cbar_before}{pct_label}{ctx_warning_suffix}"))
             elif layout == "minimal":
-                parts.append((_cx, f"{ctx_bar} {pct_label}{ctx_warning_suffix}"))
+                parts.append((_cx, f"{cbar_before}{pct_label}{ctx_warning_suffix}"))
             elif layout == "percent-first":
-                parts.append((_cx, f"{pct_label}{ctx_warning_suffix} {ctx_bar}"))
+                parts.append((_cx, f"{pct_label}{ctx_warning_suffix}{cbar_after}"))
             else:
                 if ctx_warning_label:
-                    parts.append((_cx, f"{ctx_warning_label} {ctx_bar} {pct_label}{ctx_warning_suffix}"))
+                    parts.append((_cx, f"{ctx_warning_label} {cbar_before}{pct_label}{ctx_warning_suffix}"))
                 else:
-                    parts.append((_cx, f"Context {ctx_bar} {pct_label}"))
+                    parts.append((_cx, f"Context {cbar_before}{pct_label}"))
 
     # Cost ticker
     if stdin_ctx and show.get("cost", True):
@@ -6542,9 +6620,13 @@ def _truncate_line(line, config):
 
     Applied as the very last step before output so the line never spills
     into Claude Code's side notification area or wraps to the next line.
+    When the width is unknown the line is left alone: Claude Code always
+    passes COLUMNS, and any other host clips at its own edge.
     """
     try:
-        term_width = _detect_terminal_width() or shutil.get_terminal_size((120, 24)).columns
+        term_width = _detect_terminal_width()
+        if not term_width:
+            return line
         max_width_pct = config.get("max_width", DEFAULT_MAX_WIDTH_PCT)
         if not (isinstance(max_width_pct, int) and 20 <= max_width_pct <= 100):
             max_width_pct = DEFAULT_MAX_WIDTH_PCT
@@ -6583,10 +6665,12 @@ def _wrap_line(line, config):
     Returns one or two lines joined by newline.  If the line fits, it is
     returned unchanged (no trailing newline added).  When wrapping is needed,
     segments are distributed across two lines so that each stays within the
-    effective terminal width.
+    effective terminal width. An unknown width leaves the line alone.
     """
     try:
-        term_width = _detect_terminal_width() or shutil.get_terminal_size((120, 24)).columns
+        term_width = _detect_terminal_width()
+        if not term_width:
+            return line
         max_width_pct = config.get("max_width", DEFAULT_MAX_WIDTH_PCT)
         if not (isinstance(max_width_pct, int) and 20 <= max_width_pct <= 100):
             max_width_pct = DEFAULT_MAX_WIDTH_PCT
@@ -7225,7 +7309,7 @@ def _render_budget(config, stdin_ctx):
 
     pct = min(100.0, (spent / budget) * 100.0) if budget else 0.0
     theme = get_theme_colours(config.get("theme", "default"))
-    bw = BAR_SIZES.get(config.get("bar_size", DEFAULT_BAR_SIZE), BAR_SIZES[DEFAULT_BAR_SIZE])
+    bw = _bar_width_setting(config)[0]
     bar = make_bar(pct, theme, width=max(2, bw // 2),
                    bar_style=config.get("bar_style", DEFAULT_BAR_STYLE))
     currency = _sanitize(config.get("currency", "$"))[:5]
@@ -7283,11 +7367,16 @@ def _provider_session_label(config):
 
 
 def _provider_bar_width(config, label_width):
-    """Row bar width: the configured size, never wider than the main line's
-    clamped bars, shrunk further before the row would need truncating."""
-    bw = BAR_SIZES.get(config.get("bar_size", DEFAULT_BAR_SIZE), BAR_SIZES[DEFAULT_BAR_SIZE])
+    """Row bar width: the configured size. With --bar-size auto it is never
+    wider than the main line's shrunk bars, and shrinks further before the
+    row would need truncating."""
+    bw, fit = _bar_width_setting(config)
+    if not fit:
+        return bw
     try:
-        term_width = _detect_terminal_width() or shutil.get_terminal_size((120, 24)).columns
+        term_width = _detect_terminal_width()
+        if not term_width:
+            return bw
         max_width_pct = config.get("max_width", DEFAULT_MAX_WIDTH_PCT)
         if not (isinstance(max_width_pct, int) and 20 <= max_width_pct <= 100):
             max_width_pct = DEFAULT_MAX_WIDTH_PCT
@@ -7556,7 +7645,7 @@ def _render_subagent_row(task, config, columns=None):
     if tokens and window > 0:
         pct = max(0.0, min(100.0, (tokens / window) * 100.0))
         theme = get_theme_colours(config.get("theme", "default"))
-        bw = BAR_SIZES.get(config.get("bar_size", DEFAULT_BAR_SIZE), BAR_SIZES[DEFAULT_BAR_SIZE])
+        bw = _bar_width_setting(config)[0]
         bar = make_bar(pct, theme, width=max(2, bw // 2),
                        bar_style=config.get("bar_style", DEFAULT_BAR_STYLE))
         parts.append(f"{bar} {pct:.0f}%")
@@ -8648,7 +8737,7 @@ def _setup_preview_line(config):
         "five_hour": {"utilization": 27, "resets_at": (now + timedelta(hours=2, minutes=53)).isoformat()},
         "seven_day": {"utilization": 73, "resets_at": (now + timedelta(days=3, hours=4)).isoformat()},
     }
-    show = {k: False for k in DEFAULT_SHOW}
+    show = {k: k.endswith("_bar") for k in DEFAULT_SHOW}   # the bars themselves stay on
     for k in ("session", "weekly", "timer", "weekly_timer", "context", "model", "effort", "lines"):
         show[k] = True
     demo = dict(config)
@@ -8923,7 +9012,8 @@ def _setup_interactive(env):
 
     def bar_size(step):
         return _choice(step, "Bar size", "bar_size",
-                       [(n, n, f"{w} characters") for n, w in BAR_SIZES.items()])
+                       [(n, n, f"{w} characters") for n, w in BAR_SIZES.items()]
+                       + [(BAR_SIZE_AUTO, BAR_SIZE_AUTO, "large, shrinking to fit a narrow window")])
 
     def bar_style(step):
         return _choice(step, "Bar style", "bar_style",
@@ -9236,8 +9326,11 @@ def cmd_print_config():
     utf8_print(f"  Cache TTL: {config.get('cache_ttl_seconds', DEFAULT_CACHE_TTL)}s")
     utf8_print(f"  Currency:  {_sanitize(config.get('currency', chr(163)))}")
     bs = config.get("bar_size", DEFAULT_BAR_SIZE)
-    bw_display = BAR_SIZES.get(bs, BAR_SIZES[DEFAULT_BAR_SIZE])
-    utf8_print(f"  Bar size:  {bs} ({bw_display} chars)")
+    bw_display, bw_fit = _bar_width_setting(config)
+    if bw_fit:
+        utf8_print(f"  Bar size:  {bs} (up to {bw_display} chars, shrinks to fit the window)")
+    else:
+        utf8_print(f"  Bar size:  {bs} ({bw_display} chars)")
     mw = config.get("max_width", DEFAULT_MAX_WIDTH_PCT)
     utf8_print(f"  Max width: {mw}% of terminal")
     bst = config.get("bar_style", DEFAULT_BAR_STYLE)
@@ -9253,6 +9346,8 @@ def cmd_print_config():
     utf8_print(f"  Context:   {cf}")
     ed = config.get("extra_display", "auto")
     utf8_print(f"  Extra display: {ed}")
+    ps = config.get("pace_style", DEFAULT_PACE_STYLE)
+    utf8_print(f"  Pace style: {ps if ps in PACE_STYLES else DEFAULT_PACE_STYLE}")
     show = config.get("show", DEFAULT_SHOW)
     wt_fmt = _sanitize(str(config.get("weekly_timer_format", DEFAULT_WEEKLY_TIMER_FORMAT)))
     if wt_fmt not in WEEKLY_TIMER_FORMATS:
@@ -9831,7 +9926,7 @@ CLI_FLAGS = [
     ("--text-color", "<name|auto>", "Look", "Colour for labels and percentages"),
     ("--animate", "<off|rainbow|pulse|glow|shift>", "Look", "Bar animation"),
     ("--animation-speed", "<slow|normal|fast>", "Look", "Animation speed"),
-    ("--bar-size", "<small|small-medium|medium|medium-large|large>", "Look", "Bar width"),
+    ("--bar-size", "<small|small-medium|medium|medium-large|large|auto>", "Look", "Bar width (auto shrinks to fit)"),
     ("--bar-style", "<name>", "Look", "Bar characters (classic, block, dot, braille, ...)"),
     ("--layout", "<standard|compact|minimal|percent-first>", "Look", "How labels, bars and numbers are arranged"),
     ("--max-width", "<20-100>", "Look", "Percent of the terminal width to use"),
@@ -9848,6 +9943,7 @@ CLI_FLAGS = [
     ("--weekly-timer-format", "<auto|countdown|date|full>", "Widgets", "Weekly reset timer style"),
     ("--weekly-timer-prefix", "<text>", "Widgets", "Text before the weekly reset time (e.g. R:)"),
     ("--streak-style", "<fire|text>", "Widgets", "Usage streak style"),
+    ("--pace-style", "<arrows|percent>", "Widgets", "Pace widget: arrows against the clock, or the elapsed share"),
     ("--budget", "<amount|off>", "Widgets", "Spend budget to match --max-budget-usd"),
     ("--limits", "[key=N,...]", "Widgets", "Subagent and web-search caps used as denominators"),
     ("--focus", "<start [min]|stop|status>", "Widgets", "Focus (pomodoro) timer"),
@@ -10105,9 +10201,9 @@ def main():
         idx = args.index("--bar-size")
         if idx + 1 < len(args):
             val = args[idx + 1].lower()
-            if val not in BAR_SIZES:
+            if val not in BAR_SIZE_CHOICES:
                 utf8_print(f"Unknown size: {_sanitize(val)}")
-                utf8_print(f"Available: {', '.join(BAR_SIZES.keys())}")
+                utf8_print(f"Available: {', '.join(BAR_SIZE_CHOICES)}")
                 return
             config = load_config()
             config["bar_size"] = val
@@ -10116,14 +10212,16 @@ def main():
                 os.remove(get_cache_path())
             except OSError:
                 pass
-            bw = BAR_SIZES[val]
+            bw, fit = _bar_width_setting(config)
             demo_bar = f"{GREEN}{FILL * bw}{RESET}"
-            utf8_print(f"Bar size: {BOLD}{val}{RESET} ({bw} chars)  {demo_bar}")
+            note = "large, shrinking to fit a narrow window" if fit else f"{bw} chars"
+            utf8_print(f"Bar size: {BOLD}{val}{RESET} ({note})  {demo_bar}")
         else:
-            utf8_print(f"Usage: --bar-size <{'|'.join(BAR_SIZES.keys())}>")
+            utf8_print(f"Usage: --bar-size <{'|'.join(BAR_SIZE_CHOICES)}>")
             for name, width in BAR_SIZES.items():
                 demo = f"{GREEN}{FILL * width}{RESET}"
                 utf8_print(f"  {name:<14} {demo}  ({width} chars)")
+            utf8_print(f"  {BAR_SIZE_AUTO:<14} large, shrinking to fit a narrow window")
         return
 
     if "--max-width" in args:
@@ -10562,6 +10660,31 @@ def main():
             config = load_config()
             current = config.get("effort_format", DEFAULT_EFFORT_FORMAT)
             utf8_print(f"Effort format: {BOLD}{current}{RESET}  (renders as: {_format_effort('medium', current)})")
+        return
+
+    if "--pace-style" in args:
+        idx = args.index("--pace-style")
+        samples = {"arrows": "\u2191 over pace, \u2193 under, \u21c8/\u21ca well off the pace, \u2192 on track",
+                   "percent": "(43%), the share of the window's time that has passed"}
+        if idx + 1 < len(args):
+            val = args[idx + 1].lower()
+            if val in PACE_STYLES:
+                config = load_config()
+                config["pace_style"] = val
+                save_config(config)
+                utf8_print(f"Pace style: {BOLD}{val}{RESET}  ({samples[val]})")
+                if not config.get("show", {}).get("pace"):
+                    utf8_print(f"  The pace widget is off; {BOLD}--show pace{RESET} turns it on")
+            else:
+                utf8_print(f"Usage: --pace-style <{'|'.join(PACE_STYLES)}>")
+                for style in PACE_STYLES:
+                    utf8_print(f"  {style:<10} {samples[style]}")
+        else:
+            config = load_config()
+            current = config.get("pace_style", DEFAULT_PACE_STYLE)
+            if current not in PACE_STYLES:
+                current = DEFAULT_PACE_STYLE
+            utf8_print(f"Pace style: {BOLD}{current}{RESET}  ({samples[current]})")
         return
 
     if "--detect-providers" in args:

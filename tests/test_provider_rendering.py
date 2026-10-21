@@ -131,11 +131,13 @@ class RenderingTest(unittest.TestCase):
         for row in out.split("\n"):
             self.assertLessEqual(cs._visible_len(row), budget)
 
-    def test_narrow_terminal_shrinks_row_bars(self):
+    def test_narrow_terminal_shrinks_row_bars_only_in_auto(self):
         wide = cs._provider_bar_width(self.config, 15)
         with mock.patch.object(cs, "_detect_terminal_width", lambda: 70):
-            narrow = cs._provider_bar_width(self.config, 15)
+            fixed = cs._provider_bar_width(self.config, 15)
+            narrow = cs._provider_bar_width(dict(self.config, bar_size="auto"), 15)
         self.assertEqual(wide, 12)
+        self.assertEqual(fixed, 12, "a named size is never shrunk (3.6.0)")
         self.assertLess(narrow, wide)
         self.assertGreaterEqual(narrow, 2)
 

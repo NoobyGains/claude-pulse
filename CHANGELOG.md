@@ -12,8 +12,19 @@ Ideas, not promises:
 - Reading `~/.claude/tasks/<team>/` so the team widget can show task subjects.
 - Live Codex limits through its app-server instead of the last session file.
 - A `skills/` layout for the plugin.
-- Pace as coloured arrows instead of a percentage, and a warning colour for the `max` effort level, as seen in community forks.
-- Per-section bar toggles: show a window's percentage without its bar.
+
+## [3.6.0] - 2026-10-21
+
+### Added
+
+- **Pace arrows.** With the `pace` widget on, each window shows an arrow after its percentage instead of a bare number: `↑` when usage is ahead of the window's clock, `↓` when it is behind, doubled (`⇈` in red, `⇊` in green) once the gap passes twenty points, and a dim `→` when it is on track. `--pace-style percent` brings back the elapsed-time percentage. The idea started in [@marcelosanchez](https://github.com/marcelosanchez)'s fork.
+- **Bars you can switch off one at a time.** `--hide session_bar`, `weekly_bar` or `context_bar` keeps that window's percentage and timer and drops the bar itself, for a narrower line. The idea started in [@lucachitayat](https://github.com/lucachitayat)'s fork.
+- `--bar-size auto`, the shrink-to-fit behaviour described below, for anyone who wants bars that narrow with the window.
+
+### Fixed
+
+- **Bars no longer shrink on their own.** The status line narrowed its bars whenever the whole line would not fit the terminal, down to two characters, and 3.4.0's use of the `COLUMNS` value Claude Code passes switched that on for Windows: in a window about a hundred columns wide, `large` bars collapsed to `━─`. A named bar size is now exactly that wide. A line that does not fit is truncated at `--max-width` or wrapped with `--wrap auto`, as documented; the old behaviour is `--bar-size auto`.
+- Terminal-width detection no longer raises on Windows when `COLUMNS` is unset (`os.O_NOCTTY` does not exist there), and when no width can be detected on any platform the line is now left alone instead of being cut at a guessed 120 columns: Claude Code always passes `COLUMNS`, and any other host clips at its own edge.
 
 ## [3.5.0] - 2026-10-21
 

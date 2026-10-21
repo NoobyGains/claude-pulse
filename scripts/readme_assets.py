@@ -214,7 +214,9 @@ class _Out:
 
 
 class Sandbox:
-    def __init__(self, columns=118):
+    # Wide enough that nothing is truncated: each frame clips the line at its
+    # own edge, the way a terminal does.
+    def __init__(self, columns=240):
         self.td = tempfile.TemporaryDirectory(prefix="pulse-readme-")
         self.root = Path(self.td.name)
         self.home = self.root / "home"
