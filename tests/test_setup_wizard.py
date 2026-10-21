@@ -465,6 +465,17 @@ class WizardChoicesTest(_WithProviders):
         self.assertEqual(saved["clock_format"], "24h")
         self.assertEqual(saved["effort_format"], "short")
 
+    def test_first_run_defaults_to_the_detected_currency(self):
+        with mock.patch.object(cs, "_detect_default_currency", lambda: "€"):
+            self.assertEqual(self.run_wizard(ENTER_THROUGH), 0)
+        self.assertEqual(self.saved_config()["currency"], "€")
+
+    def test_saved_currency_is_kept_on_rerun(self):
+        self.write_config({"currency": "$"})
+        with mock.patch.object(cs, "_detect_default_currency", lambda: "€"):
+            self.assertEqual(self.run_wizard(ENTER_THROUGH), 0)
+        self.assertEqual(self.saved_config()["currency"], "$")
+
     def test_live_preview_is_drawn_on_look_screens(self):
         self.run_wizard(ENTER_THROUGH)
         self.assertIn("Opus 5.5", self.out.text())

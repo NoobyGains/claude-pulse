@@ -7182,7 +7182,10 @@ def _setup_interactive(env):
         names = {"$": "US dollar (costs are calculated in USD)",
                  "£": "British pound (converted daily)", "€": "Euro (converted daily)"}
         syms = []
-        for s in (config.get("currency") or "$", detected, "$", "£", "€"):
+        # First run: the repo template's "$" is not a choice the user made, so
+        # lead with the detected currency instead.
+        first = config.get("currency") if get_config_path().exists() else detected
+        for s in (first or "$", detected, "$", "£", "€"):
             if s and s not in syms:
                 syms.append(s)
         options = [(s, s, names.get(s, "converted daily") + ("  · detected" if s == detected else ""))
