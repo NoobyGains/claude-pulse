@@ -667,6 +667,8 @@ DEFAULT_SHOW = {
     "spend_limit": True,
     "repo": False,
     "session_name": False,
+    # providers (3.4.0)
+    "providers": True,
 }
 
 # Presets — one-command config bundles
@@ -1168,6 +1170,10 @@ def load_config():
         limits.setdefault(_k, _v)
     data["limits"] = limits
     data.setdefault("extra_display", "auto")
+    # providers (3.4.0): rows for other subscriptions
+    data["providers"] = _normalize_providers(data.get("providers"))
+    data.setdefault("providers_label_main", True)
+    data.setdefault("providers_refresh_seconds", _PROVIDER_REFRESH_DEFAULT)
     if "currency" not in data:
         data["currency"] = _detect_default_currency()
     show = data.get("show", {})
@@ -1667,8 +1673,35 @@ def get_state_dir():
     return state_dir
 
 
+def get_account_state_dir():
+    """Per-account state dir for files that describe one Claude account.
+
+    The default account (``~/.claude``) keeps the shared dir, so nothing moves
+    for anyone with one account. Another ``CLAUDE_CONFIG_DIR`` gets
+    ``<state>/accounts/<name>-<sha1[:8]>`` so two accounts' windows stop
+    overwriting each other's usage cache, stdin context, history and sessions.
+    """
+    base = get_state_dir()
+    try:
+        config_dir = _claude_config_dir()
+        key = os.path.normcase(str(Path(config_dir).expanduser().resolve()))
+        default = os.path.normcase(str((Path.home() / ".claude").resolve()))
+    except (OSError, RuntimeError, ValueError):
+        return base
+    if key == default:
+        return base
+    name = _safe_path_id(Path(key).name, 32) or "account"
+    digest = hashlib.sha1(key.encode("utf-8")).hexdigest()[:8]
+    account_dir = base / "accounts" / f"{name}-{digest}"
+    try:
+        _secure_mkdir(account_dir)
+    except OSError:
+        return base
+    return account_dir
+
+
 def get_cache_path():
-    return get_state_dir() / "cache.json"
+    return get_account_state_dir() / "cache.json"
 
 
 
@@ -2251,9 +2284,9 @@ def cmd_update():
                     pass
             # Clear all caches so the update indicator disappears immediately
             state_dir = get_state_dir()
-            for cache_name in ("update_check.json", "cache.json"):
+            for cache_file in (state_dir / "update_check.json", get_cache_path()):
                 try:
-                    (state_dir / cache_name).unlink()
+                    cache_file.unlink()
                 except OSError:
                     pass
             utf8_print(f"\n  Restart Claude Code to use v{new_version or 'latest'}.")
@@ -2717,6 +2750,974 @@ def _parse_minimax_quota(mmx_json):
 
 
 # ---------------------------------------------------------------------------
+# Providers: other subscriptions as extra status rows (3.4.0)
+# ---------------------------------------------------------------------------
+# One row per *other* subscription: a second Claude account (another
+# CLAUDE_CONFIG_DIR), Codex CLI, Gemini through Antigravity CLI, MiniMax, or
+# any JSON file a script keeps up to date. Every source is a local file except
+# two: a non-active Claude account costs one /api/oauth/usage call at most
+# every providers_refresh_seconds (and none while that account has a window of
+# its own open, because each window seeds its own account's entry from stdin),
+# and MiniMax runs `mmx quota show`, which is why it is never enabled by
+# default.
+#
+# Another account's OAuth token is only ever read, never refreshed: a refresh
+# rotates the refresh token and would log that account's running session out.
+# Nothing in this block can raise into the status line; every source degrades
+# to "no data".
+
+PROVIDER_TYPES = ("claude", "codex", "gemini", "minimax", "file")
+PROVIDER_DEFAULT_LABELS = {
+    "claude": "Claude", "codex": "Codex", "gemini": "Gemini",
+    "minimax": "MiniMax", "file": "Custom",
+}
+_PROVIDER_ID_RE = re.compile(r"^[a-z0-9][a-z0-9:_-]{0,31}$")
+_PROVIDER_LABEL_MAX = 24
+_MAX_PROVIDERS = 8
+_MAX_PROVIDER_ROWS = 6
+_PROVIDER_REFRESH_DEFAULT = 300   # config providers_refresh_seconds
+_PROVIDER_REFRESH_MIN = 60
+# Minimum gap between two refresh *attempts* for one account, whatever their
+# outcome. Claude Code cancels an in-flight status-line run when a newer
+# repaint arrives; the attempt is stamped before the request so a cancelled
+# run cannot retry on the very next repaint.
+_PROVIDER_RETRY = 60
+_PROVIDER_TIMEOUT = 3             # seconds; the repaint waits on this
+_PROVIDER_AUTH_BACKOFF = 900      # 401/403: the other window will refresh it
+_PROVIDER_ERROR_BACKOFF = 300     # network/other errors
+_PROVIDER_STALE_AFTER = 1800      # polled rows older than this render "~29%"
+_PROVIDER_FILE_MAX = 1_000_000    # bytes; agy / custom JSON files
+_CODEX_TAIL_BYTES = 2_000_000     # rollouts reach ~100 MB; read only the tail
+_CODEX_DAY_DIRS = 2
+_CODEX_MAX_FILES = 3
+_MINIMAX_PROVIDER_TTL = 120
+_GEMINI_BUCKETS = {
+    "gemini": ("gemini-5h", "gemini-weekly"),
+    "3p": ("3p-5h", "3p-weekly"),   # Claude/GPT-OSS models inside Antigravity
+}
+_GEMINI_STATUS_FILE = "statusline_last_live.json"
+_ACCOUNTS_FILE_NAME = ".claude-accounts.json"
+
+
+def _normalize_provider_id(value):
+    """Return a lower-cased provider id, or None if it is not a valid one."""
+    if not isinstance(value, str):
+        return None
+    pid = value.strip().lower()
+    return pid if _PROVIDER_ID_RE.match(pid) else None
+
+
+def _clean_provider_label(value):
+    """Sanitise a user- or file-supplied label: no escapes, one line, <=24 chars."""
+    if not isinstance(value, str):
+        return None
+    text = " ".join(_sanitize(value).split())[:_PROVIDER_LABEL_MAX].strip()
+    return text or None
+
+
+def _coerce_bool(value, default=True):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        low = value.strip().lower()
+        if low in ("1", "true", "yes", "on"):
+            return True
+        if low in ("0", "false", "no", "off", ""):
+            return False
+    return default
+
+
+def _normalize_providers(raw):
+    """Validate ``config["providers"]``. Never raises; invalid items are dropped.
+
+    Each kept entry is a fresh dict with only known keys::
+
+        {"id": "claude:b", "type": "claude", "enabled": True,
+         "label": "Claude (Sunny)",        # optional, sanitised, <=24 chars
+         "dir": "~/.claude-b"}              # claude: "dir"; others: "path"
+        {"id": "gemini", "type": "gemini", "enabled": True, "bucket": "3p"}
+
+    Ids are lower-cased and must match ``[a-z0-9][a-z0-9:_-]{0,31}``; the first
+    of two duplicate ids wins; at most eight entries are kept. A ``file`` entry
+    without a ``path`` is dropped. Paths are stored as written (``~`` intact)
+    and expanded only at use.
+    """
+    if not isinstance(raw, list):
+        return []
+    out, seen = [], set()
+    for item in raw:
+        if len(out) >= _MAX_PROVIDERS:
+            break
+        try:
+            if not isinstance(item, dict):
+                continue
+            ptype = item.get("type")
+            if ptype not in PROVIDER_TYPES:
+                continue
+            if "id" in item:
+                pid = _normalize_provider_id(item.get("id"))
+            else:
+                pid = ptype if ptype in ("codex", "gemini", "minimax") else None
+            if not pid or pid in seen:
+                continue
+            entry = {"id": pid, "type": ptype,
+                     "enabled": _coerce_bool(item.get("enabled", True))}
+            label = _clean_provider_label(item.get("label"))
+            if label:
+                entry["label"] = label
+            key = "dir" if ptype == "claude" else "path"
+            loc = item.get(key)
+            if loc is None and ptype == "claude":
+                loc = item.get("path")
+            if isinstance(loc, str) and loc.strip() and len(loc) <= 1024 \
+                    and "\x00" not in loc:
+                entry[key] = loc.strip()
+            elif ptype == "file":
+                continue
+            if ptype == "gemini" and item.get("bucket") == "3p":
+                entry["bucket"] = "3p"
+            seen.add(pid)
+            out.append(entry)
+        except Exception:
+            continue
+    return out
+
+
+_PATH_KEY_MEMO = {}
+
+
+def _path_key(path):
+    """Comparable form of a path: resolved, case-folded where the OS is.
+
+    Memoised per process: one repaint compares the same handful of dirs
+    several times, and ``resolve()`` is a syscall per call on Windows.
+    """
+    raw = os.path.expanduser(str(path))
+    key = _PATH_KEY_MEMO.get(raw)
+    if key is None:
+        try:
+            resolved = Path(raw).resolve()
+        except (OSError, RuntimeError, ValueError):
+            resolved = Path(raw)
+        key = os.path.normcase(str(resolved))
+        if len(_PATH_KEY_MEMO) > 256:
+            _PATH_KEY_MEMO.clear()
+        _PATH_KEY_MEMO[raw] = key
+    return key
+
+
+def _tilde(path):
+    """Display form of a path: ``~/...`` with forward slashes when under home."""
+    try:
+        p = Path(os.path.expanduser(str(path)))
+        rel = p.relative_to(Path.home())
+        return "~/" + rel.as_posix() if str(rel) != "." else "~"
+    except (ValueError, OSError, RuntimeError):
+        return str(path)
+
+
+def _provider_suffix(pid):
+    return pid.split(":", 1)[1] if ":" in pid else ""
+
+
+def _codex_home(entry=None):
+    loc = (entry or {}).get("path")
+    if loc:
+        return Path(os.path.expanduser(loc))
+    env = os.environ.get("CODEX_HOME", "").strip()
+    return Path(os.path.expanduser(env)) if env else Path.home() / ".codex"
+
+
+def _provider_location(entry):
+    """Where a provider's data lives (a dir or file Path), or None."""
+    ptype = entry.get("type")
+    loc = entry.get("dir") or entry.get("path")
+    if ptype == "codex":
+        return _codex_home(entry)
+    if loc:
+        return Path(os.path.expanduser(loc))
+    suffix = _provider_suffix(entry.get("id", ""))
+    if ptype == "claude":
+        if not suffix or suffix == "default":
+            return Path.home() / ".claude"
+        return Path.home() / f".claude-{suffix}"
+    if ptype == "gemini":
+        name = "antigravity-cli" + (f"-{suffix}" if suffix else "")
+        return Path.home() / ".gemini" / name
+    return None
+
+
+def _claude_provider_id_for_dir(path):
+    """``~/.claude`` -> ``claude:default``; ``~/.claude-b`` -> ``claude:b``."""
+    if _path_key(path) == _path_key(Path.home() / ".claude"):
+        return "claude:default"
+    name = Path(os.path.expanduser(str(path))).name
+    suffix = name[len(".claude-"):] if name.lower().startswith(".claude-") else name.lstrip(".")
+    suffix = re.sub(r"[^a-z0-9_-]", "", suffix.lower())[:24].strip("-_") or "other"
+    return "claude:" + suffix
+
+
+_ACCOUNT_LABELS_MEMO = {}
+
+
+def _read_accounts_labels():
+    """Map path keys to labels from ``~/.claude-accounts.json`` (if present).
+
+    That file (written by account-switcher scripts) looks like
+    ``{"accounts": {"a": {"dir": "~/.claude", "label": "Work", ...}}}``. Only
+    ``dir`` and ``label`` are read; any e-mail or name field is ignored.
+    """
+    path = Path.home() / _ACCOUNTS_FILE_NAME
+    try:
+        st = path.stat()
+        memo_key = (str(path), st.st_mtime, st.st_size)
+    except OSError:
+        return {}
+    if memo_key in _ACCOUNT_LABELS_MEMO:
+        return _ACCOUNT_LABELS_MEMO[memo_key]
+    labels = {}
+    try:
+        if st.st_size <= 256_000:
+            with open(path, "r", encoding="utf-8-sig") as f:
+                data = json.load(f)
+            accounts = data.get("accounts") if isinstance(data, dict) else None
+            if isinstance(accounts, dict):
+                for acct in accounts.values():
+                    if not isinstance(acct, dict) or not isinstance(acct.get("dir"), str):
+                        continue
+                    label = acct.get("label")
+                    labels[_path_key(acct["dir"])] = (
+                        _clean_provider_label(label) if isinstance(label, str) else "")
+    except (OSError, ValueError, TypeError, AttributeError):
+        labels = {}
+    _ACCOUNT_LABELS_MEMO.clear()
+    _ACCOUNT_LABELS_MEMO[memo_key] = labels
+    return labels
+
+
+def _default_claude_label(path):
+    """``Claude`` / ``Claude (Work)`` / ``Claude (b)`` for a config dir."""
+    hint = _read_accounts_labels().get(_path_key(path))
+    if hint is not None:
+        low = (hint or "").lower()
+        if not hint or low == "claude" or low.startswith("account "):
+            return "Claude"
+        return f"Claude ({hint[:_PROVIDER_LABEL_MAX - 9]})"
+    pid = _claude_provider_id_for_dir(path)
+    suffix = _provider_suffix(pid)
+    if suffix == "default":
+        return "Claude"
+    return f"Claude ({suffix[:_PROVIDER_LABEL_MAX - 9]})"
+
+
+def _provider_default_label(entry):
+    ptype = entry.get("type")
+    suffix = _provider_suffix(entry.get("id", ""))
+    if ptype == "claude":
+        loc = _provider_location(entry)
+        return _default_claude_label(loc) if loc else "Claude"
+    if ptype == "gemini":
+        return f"Gemini ({suffix[:15]})" if suffix else "Gemini"
+    if ptype == "file":
+        return _clean_provider_label(suffix) or PROVIDER_DEFAULT_LABELS["file"]
+    return PROVIDER_DEFAULT_LABELS.get(ptype, "Provider")
+
+
+def _active_provider_id(config, entries=None):
+    """Id of the ``claude`` entry that is this window's own account, or None."""
+    if entries is None:
+        entries = _normalize_providers((config or {}).get("providers"))
+    try:
+        active = _path_key(_claude_config_dir())
+    except Exception:
+        return None
+    for entry in entries:
+        if entry.get("type") != "claude":
+            continue
+        loc = _provider_location(entry)
+        if loc is not None and _path_key(loc) == active:
+            return entry["id"]
+    return None
+
+
+def _provider_refresh_seconds(config):
+    try:
+        value = int((config or {}).get("providers_refresh_seconds", _PROVIDER_REFRESH_DEFAULT))
+    except (TypeError, ValueError):
+        value = _PROVIDER_REFRESH_DEFAULT
+    return max(_PROVIDER_REFRESH_MIN, value)
+
+
+# --- provider cache (shared by every account's windows) --------------------
+
+def _provider_state_dir(create=False):
+    """``<state>/providers`` — deliberately shared across accounts: the numbers
+    describe *other* subscriptions, and one cache means one fetch per TTL for
+    every window on the machine. Created on first write only."""
+    d = get_state_dir() / "providers"
+    if create:
+        _secure_mkdir(d)
+    return d
+
+
+def _provider_cache_path(pid, create=False):
+    # Ids never contain "." and never start with one, so ":" -> "." is
+    # collision-free and keeps the name filesystem-safe everywhere.
+    name = _safe_path_id(str(pid).replace(":", ".")) or "provider"
+    return _provider_state_dir(create) / f"{name}.json"
+
+
+def _read_provider_cache(pid):
+    try:
+        path = _provider_cache_path(pid)
+        if path.stat().st_size > 256_000:
+            return None
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else None
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+_PROVIDER_CACHE_FIELDS = (
+    "timestamp", "usage", "src", "plan", "last_attempt",
+    "rate_limited_until", "rate_limit_fails", "auth_failed_until", "error_until",
+)
+
+
+def _write_provider_cache(pid, data):
+    """Persist only known fields (never a token) via an atomic write."""
+    try:
+        clean = {k: data[k] for k in _PROVIDER_CACHE_FIELDS
+                 if k in data and data[k] is not None}
+        if "usage" in clean:
+            clean["usage"] = _clean_provider_usage(clean["usage"])
+        _atomic_json_write(_provider_cache_path(pid, create=True), clean, indent=None)
+    except Exception:
+        pass
+
+
+# --- time / window helpers --------------------------------------------------
+
+def _iso_z(value):
+    """Normalise ISO 8601 for ``datetime.fromisoformat`` on Python 3.8-3.10.
+
+    Those versions reject a trailing ``Z`` (agy writes ``...T06:13:21Z``) and
+    accept only 3 or 6 fractional digits.
+    """
+    s = str(value).strip()
+    if s[-1:] in ("Z", "z"):
+        s = s[:-1] + "+00:00"
+    m = re.search(r"\.(\d+)", s)
+    if m:
+        s = s[:m.start()] + "." + (m.group(1) + "000000")[:6] + s[m.end():]
+    return s
+
+
+def _parse_reset(value):
+    """Epoch seconds/ms (number or numeric string) or ISO 8601 -> aware datetime."""
+    if value is None or isinstance(value, bool):
+        return None
+    epoch = None
+    if isinstance(value, (int, float)):
+        epoch = float(value)
+    elif isinstance(value, str):
+        s = value.strip()
+        if not s or len(s) > 64:
+            return None
+        try:
+            epoch = float(s)
+        except ValueError:
+            try:
+                dt = datetime.fromisoformat(_iso_z(s))
+            except ValueError:
+                return None
+            return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    else:
+        return None
+    if not math.isfinite(epoch) or epoch <= 0:
+        return None
+    if epoch > 1e11:  # milliseconds
+        epoch /= 1000.0
+    try:
+        return datetime.fromtimestamp(epoch, tz=timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def _iso_from_epoch(seconds):
+    dt = _parse_reset(seconds)
+    return dt.isoformat() if dt else None
+
+
+def _provider_window(pct, reset, now=None):
+    """Build ``{"utilization", "resets_at"}``; None when ``pct`` is unusable.
+
+    A reset already in the past means the window rolled over since the source
+    was written: 0 % and no reset ("starts on next use").
+    """
+    if pct is None or isinstance(pct, bool):
+        return None
+    try:
+        pct = float(pct)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(pct):
+        return None
+    pct = max(0.0, min(100.0, pct))
+    now = time.time() if now is None else now
+    dt = _parse_reset(reset)
+    if dt is not None:
+        try:
+            if dt.timestamp() <= now:
+                return {"utilization": 0.0, "resets_at": None}
+        except (OverflowError, OSError, ValueError):
+            dt = None
+    return {"utilization": pct, "resets_at": dt.isoformat() if dt else None}
+
+
+def _clean_provider_usage(usage, now=None):
+    """Keep only well-formed ``five_hour`` / ``seven_day`` windows.
+
+    Also applies the roll-over rule, so a cached window whose reset has since
+    passed reads 0 %.
+    """
+    if not isinstance(usage, dict):
+        return {}
+    out = {}
+    for key in ("five_hour", "seven_day"):
+        w = usage.get(key)
+        if not isinstance(w, dict):
+            continue
+        win = _provider_window(w.get("utilization"), w.get("resets_at"), now)
+        if win:
+            out[key] = win
+    return out
+
+
+def _read_small_json(path, limit=_PROVIDER_FILE_MAX):
+    """Return ``(data, stat)``; data is None for an oversized file."""
+    st = os.stat(path)
+    if st.st_size > limit:
+        return None, st
+    with open(path, "r", encoding="utf-8-sig") as f:
+        return json.load(f), st
+
+
+# --- Claude (another CLAUDE_CONFIG_DIR) -------------------------------------
+
+def _plan_from_tier(tier):
+    if not isinstance(tier, str) or not tier:
+        return None
+    name = PLAN_NAMES.get(tier) or tier.replace("default_claude_", "").replace("_", " ").title()
+    return _clean_provider_label(name)
+
+
+def _read_other_claude_token(config_dir, now=None):
+    """Return ``(token, plan)`` from ``<dir>/.credentials.json``, or ``(None, plan)``.
+
+    File only: no Keychain, no environment token. A token expiring within 30 s
+    (or with no expiry recorded) is treated as unusable. This function must
+    never refresh: rotating another account's refresh token logs out the
+    session that account is running in.
+    """
+    now = time.time() if now is None else now
+    path = Path(os.path.expanduser(str(config_dir))) / ".credentials.json"
+    try:
+        data, _ = _read_small_json(path, limit=64_000)
+    except (OSError, ValueError):
+        return None, None
+    oauth = data.get("claudeAiOauth") if isinstance(data, dict) else None
+    if not isinstance(oauth, dict):
+        return None, None
+    plan = _plan_from_tier(oauth.get("rateLimitTier"))
+    token = oauth.get("accessToken")
+    if not isinstance(token, str) or not token:
+        return None, plan
+    try:
+        expires = float(oauth.get("expiresAt") or 0) / 1000.0
+    except (TypeError, ValueError):
+        expires = 0.0
+    if expires <= now + 30:
+        return None, plan
+    return token, plan
+
+
+def _refresh_claude_provider(entry, config, now=None, budget=None):
+    """Return the cache for a non-active Claude account, refreshing it if due.
+
+    Synchronous on purpose (one short request, no child process). A request
+    is made only when all of these hold: the data is older than
+    ``providers_refresh_seconds``; no 429 / auth / error backoff is running;
+    the last *attempt* is over 60 s old; the account has an unexpired token on
+    disk; and ``budget`` (a one-item list shared by one repaint) still allows
+    a network call. The attempt is stamped before the request.
+    """
+    now = time.time() if now is None else now
+    pid = entry["id"]
+    cache = _read_provider_cache(pid) or {}
+
+    def _num(key):
+        try:
+            return float(cache.get(key) or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    if now - _num("timestamp") < _provider_refresh_seconds(config):
+        return cache
+    if now < _num("rate_limited_until") or now < _num("auth_failed_until") \
+            or now < _num("error_until"):
+        return cache
+    if now - _num("last_attempt") < _PROVIDER_RETRY:
+        return cache
+    if budget is not None and budget[0] <= 0:
+        return cache
+    loc = _provider_location(entry)
+    if loc is None:
+        return cache
+    token, plan = _read_other_claude_token(loc, now)
+    if not token:
+        return cache
+    if budget is not None:
+        budget[0] -= 1
+    cache = dict(cache)
+    cache["last_attempt"] = now
+    _write_provider_cache(pid, cache)
+    try:
+        usage = fetch_usage(token, timeout=_PROVIDER_TIMEOUT)
+        token = None
+        fresh = {"timestamp": time.time(), "usage": _clean_provider_usage(usage),
+                 "plan": plan or cache.get("plan"), "last_attempt": now}
+        _write_provider_cache(pid, fresh)
+        return fresh
+    except urllib.error.HTTPError as exc:
+        code = getattr(exc, "code", None)
+        if code == 429:
+            try:
+                retry_after = float(exc.headers.get("retry-after") or 0)
+            except (TypeError, ValueError, AttributeError):
+                retry_after = 0.0
+            delay, fails = _rate_limit_backoff(cache.get("rate_limit_fails"))
+            cache["rate_limited_until"] = now + max(delay, retry_after)
+            cache["rate_limit_fails"] = fails
+        elif code in (401, 403):
+            # Do not refresh: the window running that account will.
+            cache["auth_failed_until"] = now + _PROVIDER_AUTH_BACKOFF
+        else:
+            cache["error_until"] = now + _PROVIDER_ERROR_BACKOFF
+    except Exception:
+        cache["error_until"] = now + _PROVIDER_ERROR_BACKOFF
+    token = None
+    _write_provider_cache(pid, cache)
+    return cache
+
+
+def _seed_active_provider_cache(usage, config, now=None):
+    """Write this window's own stdin windows into its ``claude:<key>`` cache.
+
+    Each window knows its own account's usage for free (Claude Code puts it
+    on stdin), so with both accounts' windows open the API is never called
+    for either row. Only runs when the user has providers configured.
+    """
+    try:
+        if not isinstance(config, dict) or not config.get("providers"):
+            return
+        now = time.time() if now is None else now
+        clean = _clean_provider_usage(usage, now)
+        if not clean:
+            return
+        pid = _active_provider_id(config) or _claude_provider_id_for_dir(_claude_config_dir())
+        prev = _read_provider_cache(pid) or {}
+        merged = _clean_provider_usage(prev.get("usage"), now)
+        merged.update(clean)
+        try:
+            prev_ts = float(prev.get("timestamp") or 0)
+        except (TypeError, ValueError):
+            prev_ts = 0.0
+        if prev.get("usage") == merged and now - prev_ts < 60:
+            return  # unchanged and recent: skip the write
+        data = {k: prev[k] for k in ("plan", "rate_limited_until", "rate_limit_fails")
+                if k in prev}
+        data.update({"timestamp": now, "usage": merged, "src": "stdin"})
+        _write_provider_cache(pid, data)
+    except Exception:
+        pass
+
+
+# --- Gemini / Antigravity CLI ----------------------------------------------
+
+def _read_gemini_quota(path, bucket="gemini", now=None):
+    """Read agy's ``statusline_last_live.json`` (``path`` = its dir or the file).
+
+    ``quota`` maps bucket ids to ``{remaining_fraction, reset_time}``;
+    utilisation is ``(1 - remaining_fraction) * 100``. ``bucket`` "gemini"
+    reads ``gemini-5h``/``gemini-weekly``, "3p" the third-party-model pool.
+    Unknown buckets are ignored. The file is undocumented, so any surprise
+    reads as no data. Returns ``{"usage", "data_ts", "tier"}`` or None.
+    """
+    try:
+        p = Path(os.path.expanduser(str(path)))
+        if p.suffix.lower() != ".json":
+            p = p / _GEMINI_STATUS_FILE
+        data, st = _read_small_json(p)
+        if not isinstance(data, dict):
+            return None
+        quota = data.get("quota")
+        quota = quota if isinstance(quota, dict) else {}
+        five_key, week_key = _GEMINI_BUCKETS.get(bucket, _GEMINI_BUCKETS["gemini"])
+        usage = {}
+        for out_key, key in (("five_hour", five_key), ("seven_day", week_key)):
+            b = quota.get(key)
+            if not isinstance(b, dict):
+                continue
+            try:
+                remaining = float(b.get("remaining_fraction"))
+            except (TypeError, ValueError):
+                continue
+            win = _provider_window((1.0 - remaining) * 100.0, b.get("reset_time"), now)
+            if win:
+                usage[out_key] = win
+        tier = _clean_provider_label(data.get("plan_tier"))
+        return {"usage": usage, "data_ts": st.st_mtime, "tier": tier}
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None
+
+
+# --- Codex CLI --------------------------------------------------------------
+
+def _numbered_subdirs(path, digits):
+    try:
+        names = os.listdir(path)
+    except OSError:
+        return []
+    return sorted((n for n in names if len(n) == digits and n.isascii() and n.isdigit()),
+                  reverse=True)
+
+
+def _find_codex_rollouts(codex_home, limit=_CODEX_MAX_FILES):
+    """Newest ``rollout-*.jsonl`` files, newest first.
+
+    Only the two newest ``sessions/YYYY/MM/DD`` day dirs are listed (names sort
+    chronologically), so the cost is a handful of listdirs however large the
+    tree grows. Two days covers a session started yesterday and still going.
+    """
+    root = Path(codex_home) / "sessions"
+    days = []
+    for y in _numbered_subdirs(root, 4):
+        for m in _numbered_subdirs(root / y, 2):
+            for d in _numbered_subdirs(root / y / m, 2):
+                days.append(root / y / m / d)
+                if len(days) >= _CODEX_DAY_DIRS:
+                    break
+            if len(days) >= _CODEX_DAY_DIRS:
+                break
+        if len(days) >= _CODEX_DAY_DIRS:
+            break
+    files = []
+    for day in days:
+        try:
+            with os.scandir(day) as it:
+                for e in it:
+                    if e.name.startswith("rollout-") and e.name.endswith(".jsonl") \
+                            and e.is_file():
+                        files.append((e.stat().st_mtime, e.path))
+        except OSError:
+            continue
+    files.sort(reverse=True)
+    return [Path(p) for _, p in files[:limit]]
+
+
+def _find_codex_rollout(codex_home):
+    found = _find_codex_rollouts(codex_home, 1)
+    return found[0] if found else None
+
+
+def _codex_usage_from_rate_limits(rl, now=None):
+    """Map a Codex ``RateLimitSnapshot`` to five_hour / seven_day windows.
+
+    Every field is optional upstream. A window is placed by its
+    ``window_minutes`` (<= 1 day -> five_hour) and by position otherwise.
+    """
+    usage = {}
+    for key, fallback in (("primary", "five_hour"), ("secondary", "seven_day")):
+        w = rl.get(key)
+        if not isinstance(w, dict):
+            continue
+        try:
+            minutes = float(w.get("window_minutes"))
+        except (TypeError, ValueError):
+            minutes = None
+        target = fallback if not minutes else ("five_hour" if minutes <= 1440 else "seven_day")
+        if target in usage:
+            continue
+        win = _provider_window(w.get("used_percent"), w.get("resets_at"), now)
+        if win:
+            usage[target] = win
+    return usage
+
+
+def _codex_rate_limits_from_tail(path, now=None):
+    """Newest usable ``rate_limits`` in the last 2 MB of a rollout, or None.
+
+    Line shape: ``{"type": "event_msg", "payload": {"type": "token_count",
+    "rate_limits": {"limit_id": "codex", "primary": {...}, "secondary":
+    {...}, "plan_type": "plus"}}}``. ``limit_id`` values other than "codex"
+    (e.g. "premium") describe a different pool and are skipped.
+    """
+    with open(path, "rb") as fh:
+        size = os.fstat(fh.fileno()).st_size
+        start = max(0, size - _CODEX_TAIL_BYTES)
+        fh.seek(start)
+        blob = fh.read(_CODEX_TAIL_BYTES)
+    lines = blob.decode("utf-8", "ignore").split("\n")
+    if start > 0 and lines:
+        lines = lines[1:]  # first line is partial
+    for line in reversed(lines):
+        if '"rate_limits"' not in line:
+            continue
+        try:
+            obj = json.loads(line)
+        except ValueError:
+            continue
+        payload = obj.get("payload") if isinstance(obj, dict) else None
+        rl = payload.get("rate_limits") if isinstance(payload, dict) else None
+        if not isinstance(rl, dict) or rl.get("limit_id") not in (None, "codex"):
+            continue
+        usage = _codex_usage_from_rate_limits(rl, now)
+        if not usage:
+            continue
+        plan = rl.get("plan_type")
+        tier = _clean_provider_label(str(plan).replace("_", " ").title()) \
+            if isinstance(plan, str) else None
+        return usage, tier
+    return None
+
+
+def _read_codex_quota(codex_home, cached=None, now=None):
+    """Codex windows from the newest rollouts, cached on the newest file's
+    path + mtime + size so an unchanged tree costs no file read at all.
+
+    Returns ``{"usage", "data_ts", "tier", "src", "changed"}`` or None when
+    there are no rollouts. ``changed`` tells the caller to rewrite the cache.
+    """
+    files = _find_codex_rollouts(codex_home)
+    if not files:
+        return None
+    try:
+        st = files[0].stat()
+    except OSError:
+        return None
+    src = {"path": str(files[0]), "mtime": st.st_mtime, "size": st.st_size}
+    if isinstance(cached, dict) and cached.get("src") == src:
+        return {"usage": _clean_provider_usage(cached.get("usage"), now),
+                "data_ts": cached.get("timestamp"), "tier": cached.get("plan"),
+                "src": src, "changed": False}
+    for f in files:
+        try:
+            f_mtime = f.stat().st_mtime
+            found = _codex_rate_limits_from_tail(f, now)
+        except OSError:
+            continue
+        if found:
+            usage, tier = found
+            return {"usage": usage, "data_ts": f_mtime, "tier": tier,
+                    "src": src, "changed": True}
+    return {"usage": {}, "data_ts": None, "tier": None, "src": src, "changed": True}
+
+
+# --- MiniMax (mmx CLI) ------------------------------------------------------
+
+def _minimax_env_active():
+    """True when this window itself runs on MiniMax (mxclaude): the main line
+    already shows MiniMax, so no extra row is drawn."""
+    return "minimax.io" in os.environ.get("ANTHROPIC_BASE_URL", "") and \
+        os.environ.get("ANTHROPIC_MODEL", "").startswith("MiniMax-")
+
+
+def _read_minimax_quota(pid="minimax", now=None):
+    """MiniMax windows via ``mmx quota show`` at most every 120 s (cached)."""
+    now = time.time() if now is None else now
+    cache = _read_provider_cache(pid) or {}
+    try:
+        last = float(cache.get("last_attempt") or 0)
+    except (TypeError, ValueError):
+        last = 0.0
+    if now - last < _MINIMAX_PROVIDER_TTL:
+        return cache
+    exe = shutil.which("mmx")
+    if not exe:
+        return cache
+    cache = dict(cache)
+    cache["last_attempt"] = now
+    _write_provider_cache(pid, cache)
+    try:
+        proc = subprocess.run(
+            [exe, "quota", "show", "--output", "json", "--quiet"],
+            capture_output=True, text=True, timeout=3, stdin=subprocess.DEVNULL,
+        )
+        if proc.returncode == 0:
+            parsed = _parse_minimax_quota(json.loads(proc.stdout))
+            if parsed:
+                cache["usage"] = parsed
+                cache["timestamp"] = now
+    except (subprocess.TimeoutExpired, OSError, ValueError, TypeError):
+        pass
+    _write_provider_cache(pid, cache)
+    return cache
+
+
+# --- file: a JSON file somebody else writes ---------------------------------
+
+def _file_window(w, now=None):
+    if not isinstance(w, dict):
+        return None
+    pct = w.get("used_percentage")
+    if pct is None:
+        pct = w.get("utilization")
+    return _provider_window(pct, w.get("resets_at"), now)
+
+
+def _read_file_quota(path, now=None):
+    """Read a provider row from a JSON file another tool keeps up to date.
+
+    This is the hook for any provider claude-pulse cannot read itself (Kimi,
+    GLM, a company gateway...): a tiny script writes the file, claude-pulse
+    draws the row. Shape, matching Claude Code's own stdin ``rate_limits``::
+
+        {
+          "label": "Kimi",
+          "five_hour": {"used_percentage": 42, "resets_at": 1792386351},
+          "seven_day": {"used_percentage": 7,  "resets_at": "2026-10-26T10:00:00Z"}
+        }
+
+    * The two windows may sit at top level or under ``"rate_limits"``.
+    * ``utilization`` is accepted in place of ``used_percentage`` (0-100).
+    * ``resets_at`` is epoch seconds (or milliseconds) or ISO 8601; optional.
+      A reset in the past reads as 0 % (the window rolled over).
+    * Either window may be missing; ``label`` is optional (a label set with
+      ``--providers label`` wins). Max 1 MB; UTF-8 (a BOM is fine).
+
+    Returns ``{"usage", "data_ts", "label"}`` or None when unreadable.
+    """
+    try:
+        data, st = _read_small_json(Path(os.path.expanduser(str(path))))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    src = data
+    rl = data.get("rate_limits")
+    if isinstance(rl, dict) and ("five_hour" in rl or "seven_day" in rl):
+        src = rl
+    usage = {}
+    for key in ("five_hour", "seven_day"):
+        win = _file_window(src.get(key), now)
+        if win:
+            usage[key] = win
+    return {"usage": usage, "data_ts": st.st_mtime,
+            "label": _clean_provider_label(data.get("label"))}
+
+
+# --- collection -------------------------------------------------------------
+
+def _provider_row_entries(config):
+    """Enabled entries that get a row in this window, in config order (<= 6).
+
+    Skips this window's own account (it is the main line) and MiniMax while
+    the window itself runs on MiniMax.
+    """
+    if not isinstance(config, dict):
+        return []
+    entries = _normalize_providers(config.get("providers"))
+    if not entries:
+        return []
+    active = _active_provider_id(config, entries)
+    rows = []
+    for entry in entries:
+        if not entry.get("enabled") or entry["id"] == active:
+            continue
+        if entry["type"] == "minimax" and _minimax_env_active():
+            continue
+        rows.append(entry)
+        if len(rows) >= _MAX_PROVIDER_ROWS:
+            break
+    return rows
+
+
+def _provider_row_label(entry):
+    """Display label: user label, else the file's own label, else a default."""
+    if entry.get("label"):
+        return entry["label"]
+    if entry.get("type") == "file":
+        try:
+            loc = _provider_location(entry)
+            data, _ = _read_small_json(loc) if loc else (None, None)
+            label = _clean_provider_label(data.get("label")) if isinstance(data, dict) else None
+            if label:
+                return label
+        except (OSError, ValueError, TypeError):
+            pass
+    return _provider_default_label(entry)
+
+
+def _collect_provider_rows(config, now=None):
+    """Data for every provider row: ``[{entry, label, usage, data_ts, stale, tier}]``.
+
+    Each source is read in its own ``try``; a failure yields a row with no
+    data (drawn as ``--``) rather than no status line. At most one network
+    refresh happens per repaint across all Claude rows.
+    """
+    now = time.time() if now is None else now
+    rows = []
+    budget = [1]
+    for entry in _provider_row_entries(config):
+        ptype = entry["type"]
+        usage, data_ts, tier = None, None, None
+        try:
+            loc = _provider_location(entry)
+            if ptype == "claude":
+                c = _refresh_claude_provider(entry, config, now, budget)
+                usage, data_ts, tier = c.get("usage"), c.get("timestamp"), c.get("plan")
+            elif ptype == "codex":
+                cached = _read_provider_cache(entry["id"])
+                r = _read_codex_quota(loc, cached, now)
+                if r:
+                    usage, data_ts, tier = r["usage"], r["data_ts"], r["tier"]
+                    if r.get("changed"):
+                        _write_provider_cache(entry["id"], {
+                            "timestamp": data_ts, "usage": usage,
+                            "src": r["src"], "plan": tier})
+            elif ptype == "gemini":
+                r = _read_gemini_quota(loc, entry.get("bucket", "gemini"), now) if loc else None
+                if r:
+                    usage, data_ts, tier = r["usage"], r["data_ts"], r["tier"]
+            elif ptype == "minimax":
+                c = _read_minimax_quota(entry["id"], now)
+                usage, data_ts = c.get("usage"), c.get("timestamp")
+            elif ptype == "file":
+                r = _read_file_quota(loc, now) if loc else None
+                if r:
+                    usage, data_ts = r["usage"], r["data_ts"]
+        except Exception:
+            usage, data_ts, tier = None, None, None
+        usage = _clean_provider_usage(usage, now)
+        try:
+            data_ts = float(data_ts) if data_ts is not None else None
+        except (TypeError, ValueError):
+            data_ts = None
+        # Only polled sources go stale. agy / Codex / custom files are
+        # rewritten on every use, so an old file means "no use since" — true.
+        stale = bool(ptype in ("claude", "minimax") and usage and data_ts
+                     and now - data_ts > _PROVIDER_STALE_AFTER)
+        rows.append({"entry": entry, "label": _provider_row_label(entry),
+                     "usage": usage, "data_ts": data_ts, "stale": stale,
+                     "tier": _clean_provider_label(tier) if isinstance(tier, str) else None})
+    return rows
+
+
+# ---------------------------------------------------------------------------
 # Status line rendering
 # ---------------------------------------------------------------------------
 
@@ -2834,7 +3835,7 @@ def make_bar(pct, theme=None, plain=False, width=None, bar_style=None,
 # ---------------------------------------------------------------------------
 
 def _get_anim_state_path():
-    return get_state_dir() / "anim_state.json"
+    return get_account_state_dir() / "anim_state.json"
 
 
 def _load_anim_state():
@@ -3012,7 +4013,7 @@ def format_weekly_reset(resets_at_str, fmt="auto", clock="12h"):
 
 def _get_history_path():
     """Return path to usage history file."""
-    return get_state_dir() / "history.json"
+    return get_account_state_dir() / "history.json"
 
 
 def _read_history():
@@ -3241,7 +4242,7 @@ def _format_cost(stdin_ctx, config):
 
 
 def _get_context_history_path():
-    return get_state_dir() / "context_history.json"
+    return get_account_state_dir() / "context_history.json"
 
 
 def _read_context_history():
@@ -3494,7 +4495,7 @@ def _get_cached_weekly_cost():
     if now - _weekly_cost_mem["ts"] < _WEEKLY_COST_CACHE_TTL:
         return _weekly_cost_mem["data"]
 
-    cache_path = get_state_dir() / "weekly_cost_cache.json"
+    cache_path = get_account_state_dir() / "weekly_cost_cache.json"
     try:
         with open(cache_path, "r", encoding="utf-8") as f:
             cached = json.load(f)
@@ -3524,7 +4525,7 @@ def _get_cached_cumulative_cost():
         return _cumulative_cost_mem["data"]
 
     # Disk cache
-    cache_path = get_state_dir() / "cumulative_cost_cache.json"
+    cache_path = get_account_state_dir() / "cumulative_cost_cache.json"
     try:
         with open(cache_path, "r", encoding="utf-8") as f:
             cached = json.load(f)
@@ -4241,7 +5242,7 @@ def _parse_stdin_context(raw_stdin):
 
 def _get_heatmap_path():
     """Return path to heatmap data file."""
-    return get_state_dir() / "heatmap.json"
+    return get_account_state_dir() / "heatmap.json"
 
 
 def _update_heatmap(usage):
@@ -4369,7 +5370,7 @@ def _render_heatmap(config=None):
 # ---------------------------------------------------------------------------
 
 def _get_sessions_dir():
-    sessions_dir = get_state_dir() / SESSION_DIR_NAME
+    sessions_dir = get_account_state_dir() / SESSION_DIR_NAME
     _secure_mkdir(sessions_dir)
     return sessions_dir
 
@@ -4780,6 +5781,11 @@ def build_status_line(usage, plan, config=None, stdin_ctx=None, cache_age=None):
             else:  # standard
                 history = _read_history() if show.get("sparkline", True) or show.get("runway", True) or show.get("status_message", True) or show.get("burn_rate", True) else []
                 label = "Session"
+                # providers (3.4.0): name this window's account when rows follow
+                try:
+                    label = _provider_session_label(config) or label
+                except Exception:
+                    pass
                 if show.get("status_message", True):
                     velocity = _compute_velocity(history)
                     msg, _ = _get_status_message(pct, velocity)
@@ -6113,6 +7119,237 @@ def _render_budget(config, stdin_ctx):
     if layout == "minimal":
         return f"{bar} {pct:.0f}%"
     return f"{DIM}budget{RESET} {bar} {sym}{spent * rate:,.2f}{DIM}/{sym}{budget * rate:,.2f}{RESET}"
+
+
+# ---------------------------------------------------------------------------
+# Provider rows (3.4.0) — one extra status row per other subscription
+# ---------------------------------------------------------------------------
+# Claude Code renders each stdout line as its own row, and _fit_line fits each
+# row independently, so the rows are simply appended after the main line.
+# Labels share one column, and every row's " | Weekly" separator sits at the
+# same column as the main line's first separator when the main line starts
+# with this account's label (providers_label_main).
+
+def _provider_main_label(config):
+    """Label of this window's own account (the main line)."""
+    entries = _normalize_providers((config or {}).get("providers"))
+    active = _active_provider_id(config, entries)
+    for entry in entries:
+        if entry["id"] == active:
+            return entry.get("label") or _provider_default_label(entry)
+    return _default_claude_label(_claude_config_dir())
+
+
+def _provider_label_width(config, entries=None):
+    """Shared label column: the widest row label and this account's label."""
+    if entries is None:
+        entries = _provider_row_entries(config)
+    labels = [_provider_row_label(e) for e in entries]
+    labels.append(_provider_main_label(config))
+    return max(len(label) for label in labels)
+
+
+def _provider_session_label(config):
+    """``Claude (Work) 5h`` for the main line's session bar, or None.
+
+    Only when provider rows are actually drawn, so a user without providers
+    keeps the familiar ``Session`` label.
+    """
+    if not isinstance(config, dict) or not config.get("providers_label_main", True):
+        return None
+    if not (config.get("show") or {}).get("providers", True):
+        return None
+    entries = _provider_row_entries(config)
+    if not entries:
+        return None
+    width = _provider_label_width(config, entries)
+    return f"{_provider_main_label(config).ljust(width)} 5h"
+
+
+def _provider_bar_width(config, label_width):
+    """Row bar width: the configured size, never wider than the main line's
+    clamped bars, shrunk further before the row would need truncating."""
+    bw = BAR_SIZES.get(config.get("bar_size", DEFAULT_BAR_SIZE), BAR_SIZES[DEFAULT_BAR_SIZE])
+    try:
+        term_width = _detect_terminal_width() or shutil.get_terminal_size((120, 24)).columns
+        max_width_pct = config.get("max_width", DEFAULT_MAX_WIDTH_PCT)
+        if not (isinstance(max_width_pct, int) and 20 <= max_width_pct <= 100):
+            max_width_pct = DEFAULT_MAX_WIDTH_PCT
+        effective = (term_width * max_width_pct) // 100
+        show = config.get("show", DEFAULT_SHOW)
+        # Same estimate build_status_line makes for the main line (session,
+        # weekly and the context bar a live session always has).
+        main_bars = sum(1 for k in ("session", "weekly", "context") if show.get(k, True)) or 1
+        main_overhead = main_bars * 18 + max(main_bars - 1, 0) * 3 + 15
+        main_max = max(2, (effective - main_overhead) // main_bars)
+        row_max = max(2, (effective - (label_width + 2 * 18 + 3)) // 2)
+        bw = max(2, min(bw, main_max, row_max))
+    except Exception:
+        pass
+    return bw
+
+
+def _render_provider_row(label, usage, config, label_width, bar_width, stale=False, tier=None):
+    """Return ``(head, tail)`` for one provider row.
+
+    head = label + 5-hour window, tail = weekly window, styled like the main
+    line's bars for the configured layout, theme and timer settings. A missing
+    window draws an empty bar and ``--``; stale data draws dim bars and ``~29%``.
+    """
+    theme_name = config.get("theme", "default")
+    animate_raw = config.get("animate", "off")
+    use_rainbow = theme_name == "rainbow" or animate_raw in (True, "rainbow")
+    theme = THEMES["default"] if theme_name == "rainbow" else get_theme_colours(theme_name)
+    bstyle = config.get("bar_style", DEFAULT_BAR_STYLE)
+    layout = config.get("layout", DEFAULT_LAYOUT)
+    show = config.get("show", DEFAULT_SHOW)
+    usage = usage or {}
+
+    def _window(key):
+        w = usage.get(key)
+        if not w or w.get("utilization") is None:
+            bar = make_bar(0, theme, plain=True, width=bar_width, bar_style=bstyle)
+            return bar, f"{DIM}--{RESET}", None
+        pct = w.get("utilization") or 0
+        bar = make_bar(pct, theme, plain=use_rainbow and not stale, width=bar_width,
+                       bar_style=bstyle, flash_color=DIM if stale else None, config=config)
+        pct_txt = f"{DIM}~{pct:.0f}%{RESET}" if stale else f"{pct:.0f}%"
+        return bar, pct_txt, w.get("resets_at")
+
+    head = label.ljust(label_width)
+    if show.get("session", True):
+        bar, pct_txt, resets = _window("five_hour")
+        reset = format_reset_time(resets) if resets and show.get("timer", True) else None
+        reset_str = f" {reset}" if reset else ""
+        if layout == "compact":
+            head += f" S {bar} {pct_txt}{reset_str}"
+        elif layout == "minimal":
+            head += f" {bar} {pct_txt}{reset_str}"
+        elif layout == "percent-first":
+            head += f" {pct_txt} {bar}{reset_str}"
+        else:
+            head += f" 5h {bar} {pct_txt}{reset_str}"
+
+    tail = ""
+    if show.get("weekly", True):
+        bar, pct_txt, resets = _window("seven_day")
+        wr_str = ""
+        if resets and show.get("weekly_timer", True):
+            wt_fmt = config.get("weekly_timer_format", DEFAULT_WEEKLY_TIMER_FORMAT)
+            if wt_fmt not in WEEKLY_TIMER_FORMATS:
+                wt_fmt = DEFAULT_WEEKLY_TIMER_FORMAT
+            wt_prefix = _sanitize(str(config.get("weekly_timer_prefix", DEFAULT_WEEKLY_TIMER_PREFIX)))[:10]
+            wt_clock = config.get("clock_format", DEFAULT_CLOCK_FORMAT)
+            if wt_clock not in CLOCK_FORMATS:
+                wt_clock = DEFAULT_CLOCK_FORMAT
+            wr = format_weekly_reset(resets, fmt=wt_fmt, clock=wt_clock)
+            if wr:
+                wr_str = f" {wt_prefix}{wr}"
+        if layout == "compact":
+            tail = f"W {bar} {pct_txt}{wr_str}"
+        elif layout == "minimal":
+            tail = f"{bar} {pct_txt}{wr_str}"
+        elif layout == "percent-first":
+            tail = f"{pct_txt} {bar}{wr_str}"
+        else:
+            tail = f"Weekly {bar} {pct_txt}{wr_str}"
+    if tier and show.get("plan", False):
+        tail = f"{tail} {DIM}{tier}{RESET}" if tail else f"{DIM}{tier}{RESET}"
+    return head, tail
+
+
+def _render_provider_rows(config, now=None, main_col=None):
+    """Render every provider row. Returns ``(rows, separator_column)``.
+
+    Heads are padded to the widest head (or ``main_col``, the main line's
+    separator column, when that is wider) so every ``|`` lines up.
+    """
+    entries = _provider_row_entries(config)
+    if not entries:
+        return [], None
+    rows = _collect_provider_rows(config, now)
+    if not rows:
+        return [], None
+    label_width = _provider_label_width(config, entries)
+    bar_width = _provider_bar_width(config, label_width)
+    built = [_render_provider_row(r["label"], r["usage"], config, label_width, bar_width,
+                                  stale=r["stale"], tier=r.get("tier"))
+             for r in rows]
+    col = max(_visible_len(head) for head, _ in built)
+    if main_col and main_col > col:
+        col = main_col
+    theme_name = config.get("theme", "default")
+    animate_raw = config.get("animate", "off")
+    use_rainbow = theme_name == "rainbow" or animate_raw in (True, "rainbow")
+    animate = animate_raw not in ("off", False, None)
+    text_color = None if use_rainbow else resolve_text_color(config)
+    out = []
+    for head, tail in built:
+        pad = " " * max(0, col - _visible_len(head))
+        row = f"{head}{pad} | {tail}" if tail else head
+        if use_rainbow:
+            row = rainbow_colorize(row, color_all=False, shimmer=animate, config=config)
+        elif text_color:
+            row = apply_text_color(row, text_color)
+        out.append(row)
+    return out, col
+
+
+def _strip_ansi(text):
+    out, i = [], 0
+    while i < len(text):
+        if text[i] == "\033":
+            i = _skip_escape(text, i)
+            continue
+        out.append(text[i])
+        i += 1
+    return "".join(out)
+
+
+def _raw_offset(text, visible_count):
+    """Raw index just after ``visible_count`` visible characters of ``text``."""
+    seen, i = 0, 0
+    while i < len(text) and seen < visible_count:
+        if text[i] == "\033":
+            i = _skip_escape(text, i)
+            continue
+        seen += 1
+        i += 1
+    return i
+
+
+def _append_provider_rows(line, config):
+    """Append the provider rows to a rendered status line (never raises).
+
+    Called at every output site after the update indicators (so they stay on
+    the main row) and before ``_fit_line`` (which fits each row on its own).
+    With ``providers_label_main`` the main line starts with this account's
+    label; its first `` | `` is then padded out to the rows' separator column.
+    """
+    try:
+        if not isinstance(config, dict) or not isinstance(line, str):
+            return line
+        if not (config.get("show") or {}).get("providers", True):
+            return line
+        if not _provider_row_entries(config):
+            return line
+        first, nl, rest = line.partition("\n")
+        main_col = None
+        plain = _strip_ansi(first)
+        if config.get("providers_label_main", True) and \
+                plain.startswith(_provider_main_label(config) + " "):
+            idx = plain.find(" | ")
+            if idx > 0:
+                main_col = idx
+        rows, col = _render_provider_rows(config, main_col=main_col)
+        if not rows:
+            return line
+        if main_col is not None and col and col > main_col:
+            cut = _raw_offset(first, main_col)
+            first = first[:cut] + " " * (col - main_col) + first[cut:]
+        return first + nl + rest + "\n" + "\n".join(rows)
+    except Exception:
+        return line
 
 
 # ---------------------------------------------------------------------------
@@ -7908,11 +9145,468 @@ def cmd_print_config():
     except Exception:
         utf8_print(f"    Status:    {DIM}check failed{RESET}")
 
+    # providers (3.4.0)
+    try:
+        _pentries = _normalize_providers(config.get("providers"))
+        utf8_print(f"\n  {BOLD}Providers:{RESET}")
+        if _pentries:
+            _pactive = _active_provider_id(config, _pentries)
+            for _pe in _pentries:
+                _ploc = _provider_location(_pe)
+                _pstate = f"{GREEN}on{RESET} " if _pe.get("enabled") else f"{RED}off{RESET}"
+                _pmark = f"  {DIM}(this window's account){RESET}" if _pe["id"] == _pactive else ""
+                _plabel = _sanitize(_pe.get("label") or _provider_default_label(_pe))
+                _psrc = _sanitize(_tilde(_ploc)) if _ploc else "mmx"
+                utf8_print(f"    {_pe['id']:<16} {_pstate} {_plabel:<24} {_psrc}{_pmark}")
+        else:
+            utf8_print(f"    {DIM}none{RESET}  (run {BOLD}--detect-providers{RESET})")
+    except Exception:
+        utf8_print(f"    {DIM}unreadable{RESET}")
+
     utf8_print(f"\n  {BOLD}Visibility:{RESET}")
     for key in DEFAULT_SHOW:
         state = f"{GREEN}on{RESET}" if show.get(key, DEFAULT_SHOW[key]) else f"{RED}off{RESET}"
         utf8_print(f"    {key:<10} {state}")
     utf8_print("")
+
+
+# ---------------------------------------------------------------------------
+# Providers CLI (3.4.0): --detect-providers, --providers ...
+# ---------------------------------------------------------------------------
+
+_GEMINI_AUTO_ENABLE_AGE = 7 * 86400  # an agy login unused for a week stays off
+
+
+def _claude_creds_meta(config_dir):
+    """``(has_token, plan, expired)`` from ``<dir>/.credentials.json``.
+
+    The token itself is only tested for truthiness and never returned.
+    """
+    try:
+        data, _ = _read_small_json(Path(config_dir) / ".credentials.json", limit=64_000)
+    except (OSError, ValueError):
+        return False, None, False
+    oauth = data.get("claudeAiOauth") if isinstance(data, dict) else None
+    if not isinstance(oauth, dict) or not oauth.get("accessToken"):
+        return False, None, False
+    try:
+        expires = float(oauth.get("expiresAt") or 0) / 1000.0
+    except (TypeError, ValueError):
+        expires = 0.0
+    return True, _plan_from_tier(oauth.get("rateLimitTier")), bool(expires and expires <= time.time())
+
+
+def _age_seconds(ts, now):
+    try:
+        return max(0, int(now - float(ts))) if ts else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _format_age(seconds):
+    if seconds is None:
+        return ""
+    if seconds < 3600:
+        return f"{max(1, seconds // 60)}m"
+    if seconds < 86400:
+        return f"{seconds // 3600}h"
+    return f"{seconds // 86400}d"
+
+
+def detect_providers(config=None):
+    """Find the subscriptions this machine has. Never prints, never raises.
+
+    Returns a JSON-serialisable list of
+    ``{id, type, label, path, active, enabled, tier, age_seconds, note}``:
+
+    * Claude: ``~/.claude``, ``~/.claude-*`` and ``$CLAUDE_CONFIG_DIR``, kept
+      only when ``.credentials.json`` holds a token (on macOS a dir that has
+      only a Keychain login is listed as ``keychain-only``, disabled).
+    * Codex: ``$CODEX_HOME`` or ``~/.codex`` with a rollout file.
+    * Gemini: ``~/.gemini/antigravity-cli*/statusline_last_live.json``.
+    * MiniMax: the ``mmx`` CLI on PATH (always ``enabled: False`` unless the
+      user enabled it: it spawns a process).
+    * Configured entries detection cannot see (``file`` rows, vanished dirs).
+
+    ``enabled`` is the configured state for an id already in
+    ``config["providers"]``, otherwise the recommended default. ``path`` uses
+    ``~``. No e-mail address or account name is read into the result: labels
+    come from the config, ``~/.claude-accounts.json`` labels, or defaults.
+    """
+    now = time.time()
+    if config is None:
+        try:
+            config = load_config()
+        except Exception:
+            config = {}
+    configured = {e["id"]: e for e in _normalize_providers((config or {}).get("providers"))}
+    found = []
+    used_ids = set()
+
+    def _add(item):
+        conf = configured.get(item["id"])
+        if conf is not None:
+            item["enabled"] = bool(conf.get("enabled"))
+            if conf.get("label"):
+                item["label"] = conf["label"]
+        used_ids.add(item["id"])
+        found.append(item)
+
+    # Claude accounts
+    try:
+        active_key = _path_key(_claude_config_dir())
+    except Exception:
+        active_key = None
+    home = Path.home()
+    candidates = [home / ".claude"]
+    try:
+        candidates += sorted(p for p in home.glob(".claude-*") if p.is_dir())
+    except OSError:
+        pass
+    env_dir = os.environ.get("CLAUDE_CONFIG_DIR", "").strip()
+    if env_dir:
+        candidates.append(Path(os.path.expanduser(env_dir)))
+    seen_dirs = set()
+    for d in candidates:
+        try:
+            if not d.is_dir():
+                continue
+            key = _path_key(d)
+            if key in seen_dirs:
+                continue
+            seen_dirs.add(key)
+            has_token, plan, expired = _claude_creds_meta(d)
+            note = "ok"
+            if not has_token:
+                is_default = key == _path_key(home / ".claude")
+                if sys.platform == "darwin" and ((d / ".claude.json").exists() or is_default):
+                    # No token file to read; its row still fills from that
+                    # account's own window (stdin seeding) while one is open.
+                    note = "keychain-only"
+                else:
+                    continue
+            elif expired:
+                note = "expired token"
+            pid = _claude_provider_id_for_dir(d)
+            base, n = pid, 2
+            while pid in used_ids:
+                pid = f"{base[:29]}-{n}"
+                n += 1
+            active = key == active_key
+            if active:
+                note = "active"
+            cache = _read_provider_cache(pid) or {}
+            _add({"id": pid, "type": "claude", "label": _default_claude_label(d),
+                  "path": _tilde(d), "active": active,
+                  "enabled": note != "keychain-only", "tier": plan,
+                  "age_seconds": _age_seconds(cache.get("timestamp"), now), "note": note})
+        except Exception:
+            continue
+
+    # Codex
+    try:
+        codex = _codex_home(configured.get("codex"))
+        files = _find_codex_rollouts(codex, 1)
+        if files:
+            st = files[0].stat()
+            found_rl = None
+            try:
+                found_rl = _codex_rate_limits_from_tail(files[0], now)
+            except OSError:
+                pass
+            _add({"id": "codex", "type": "codex", "label": "Codex", "path": _tilde(codex),
+                  "active": False, "enabled": True,
+                  "tier": found_rl[1] if found_rl else None,
+                  "age_seconds": _age_seconds(st.st_mtime, now),
+                  "note": "ok" if found_rl else "no rate limits in newest rollout yet"})
+    except Exception:
+        pass
+
+    # Gemini / Antigravity CLI logins
+    try:
+        gem_root = home / ".gemini"
+        dirs = sorted(p for p in gem_root.glob("antigravity-cli*") if p.is_dir())
+    except OSError:
+        dirs = []
+    for d in dirs:
+        try:
+            status = d / _GEMINI_STATUS_FILE
+            if not status.is_file():
+                continue
+            suffix = d.name[len("antigravity-cli"):].lstrip("-_").lower()
+            pid = "gemini" + (f":{suffix}" if suffix else "")
+            if not _normalize_provider_id(pid) or pid in used_ids:
+                continue
+            r = _read_gemini_quota(d, "gemini", now) or {}
+            age = _age_seconds(status.stat().st_mtime, now)
+            fresh = age is not None and age < _GEMINI_AUTO_ENABLE_AGE
+            _add({"id": pid, "type": "gemini",
+                  "label": _provider_default_label({"id": pid, "type": "gemini"}),
+                  "path": _tilde(d), "active": False, "enabled": fresh,
+                  "tier": r.get("tier"), "age_seconds": age,
+                  "note": "ok" if fresh else f"stale {_format_age(age)}"})
+        except Exception:
+            continue
+
+    # MiniMax
+    try:
+        if shutil.which("mmx"):
+            _add({"id": "minimax", "type": "minimax", "label": "MiniMax", "path": None,
+                  "active": False, "enabled": False, "tier": None, "age_seconds": None,
+                  "note": "runs mmx quota show; off unless enabled"})
+    except Exception:
+        pass
+
+    # Configured entries detection did not find
+    for pid, entry in configured.items():
+        if pid in used_ids:
+            continue
+        loc = _provider_location(entry)
+        exists = False
+        try:
+            exists = bool(loc) and loc.exists()
+        except OSError:
+            pass
+        _add({"id": pid, "type": entry["type"],
+              "label": entry.get("label") or _provider_default_label(entry),
+              "path": _tilde(loc) if loc else None, "active": False,
+              "enabled": bool(entry.get("enabled")), "tier": None, "age_seconds": None,
+              "note": "configured" if exists else "configured; source not found"})
+    return found
+
+
+def _provider_entry_from_detected(item):
+    entry = {"id": item["id"], "type": item["type"], "enabled": True}
+    if item.get("label"):
+        entry["label"] = item["label"]
+    if item.get("path"):
+        entry["dir" if item["type"] == "claude" else "path"] = item["path"]
+    return entry
+
+
+def set_providers(config, enable_ids=(), disable_ids=(), labels=None):
+    """Enable / disable / label providers in ``config["providers"]``.
+
+    Ids already configured are updated in place (an existing label is kept);
+    detected ids not yet configured are added. Mutates and returns
+    ``config``; the caller runs ``save_config``. All ids are validated
+    before anything changes: an unknown id raises ``ValueError`` with a
+    readable message and leaves ``config`` untouched.
+    """
+    labels = dict(labels or {})
+    providers = _normalize_providers(config.get("providers"))
+    by_id = {p["id"]: p for p in providers}
+    detected = None
+    newly_added = set()
+
+    def _resolve(raw):
+        nonlocal detected
+        pid = _normalize_provider_id(raw)
+        if pid is None:
+            raise ValueError(f"'{_sanitize(str(raw))[:40]}' is not a valid provider id "
+                             "(letters, digits, ':', '_' and '-'; up to 32 characters).")
+        if pid in by_id:
+            return pid
+        if detected is None:
+            detected = {d["id"]: d for d in detect_providers(config)}
+        if pid not in detected:
+            known = ", ".join(sorted(set(by_id) | set(detected))) or "none"
+            raise ValueError(f"Unknown provider '{pid}'. Known on this machine: {known}. "
+                             "For a JSON file use: --providers add-file <id> <path>")
+        if len(by_id) >= _MAX_PROVIDERS:
+            raise ValueError(f"At most {_MAX_PROVIDERS} providers can be configured; "
+                             "remove one first (--providers remove <id>).")
+        entry = _provider_entry_from_detected(detected[pid])
+        by_id[pid] = entry
+        providers.append(entry)
+        newly_added.add(pid)
+        return pid
+
+    plan = []
+    for raw in enable_ids or ():
+        plan.append(("enable", _resolve(raw), None))
+    for raw in disable_ids or ():
+        plan.append(("disable", _resolve(raw), None))
+    for raw, text in labels.items():
+        pid = _resolve(raw)
+        if text is not None and not isinstance(text, str):
+            raise ValueError(f"Label for '{pid}' must be text.")
+        plan.append(("label", pid, text))
+    toggled = {pid for action, pid, _ in plan if action != "label"}
+    for action, pid, text in plan:
+        entry = by_id[pid]
+        if action == "enable":
+            entry["enabled"] = True
+        elif action == "disable":
+            entry["enabled"] = False
+        else:
+            clean = _clean_provider_label(text) if text else None
+            if clean:
+                entry["label"] = clean
+            else:
+                entry.pop("label", None)
+    # A detected id that was only labelled (never enabled) is added switched off.
+    for pid in newly_added - toggled:
+        by_id[pid]["enabled"] = False
+    config["providers"] = _normalize_providers(providers)
+    return config
+
+
+def cmd_detect_providers(as_json=False):
+    items = detect_providers()
+    if as_json:
+        sys.stdout.write(json.dumps(items, indent=2) + "\n")
+        return
+    if not items:
+        utf8_print("No other subscriptions found (Claude accounts, Codex, Gemini/Antigravity, MiniMax).")
+        return
+    utf8_print(f"\n{BOLD}Subscriptions on this machine{RESET}\n")
+    _print_provider_table(items)
+    suggest = [i["id"] for i in items if i["enabled"] and not i["active"]]
+    configured = {e["id"] for e in _normalize_providers(load_config().get("providers"))}
+    todo = [pid for pid in suggest if pid not in configured]
+    if todo:
+        utf8_print(f"\n  Turn rows on with:  {BOLD}--providers enable {','.join(todo)}{RESET}")
+    utf8_print(f"  {DIM}The active account is the main line; it gets a row in your other windows.{RESET}\n")
+
+
+def _print_provider_table(items):
+    head = f"  {'ID':<16} {'TYPE':<8} {'LABEL':<24} {'ON':<4} {'SOURCE':<34} STATUS"
+    utf8_print(f"{DIM}{head}{RESET}")
+    for i in items:
+        on = f"{GREEN}on{RESET}  " if i.get("enabled") else f"{DIM}off{RESET} "
+        status = _sanitize(i.get("note") or "")
+        age = _format_age(i.get("age_seconds"))
+        if age and status in ("ok", "active", "configured"):
+            status += f" ({age} ago)" if i["type"] != "claude" else f" (data {age} old)"
+        if i.get("tier"):
+            status += f"  {_sanitize(i['tier'])}"
+        src = _sanitize(i.get("path") or "-")[:34]
+        utf8_print(f"  {_sanitize(i['id']):<16} {i['type']:<8} {_sanitize(i['label']):<24} "
+                   f"{on} {src:<34} {status}")
+
+
+_PROVIDERS_USAGE = """Usage: --providers <command>
+  list                          configured providers (default)
+  detect [--json]               what this machine has (same as --detect-providers)
+  enable <id>[,<id>...]         turn rows on   e.g. --providers enable claude:b,codex
+  disable <id>[,<id>...]        turn rows off
+  label <id> <text>             rename a row   e.g. --providers label claude:b Work
+  remove <id>                   drop an entry from the config
+  add-file <id> <path> [label]  a row read from a JSON file another tool writes"""
+
+
+def _split_ids(args):
+    out = []
+    for a in args:
+        out += [p.strip() for p in a.split(",") if p.strip()]
+    return out
+
+
+def cmd_providers(argv):
+    """Handle ``--providers ...``. Returns a process exit code (0 = ok)."""
+    argv = list(argv or [])
+    action = argv[0].lower() if argv else "list"
+    rest = argv[1:]
+    if action in ("-h", "--help", "help"):
+        utf8_print(_PROVIDERS_USAGE)
+        return 0
+    if action == "detect":
+        cmd_detect_providers(as_json="--json" in rest)
+        return 0
+    config = load_config()
+    if action == "list":
+        entries = _normalize_providers(config.get("providers"))
+        if not entries:
+            utf8_print("No providers configured. Run --detect-providers to see what this machine has.")
+            return 0
+        active = _active_provider_id(config, entries)
+        items = []
+        for e in entries:
+            loc = _provider_location(e)
+            items.append({"id": e["id"], "type": e["type"],
+                          "label": e.get("label") or _provider_default_label(e),
+                          "path": _tilde(loc) if loc else None, "enabled": e.get("enabled"),
+                          "active": e["id"] == active, "tier": None, "age_seconds": None,
+                          "note": "active (main line)" if e["id"] == active else ""})
+        utf8_print("")
+        _print_provider_table(items)
+        if not (config.get("show") or {}).get("providers", True):
+            utf8_print(f"\n  {YELLOW}Rows are hidden{RESET} (run --show providers)")
+        utf8_print("")
+        return 0
+    try:
+        if action in ("enable", "disable"):
+            ids = _split_ids(rest)
+            if not ids:
+                utf8_print(_PROVIDERS_USAGE)
+                return 2
+            if action == "enable":
+                set_providers(config, enable_ids=ids)
+            else:
+                set_providers(config, disable_ids=ids)
+            msg = f"{'Enabled' if action == 'enable' else 'Disabled'}: {', '.join(i.lower() for i in ids)}"
+        elif action == "label":
+            if len(rest) < 2:
+                utf8_print(_PROVIDERS_USAGE)
+                return 2
+            text = " ".join(rest[1:])
+            set_providers(config, labels={rest[0]: text})
+            msg = f"Label for {rest[0].lower()}: {_clean_provider_label(text) or '(default)'}"
+        elif action == "remove":
+            if len(rest) != 1:
+                utf8_print(_PROVIDERS_USAGE)
+                return 2
+            pid = _normalize_provider_id(rest[0])
+            entries = _normalize_providers(config.get("providers"))
+            if pid is None or pid not in {e["id"] for e in entries}:
+                raise ValueError(f"'{_sanitize(rest[0])[:40]}' is not configured "
+                                 "(see --providers list).")
+            config["providers"] = [e for e in entries if e["id"] != pid]
+            msg = f"Removed: {pid}"
+        elif action == "add-file":
+            if len(rest) < 2:
+                utf8_print(_PROVIDERS_USAGE)
+                return 2
+            raw_id = rest[0].strip().lower()
+            if raw_id.startswith("file:"):
+                raw_id = raw_id[len("file:"):]
+            pid = _normalize_provider_id("file:" + raw_id)
+            if pid is None or not raw_id:
+                raise ValueError(f"'{_sanitize(rest[0])[:40]}' is not a valid id "
+                                 "(letters, digits, '_' and '-').")
+            path = rest[1].strip()
+            if not path or "\x00" in path or len(path) > 1024:
+                raise ValueError("Give the path of the JSON file.")
+            entries = _normalize_providers(config.get("providers"))
+            label = _clean_provider_label(" ".join(rest[2:])) if len(rest) > 2 else None
+            existing = next((e for e in entries if e["id"] == pid), None)
+            if existing is None:
+                if len(entries) >= _MAX_PROVIDERS:
+                    raise ValueError(f"At most {_MAX_PROVIDERS} providers can be configured; "
+                                     "remove one first (--providers remove <id>).")
+                existing = {"id": pid, "type": "file", "enabled": True}
+                entries.append(existing)
+            existing.update({"path": path, "enabled": True})
+            if label:
+                existing["label"] = label
+            config["providers"] = _normalize_providers(entries)
+            msg = f"Added {pid} -> {_sanitize(path)}"
+            if not Path(os.path.expanduser(path)).is_file():
+                msg += f"\n  {YELLOW}Note:{RESET} the file does not exist yet; the row shows -- until it does."
+        else:
+            utf8_print(f"Unknown --providers command '{_sanitize(action)[:40]}'.\n{_PROVIDERS_USAGE}")
+            return 2
+    except ValueError as exc:
+        utf8_print(f"{RED}Error:{RESET} {exc}")
+        return 1
+    save_config(config)
+    try:
+        os.remove(get_cache_path())
+    except OSError:
+        pass
+    utf8_print(msg)
+    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -8665,6 +10359,16 @@ def main():
             utf8_print(f"Effort format: {BOLD}{current}{RESET}  (renders as: {_format_effort('medium', current)})")
         return
 
+    if "--detect-providers" in args:
+        cmd_detect_providers(as_json="--json" in args)
+        return
+
+    if "--providers" in args:
+        rc = cmd_providers(args[args.index("--providers") + 1:])
+        if rc:
+            raise SystemExit(rc)
+        return
+
     if "--config" in args:
         cmd_print_config()
         return
@@ -8720,7 +10424,7 @@ def main():
         "prompt_cache_warm", "prompt_cache_hit_pct", "prompt_cache_expires_at",
         "spend_limit", "repo_slug", "session_name",
     }
-    stdin_ctx_path = get_state_dir() / "stdin_ctx.json"
+    stdin_ctx_path = get_account_state_dir() / "stdin_ctx.json"
     persisted = {}
     try:
         with open(str(stdin_ctx_path), "r", encoding="utf-8") as f:
@@ -8895,10 +10599,11 @@ def main():
                     model_caps_fetched_at=_caps_ts,
                     rate_limited_until=_rl_until, rate_limit_fails=_rl_fails,
                     model_caps_attempted_at=_caps_attempted)
+        _seed_active_provider_cache(usage_from_stdin, config)
 
         line = append_update_indicator(line, config)
         line = append_claude_update_indicator(line, config, stdin_ctx)
-        line = _fit_line(line, config)
+        line = _fit_line(_append_provider_rows(line, config), config)
         sys.stdout.buffer.write((line + RESET + "\n").encode("utf-8"))
         return
 
@@ -8912,7 +10617,7 @@ def main():
             line = cached.get("line", "")
         line = append_update_indicator(line, config)
         line = append_claude_update_indicator(line, config, stdin_ctx)
-        line = _fit_line(line, config)
+        line = _fit_line(_append_provider_rows(line, config), config)
         sys.stdout.buffer.write((line + RESET + "\n").encode("utf-8"))
         return
 
@@ -8924,6 +10629,7 @@ def main():
         else:
             line = "No credentials \u2014 run claude and /login"
         write_cache(cache_path, line)
+        line = _fit_line(_append_provider_rows(line, config), config)
         sys.stdout.buffer.write((line + RESET + "\n").encode("utf-8"))
         return
 
@@ -8972,7 +10678,7 @@ def main():
                     cache_path, line,
                     rate_limited_until=retry_at, rate_limit_fails=fails,
                 )
-            line = _fit_line(line, config)
+            line = _fit_line(_append_provider_rows(line, config), config)
             sys.stdout.buffer.write((line + RESET + "\n").encode("utf-8"))
             return
         else:
@@ -9021,7 +10727,7 @@ def main():
         write_cache(cache_path, line)
     line = append_update_indicator(line, config)
     line = append_claude_update_indicator(line, config, stdin_ctx)
-    line = _fit_line(line, config)
+    line = _fit_line(_append_provider_rows(line, config), config)
     sys.stdout.buffer.write((line + RESET + "\n").encode("utf-8"))
 
 
