@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  Real-time usage monitor for Claude Code — session limits, weekly limits, per-model caps (Opus/Sonnet/Fable), cost tracking, and 10 themes with animations. All in your status bar.
+  Real-time usage monitor for Claude Code: session and weekly limits, your other subscriptions, cost, agent teams and 10 themes with animations. All in your status bar.
 </p>
 
 <p align="center">
@@ -21,18 +21,20 @@
 
 ## What is this?
 
-A single-file Python status bar for Claude Code that shows everything you need at a glance — no API key required, zero dependencies, works with your existing Claude Code subscription.
+A single-file Python status bar for Claude Code. It shows how much of your 5-hour and weekly limits you have used, what the session costs, how full the context window is, and what your agents are doing. If you have more than one subscription (a second Claude account, Codex, Gemini), each one gets its own row underneath.
+
+It needs no API key and no dependencies, and it works with your existing Claude Code login. Setup is a guided wizard with live previews.
 
 <p align="center">
   <img src="assets/demo.gif" alt="claude-pulse themes demo" width="700" />
   <br>
-  <sub>10 built-in themes with colour-coded bars that shift green → yellow → red as usage increases</sub>
+  <sub>10 built-in themes with colour-coded bars that shift green, yellow, red as usage increases</sub>
 </p>
 
 <p align="center">
   <img src="assets/rainbow.gif" alt="Rainbow animation demo" width="700" />
   <br>
-  <sub>Rainbow animation — flowing gradient that shifts on every refresh</sub>
+  <sub>Rainbow animation: a flowing gradient that shifts on every refresh</sub>
 </p>
 
 <p align="center">
@@ -41,71 +43,51 @@ A single-file Python status bar for Claude Code that shows everything you need a
   <sub>Automatic update notifications for both claude-pulse and Claude Code</sub>
 </p>
 
+## What you see
+
+The default bar, as Claude Code draws it under your prompt:
+
 ```
-Session ━━━───────── 27% 2h 53m | Weekly ━━━━━━━━━─── 73% R:Fri 3pm | Fable ━━───────── 18% | Context ━━━━──────── 35% | $38.75 | +142 -37 | Opus 5 | Effort: XHigh | ⚡fast | main
+Session ━━━───────── 27% 2h 53m | Weekly ━━━━━━━━━─── 73% R:Fri 3pm | Context ━━━━──────── 35% | $38.75 | +142 -37 | Opus 5.5 | Effort: XHigh | ⚡fast | main
 ```
 
-## What's new in 3.3.0
+1. **Session**: the 5-hour window, with the time until it resets.
+2. **Weekly**: the 7-day window, with the day and time it resets (`R:` is a prefix you can change).
+3. **Context**: how full the context window is. A `⚠ Context` label appears above 90%, or above 70% while it fills quickly.
+4. **Cost**: what this session would cost at API prices, in your own currency.
+5. **Lines changed**: lines added and removed this session.
+6. **Model**: the model Claude Code is using.
+7. **Effort**: the reasoning effort level, colour-escalating as it rises.
+8. **Fast mode**: shown only while Opus fast mode is on.
+9. **Branch**: the current git branch.
 
-- **Sonnet 5 priced at its now-permanent $2/$10 rate** — Anthropic cancelled the scheduled September increase to $3/$15. Historical turns are priced by their own date either way, so a promo lapsing can never retroactively inflate the cost widgets.
-- **GitLab merge requests render as `!N`** via the `pr.kind` stdin field (Claude Code 2.1.234+); GitHub PRs keep `#N`.
-- **MiniMax quota works on Windows** — npm installs `mmx` as a `.cmd` shim that `subprocess` won't auto-resolve; the call now goes through a PATH lookup (thanks @PFalko, #50).
-- **The repaint timer heals itself** — a focus timer expiring on its own or a heartbeat going stale no longer leaves the 15s timer armed, and a heartbeat waking from idle arms it immediately.
-- **Self-hosted star chart** — GitHub restricted the stargazers API to repo collaborators, so the README chart is rendered weekly by a workflow with the repo's own token and committed as static SVGs.
-- **Fable weekly cap** — read from the model-scoped `limits` the API reports, so new models are picked up without a code change.
-- **Claude 5-era stdin fields** — reasoning effort, `⚡fast` mode, thinking state, active subagent, PR badge, and cache-hit ratio.
-- **Fixed: the refresh timer never worked.** Every version up to 3.1.0 wrote a `refresh` key that Claude Code does not have, so it was silently ignored — animations, the heartbeat and the focus countdown froze whenever the session went idle. The real setting is `refreshInterval`, and it is now set only when something time-based is on screen.
-- **~40% faster repaints** (204ms → 118ms): `claude --version` and `git rev-parse` were both running on *every* repaint just to validate hourly caches.
-- **Per-model bars no longer invent data** — Claude Pro reports `null` for the model-scoped windows, and 3.1.0 drew a hardcoded `Sonnet 0%` bar in that case.
-- **Zero API calls, for real** — the per-model caps arrive on stdin, but 3.1.0 discarded them and re-fetched over OAuth. That call is gone.
-- **Two-line layout**, rolling **7-day cost** widget, `CLAUDE_CONFIG_DIR` support, exponential backoff on 429, and an update check that no longer nags forks forever.
-- **Corrupt state can't blank the bar** — a truncated or hand-edited cache/settings file used to raise on the hot path. Every state read now degrades to a cache miss instead, and one malformed rate-limit field no longer discards the windows after it.
-- **Subagent panel rows** via `subagentStatusLine`, a live agent counter from the `SubagentStart`/`SubagentStop` hooks, and an opt-in budget bar.
-- **The heartbeat is now opt-in** — the `[/] 42 tools 5m` spinner is noise for most people, needs a hook, and kept the repaint timer alive. `--show heartbeat` brings it back.
-- **Peak hours removed.**
+With other subscriptions switched on, each one adds a row under the main line:
 
-Python floor is **3.8** — 3.1.0 advertised 3.6+ but did not parse below 3.12. Test suite: 21 → 204.
+```
+Claude (Defend) 5h ━━━───────── 27% 2h 53m | Weekly ━━━━━━━━━─── 73% R:Fri 3pm | Context ━━━━──────── 35% | $38.75 | +142 -37 | Opus 5.5 | Effort: XHigh | team 3 · tasks 4/7 | main
+Claude (Sunny)  5h ──────────── 3%  R:3pm  | Weekly ━━━━━━━━──── 63% R:Wed 3pm
+Gemini          5h ──────────── 1%  R:2am  | Weekly ━━━━━━━━──── 66% R:Fri 11pm
+Codex           5h ━─────────── 12% R:3pm  | Weekly ──────────── 2%  R:Sun 2am
+```
 
-## Features
+1. **Main line**: this window's own account. Its `Session` label becomes `Claude (<label>) 5h` so the rows line up.
+2. **Another Claude account**: a second `CLAUDE_CONFIG_DIR`, read with that account's own login.
+3. **Gemini**: Google Antigravity, read from its local status file.
+4. **Codex**: read from Codex CLI's local session files.
 
-| Feature | Description |
-|---|---|
-| **Session & Weekly bars** | Colour-coded progress bars (green → yellow → red) for 5-hour session and 7-day weekly limits |
-| **Context window** | Live context usage percentage with pressure warnings at 70%/90% |
-| **Cost tracking** | Real-time session cost in your local currency (USD, GBP, EUR, + 25 more) with live exchange rates |
-| **Per-model weekly caps** | Separate bars for Opus, Sonnet and **Fable** weekly budgets, read from the model-scoped limits the API reports. Shown only when your plan actually reports them |
-| **Effort & fast mode** | Reasoning effort, written as `Effort: Medium` by default and colour-escalating with the level (`--effort-format full`/`short` for `Medium`/`med`), plus a **⚡fast** badge while Opus fast mode is on |
-| **Subagent & PR** | Active subagent name, plus an opt-in clickable PR badge with review state (OSC 8 hyperlink) |
-| **Cache efficiency** | Opt-in indicator for the share of input served from cache — the clearest cost signal on stdin |
-| **Two-line layout** | Split widgets across two rows with `line1_widgets` / `line2_widgets` |
-| **Subagent rows** | Custom per-agent rows in the agent panel via `subagentStatusLine` — status, model, effort, a context bar from `tokenCount`/`contextWindowSize`, and elapsed time |
-| **Live agent counter** | `agents 3 live · 47/200` from `SubagentStart`/`SubagentStop` hooks, colour-escalating toward the caps |
-| **Agent team** | `team 3 · tasks 4/7` — teammates seen so far and shared-task progress from the `TeammateIdle`/`TaskCreated`/`TaskCompleted` hooks (`--install-hooks`); the task tally turns green when the list is done. Task counts need Claude Code's Task tools, which newer models only get with `CLAUDE_CODE_ENABLE_TODO_TOOLS=1`. See [its limitations](#agent-team-limitations) |
-| **Budget bar** | Spend against a ceiling you set with `--budget` to match your `--max-budget-usd` |
-| **Live heartbeat** | Opt-in spinner with tool count and elapsed time — `--show heartbeat` plus `--install-hooks` |
-| **Git branch** | Current branch name always visible |
-| **Model display** | Shows which model is active (Fable, Opus, Sonnet, Haiku) |
-| **10 themes** | default, ocean, sunset, mono, neon, pride, frost, ember, candy, rainbow |
-| **5 animation modes** | off, rainbow, pulse, glow, shift — each visually distinct |
-| **8 bar styles** | classic, block, shade, pipe, dot, square, star, braille |
-| **Lines changed** | Shows `+42 -7` in green/red — lines added and removed this session, read from stdin |
-| **Cumulative cost** | Opt-in widget showing total API-equivalent cost across all sessions (cached, 5-min refresh) |
-| **Widget priorities** | Every widget has a priority number — reorder them with `--priority model=5,cost=15` |
-| **Focus timer** | Built-in focus timer — `--focus start 25` shows countdown in the status bar |
-| **Auto-updates** | Notifies when a new version of claude-pulse or Claude Code is available |
-| **Staleness indicator** | Shows data age when cached data is old |
-| **Zero API calls** | Reads rate limits directly from Claude Code's stdin (v2.1.80+) — no OAuth, no rate limiting |
+See [Providers and accounts](#providers-and-accounts).
 
-## Quick Start
+## Quick start
 
-### Plugin marketplace (recommended)
+### Plugin marketplace
 
 ```
 /plugin marketplace add NoobyGains/claude-pulse
 /plugin install claude-pulse
+/claude-pulse:setup
 ```
 
-Then run `/pulse` to configure. Restart Claude Code.
+`/claude-pulse:setup` installs the status line with safe defaults. A plugin cannot register a status line by itself, so this step is needed. Then run `/claude-pulse:pulse setup` to choose hooks, providers, theme and widgets. Restart Claude Code.
 
 ### One-liner install
 
@@ -119,149 +101,236 @@ curl -fsSL https://raw.githubusercontent.com/NoobyGains/claude-pulse/main/instal
 irm https://raw.githubusercontent.com/NoobyGains/claude-pulse/main/install.ps1 | iex
 ```
 
+Both installers clone the repo to `~/.claude-pulse` and then run `--setup`. In a terminal that is the [setup wizard](#setup-wizard). Without a terminal (CI, a dotfiles script, or `CLAUDE_PULSE_NONINTERACTIVE=1`) it takes the defaults. `CLAUDE_PULSE_DIR` changes the install folder and `CLAUDE_PULSE_REPO_URL` changes where it clones from.
+
 ### Manual install
 
 ```bash
 git clone https://github.com/NoobyGains/claude-pulse.git ~/.claude-pulse
-python3 ~/.claude-pulse/claude_status.py --install
+python3 ~/.claude-pulse/claude_status.py --setup
 ```
 
-Restart Claude Code. That's it.
+Restart Claude Code. After that, `/pulse setup` inside Claude Code does the same job by asking you questions. `--install` is the older, prompt-free way: it installs the status line, the agent-panel rows and `/pulse`, and nothing else.
 
-### Enable the live heartbeat (optional)
+## Setup wizard
 
-The heartbeat shows a tool counter and elapsed time, updated on every tool call:
+`python3 claude_status.py --setup` opens a full-screen guided setup. Every choice that changes how the bar looks has a live preview. It has 14 screens:
+
+1. **Welcome**: a short report on what it found (Python, Claude Code, your config folder, `settings.json`, the current status line, hooks and `/pulse`).
+2. **Status line**: install claude-pulse, or replace another tool's status line. The old command is printed at the end so you can put it back.
+3. **Hooks**: live agents, agent team, heartbeat. See [Hooks](#hooks).
+4. **Providers**: the other subscriptions it found on this machine. Tick the ones you want and rename them.
+5. **Model caps**: the Opus, Sonnet and Fable weekly bars. Off by default because they cost one usage-API call per refresh.
+6. **Theme**: the theme picker.
+7. **Bar size**
+8. **Bar style**
+9. **Layout**
+10. **Currency**: the one it detected comes first.
+11. **Clock**: 12-hour or 24-hour reset times.
+12. **Effort**: how the reasoning effort is written.
+13. **Widgets**: the optional ones, such as cache hit rate, PR badge, 7-day cost and budget.
+14. **Summary**: everything that will change.
+
+Nothing is written until you confirm the summary. Esc on any screen leaves your machine exactly as it was, and the left arrow goes back one screen.
+
+The unattended version, `--setup --non-interactive`, is what runs when there is no terminal. It installs the status line, the agent-panel rows and `/pulse`, and switches on any Claude accounts, Codex and Gemini it detects. It never enables MiniMax and it installs no hooks.
+
+Git Bash's mintty window cannot run the full-screen screens. Use Windows Terminal or PowerShell, or prefix the command with `winpty`.
+
+Before any write, the current `settings.json` is copied to `settings-backups/` in the [state folder](#where-things-live), keeping the newest five per config folder.
+
+## Providers and accounts
+
+Providers add one status row per *other* subscription. `--detect-providers` shows what this machine has, and the wizard (or `/pulse providers`) turns rows on.
+
+| What | Id | Where it is read from |
+|---|---|---|
+| Other Claude Code accounts | `claude:default`, `claude:<suffix>` (for example `claude:b` for `~/.claude-b`) | Every `~/.claude*` folder that holds a `.credentials.json` |
+| Codex CLI | `codex` | Session files under `~/.codex` |
+| Google Antigravity (Gemini) | `gemini`, `gemini:<suffix>` | `statusline_last_live.json` under `~/.gemini/antigravity-cli*` |
+| MiniMax | `minimax` | The `mmx` CLI on your PATH. Never switched on automatically |
+| Anything else | `file:<name>` | A JSON file that any tool can write |
 
 ```bash
-python3 ~/.claude-pulse/claude_status.py --install-hooks
+python3 ~/.claude-pulse/claude_status.py --detect-providers          # what is here
+python3 ~/.claude-pulse/claude_status.py --providers enable claude:b,codex
+python3 ~/.claude-pulse/claude_status.py --providers label claude:b Work
+python3 ~/.claude-pulse/claude_status.py --providers list
 ```
 
-Restart Claude Code for hooks to take effect.
+The sub-commands are `list`, `detect`, `enable`, `disable`, `label`, `remove` and `add-file`. Add `--json` to `--detect-providers` for machine-readable output. Labels are 24 characters at most, and up to 8 providers can be configured.
 
-## Configuration
+### How the rows behave
 
-Use `/pulse` in Claude Code for an interactive setup wizard, or configure directly:
+- Rows use the same theme, bar style and bar size as the main line. At most 6 are shown.
+- **Other Claude accounts** use that account's own token, read from its `.credentials.json`. The token is never refreshed, stored or logged. The status line makes at most one usage-API call per account every `providers_refresh_seconds` (300 by default, 60 at the lowest), and never more than one per minute. A 429 backs off, and a 401 or 403 waits 15 minutes.
+- Each Claude Code window also saves its own account's numbers from the data Claude Code pipes in. With both windows open, no API call is needed at all.
+- **Codex and Gemini** rows are read from local files only. They show the last values seen, not live ones.
+- **MiniMax** runs `mmx` to read its quota, which is why it is never on by default. It is hidden while the window itself runs on MiniMax.
+- A Claude or MiniMax row whose data is more than 30 minutes old is drawn with dim bars and a `~` in front of the percentage, for example `~29%`.
+- In the compact and minimal layouts the rows line up with each other but not with the main line.
+
+### Your own provider: a JSON file
+
+`--providers add-file <id> <path> [label]` adds a row that is read from a JSON file. Anything that can write a file can feed it, for example a small script that polls another service. The id is stored as `file:<id>`.
+
+```json
+{"label": "Kimi",
+ "five_hour": {"used_percentage": 42, "resets_at": 1792386351},
+ "seven_day": {"used_percentage": 7,  "resets_at": "2026-10-26T10:00:00Z"}}
+```
+
+- The two windows can sit at the top level or inside a `rate_limits` object, which is the shape Claude Code itself uses.
+- `utilization` is accepted in place of `used_percentage`.
+- `resets_at` can be epoch seconds, epoch milliseconds or an ISO 8601 time. It is optional, and a reset time in the past reads as 0%.
+- Either window may be missing. The file may be 1 MB at most.
+
+### Multiple Claude accounts
+
+The pattern Claude Code supports is one config folder per account:
 
 ```bash
-# Themes
---theme ocean              # ocean, sunset, mono, neon, pride, frost, ember, candy, rainbow
-
-# Animation
---animate rainbow          # rainbow, pulse, glow, shift, off
---animation-speed fast     # slow, normal, fast
-
-# Display
---bar-size large           # small, small-medium, medium, medium-large, large
---bar-style block          # classic, block, shade, pipe, dot, square, star, braille
---layout compact           # standard, compact, minimal, percent-first
---wrap auto                # off (default, truncate) or auto (wrap to 2 lines at | when narrow)
-
-# Two-line layout (config.json) — deliberate split, unlike --wrap's overflow handling.
-#   "line2_widgets": ["model", "effort", "branch"]   push these to row 2
-#   "line1_widgets": ["session", "weekly"]           allowlist row 1, rest flows to row 2
-# line1_widgets wins if both are set.
-
-# Currency (auto-converts USD via live exchange rate)
---currency £               # $, £, €, ¥, C$, A$, ₹, kr, and 20+ more
-
-# Budget (Claude Code's --max-budget-usd is CLI-only and can't be read from
-# here, so set the same number to track spend against it)
---budget 25                # or: --budget off
-
-# Caps shown as denominators. Claude Code enforces these but doesn't report
-# them, so set them to match your setup. 0 hides that denominator.
---limits                   # show current values
---limits subagent_spawns=200,subagent_concurrent=20,web_searches=200
-
-# Effort display (how the reasoning-effort level is written)
---effort-format labeled    # labeled (default) 'Effort: Medium' · full 'Medium' · short 'med'
-
-# Clock and timers
---clock-format 12h         # 12h or 24h
---weekly-timer-format auto # auto, countdown, date
---weekly-timer-prefix "R:" # text before the weekly reset time
-
-# Other display options
---context-format percent   # percent or tokens (155k/1M)
---max-width 80             # % of terminal width the bar may use
---extra-display auto       # auto, full, amount, minimal (bonus credits)
---streak-style fire        # how the daily streak is drawn
---show-all                 # preview every widget at once
-
-# Widget priority (lower = leftmost)
---priority                 # Show all widget priorities
---priority model=5,cost=15 # Move model first, cost after session
-
-# Toggle features
---show lines               # Show +N/-N lines changed
---show burn_rate           # Show usage velocity (↑3%/hr)
---show git_drift           # Show commits ahead/behind
---show cumulative_cost     # Show total API-equivalent cost across all sessions
---show weekly_cost         # Show rolling 7-day API-equivalent cost
---show cache               # Show % of input served from cache (cost signal)
---show pr                  # Show clickable PR badge + review state
---show thinking            # Show whether extended thinking is on
---show files_changed       # Show modified file count
---show last_tool           # Show last tool Claude used
---hide cost                # Hide cost ticker
---hide heartbeat           # Hide tool counter
---hide fable               # Hide the Fable weekly cap bar
---hide fast_mode           # Hide the ⚡fast badge
---hide agent               # Hide the active subagent name
---hide subagents           # Hide the live agent counter
---hide team                # Hide the agent-team segment
---hide budget              # Hide the budget bar
-
-# Internal (invoked by Claude Code, not by you):
-#   --subagent-status-line   renders the agent-panel rows
-#   --hook-refresh           PostToolUse heartbeat
-#   --hook-subagent-start/-stop   live agent counter
-#   --hook-teammate-idle, --hook-task-created/-completed   agent-team segment
-#   --debug-stdin            dump the raw stdin payload for troubleshooting
-
-# Focus timer
---focus start 25        # Start a 25-minute focus timer
---focus stop            # Stop the timer
---focus status          # Check remaining time
-
-# Info
---config                   # Show current configuration
---stats                    # Show session statistics
---heatmap                  # Show activity heatmap
---update                   # Update to latest version
+CLAUDE_CONFIG_DIR=~/.claude-work claude
 ```
 
-## How It Works
+Run `--setup` once per account with that variable set, so each account's `settings.json` gets the status line:
 
-```
-┌───────────────────────────────────────────────┐
-│  Claude Code                                  │
-│  Pipes JSON via stdin on every status refresh │
-│  (model, context, cost, rate_limits, effort,  │
-│   fast_mode, agent, pr, version)              │
-├───────────────────────────────────────────────┤
-│  claude_status.py                             │
-│  Reads stdin → builds ANSI status line        │
-│  No API calls needed (v2.1.80+)               │
-├───────────────────────────────────────────────┤
-│  PostToolUse Hook (optional)                  │
-│  Updates tool count, heartbeat, git branch    │
-│  on every tool call                           │
-├───────────────────────────────────────────────┤
-│  Cache Layer                                  │
-│  Exchange rates (24h) · update checks (1h)    │
-│  cumulative + weekly cost (5m) · hook (5m)    │
-│  429 backoff · animation state · history      │
-└───────────────────────────────────────────────┘
+```bash
+CLAUDE_CONFIG_DIR=~/.claude-work python3 ~/.claude-pulse/claude_status.py --setup
 ```
 
-**Data flow:** Claude Code sends session JSON via stdin → claude-pulse reads rate limits directly (no API) → renders colourised ANSI status line → Claude Code displays it.
+State that belongs to one account (usage cache, stdin context, history, sessions, heatmap and cost caches) lives in `<state folder>/accounts/<name>-<hash>/`, so two windows on two accounts no longer overwrite each other. The default `~/.claude` account keeps the shared folder, so nothing moves if you only have one. `config.json` stays shared between accounts.
 
-**Rate limits from stdin (v2.1.80+):** Claude Code sends `rate_limits` on stdin — the 5-hour and 7-day windows plus the model-scoped weekly caps (`seven_day_opus`, `seven_day_sonnet`, `seven_day_fable`). claude-pulse reads all of them straight from stdin, so no OAuth call is needed for the bars. The API is only consulted for extra/bonus credits, which stdin doesn't carry, and a 429 there now backs off exponentially instead of retrying on every repaint.
+## Widgets
 
-**Refresh cadence:** Claude Code repaints on its own events (prompt, tool use), which covers anything derived from stdin. Content that moves with the clock — animation frames, the focus countdown, the heartbeat's elapsed time — also needs a timer, so `--install` sets `statusLine.refreshInterval` (2s when animating, 15s for time-based widgets, omitted entirely for a static bar). It is re-synced automatically whenever you change a setting.
+Switch any widget on or off with `--show <id>` and `--hide <id>`, or with the wizard. Several ids can be given at once, comma-separated. The "Default" column is what you get before you change anything.
 
-**PostToolUse hook:** When installed, the hook fires on every tool call (Read, Edit, Bash, etc.), updating the heartbeat counter and git branch. The status line refreshes on each tool call, making the spinner animate during active work.
+| Id | Default | What it shows |
+|---|---|---|
+| `session` | on | The 5-hour window as a bar, with percentage |
+| `timer` | on | Time until the session window resets |
+| `weekly` | on | The 7-day window as a bar |
+| `weekly_timer` | on | When the weekly window resets (`--weekly-timer-format`, `--weekly-timer-prefix`) |
+| `context` | on | Context window usage, as a percentage or in tokens (`--context-format`) |
+| `context_warning` | on | The `⚠ Context` label and a fast-rising arrow as the window fills |
+| `cost` | on | Session cost at API prices, in your currency |
+| `model` | on | The active model |
+| `branch` | on | The current git branch |
+| `effort` | on | Reasoning effort, such as `Effort: XHigh` (`--effort-format`) |
+| `fast_mode` | on | `⚡fast` while Opus fast mode is on |
+| `agent` | on | `▸name` of the active subagent |
+| `worktree` | on | The worktree branch, when you work in one |
+| `lines` | on | `+142 -37`, lines added and removed this session |
+| `subagents` | on | `agents 3 live · 47/200`, needs the [agents hook](#hooks) |
+| `team` | on | `team 3 · tasks 4/7`, needs the [team hooks](#agent-teams) |
+| `budget` | on | A spend bar against the amount from `--budget`. Appears once a budget is set |
+| `spend_limit` | on | `spend $12.40/$50 wk`, only when a Claude apps gateway reports a spend limit |
+| `providers` | on | The extra rows for [other subscriptions](#providers-and-accounts) |
+| `pomodoro` | on | The focus timer, while one is running (`--focus start 25`) |
+| `staleness` | on | `(5m ago)` when the data on screen is old |
+| `update` | on | `↑ Pulse Update` when a new claude-pulse release exists |
+| `claude_update` | on | `↑ Claude Update` when a new Claude Code release exists |
+| `opus`, `sonnet`, `fable` | off | Per-model weekly cap bars. These call the usage API, see [below](#per-model-weekly-caps) |
+| `plan` | off | Your plan name |
+| `extra` | off | Extra-usage (bonus) credits. Appears by itself if you have any (`--extra-display`) |
+| `thinking` | off | `think` or `no-think` |
+| `cache` | off | Share of input served from the prompt cache |
+| `cache_warm` | off | Prompt-cache warmth, such as `♨ 92% · 3m` |
+| `pr` | off | Clickable `#123` pull request badge with review state. GitLab merge requests show as `!123` |
+| `repo` | off | `owner/name` of the current repository |
+| `session_name` | off | The name you gave the session with `/rename` |
+| `weekly_cost` | off | Rolling 7-day API-equivalent cost |
+| `cumulative_cost` | off | API-equivalent cost across all sessions |
+| `burn_rate` | off | How fast the window is filling, such as `↑3%/hr` |
+| `runway` | off | Estimated time until the window is full |
+| `sparkline` | off | A small chart of recent session usage |
+| `status_message` | off | Replaces the `Session` label with a short message such as `Cruising` |
+| `pace` | off | How much of the window's time has passed, next to the bar |
+| `streak` | off | Days in a row you have used Claude Code (`--streak-style`) |
+| `sessions` | off | `+2 sessions` when other windows are open |
+| `git_drift` | off | Commits behind and ahead of upstream |
+| `files_changed` | off | Count of uncommitted files |
+| `heartbeat` | off | Spinner, tool count and elapsed time. Needs the [heartbeat hook](#hooks) |
+| `activity` | off | `⚡ Active` during a burst of tool calls. Needs the heartbeat hook |
+| `last_tool` | off | The last tool Claude used. Needs the heartbeat hook |
+
+`cache_warm`, `spend_limit`, `repo` and `session_name` are new in 3.4.0. They read fields that Claude Code already pipes in, so they cost nothing: no network and no hook. When a subagent has no name, the agent panel falls back to its type.
+
+Order is controlled by priority numbers. `--priority` lists them, and `--priority model=5,cost=15` moves the model first and the cost after the session. Lower is further left.
+
+### Per-model weekly caps
+
+The `opus`, `sonnet` and `fable` bars show your weekly cap for each model, when your plan reports one. Claude Code's own input carries only the 5-hour and 7-day windows, so these three come from the usage API, using your Claude Code login. They are therefore opt-in: `--show fable`, or the wizard's model caps screen. Each refresh is one API call, made at most every `model_caps_refresh_seconds` (300 by default, 60 at the lowest), and a failed attempt is not retried for 60 seconds. Claude Pro reports no model-scoped windows, so no bar appears there. This feature came from @thedanielmay in PR #53.
+
+### Models and cost
+
+The cost widgets price each turn with the rate that applies to its model:
+
+| Model | Per million tokens (in / out) |
+|---|---|
+| Fable 5.1 | $10 / $50 |
+| Opus 5.5 | $4 / $20 |
+| Sonnet 5.5 | $2 / $10 |
+| Haiku 5.5 | $0.10 / $0.50 up to 100K prompt tokens, $0.50 / $2.50 above |
+
+All four have a 1M-token context window. Costs are API-equivalent: a figure to compare sessions by, not your bill. Set the currency with `--currency £`; it converts from USD using a daily exchange rate.
+
+## Themes, animation and layout
+
+<p align="center">
+  <img src="themes.png" alt="All 10 themes" width="700" />
+</p>
+
+**10 themes**: default, ocean, sunset, mono, neon, pride, frost, ember, candy, rainbow. Set one with `--theme <name>` or `/pulse <name>`, or try them with `--pick-theme`, an arrow-key picker with a live preview.
+
+**5 animation modes**, set with `--animate <mode>`:
+
+| Mode | Effect |
+|---|---|
+| `off` | Static, no animation |
+| `rainbow` | Flowing rainbow gradient across the entire bar |
+| `pulse` | Bars cycle through vivid colours (cyan, blue, purple, pink, gold, green) |
+| `glow` | Per-character gradient that shifts across the bar each frame |
+| `shift` | Bright highlight slides across the bar |
+
+`--animation-speed` takes `slow`, `normal` or `fast`. Animation advances on every repaint, which includes the 2-second `refreshInterval` that setup configures while animation is on, so the bar keeps moving while the session is idle.
+
+**8 bar styles**, set with `--bar-style <name>`: classic, block, shade, pipe, dot, square, star, braille. If Unicode looks broken in your terminal, try `block`.
+
+**Bar sizes**: small, small-medium, medium, medium-large, large (`--bar-size`).
+
+**Layouts** (`--layout`): `standard` has full labels, `compact` uses one-letter labels, `minimal` drops the labels, and `percent-first` puts the number before the bar. `--max-width` sets the share of the terminal the bar may use, and `--wrap auto` wraps onto a second row instead of cutting the line off.
+
+For a deliberate two-row split, set `line2_widgets` (these go to row 2) or `line1_widgets` (an allowlist for row 1, the rest flows to row 2) in `config.json`. `line1_widgets` wins if both are set.
+
+## Hooks
+
+Hooks are commands Claude Code runs when something happens. claude-pulse has three groups. Install the ones you want:
+
+```bash
+python3 ~/.claude-pulse/claude_status.py --install-hooks                       # all three
+python3 ~/.claude-pulse/claude_status.py --install-hooks --only agents,team    # just these
+```
+
+The wizard's hooks screen does the same, and unticking a group there removes it again. Restart Claude Code after changing hooks.
+
+| Group | Claude Code events | What it drives | What it costs |
+|---|---|---|---|
+| `agents` | SubagentStart, SubagentStop | The live agent counter, `agents 3 live · 47/200` | A short Python run when a subagent starts or stops |
+| `team` | TeammateIdle, TaskCreated, TaskCompleted | The agent-team segment, `team 3 · tasks 4/7` | A short Python run on each of those events |
+| `heartbeat` | PostToolUse | The spinner and tool count, plus `activity` and `last_tool` | A Python run after **every** tool call, and it keeps the repaint timer alive. This is why it is off by default |
+
+The heartbeat widget itself is switched on with `--show heartbeat`.
+
+**Hooks never block Claude.** For the events where exit code 2 would steer Claude Code (SubagentStop, TeammateIdle, TaskCreated, TaskCompleted), the installed command ends in `; exit 0`. Python exits 2 by itself when the script has been moved or deleted, and without the pin that would keep subagents running, delete new tasks or refuse completions.
+
+`--install-hooks` refuses to touch a `settings.json` that is not valid JSON: it prints the problem and exits 1. Your other hooks are left alone.
+
+## Agent teams
+
+The `team` widget shows the teammates seen so far and the shared-task progress, for example `team 3 · tasks 4/7`. The task tally turns green when the list is done. It needs the `team` hook group, and agent teams need `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`. Task counts need Claude Code's Task tools, which newer models only get with `CLAUDE_CODE_ENABLE_TODO_TOOLS=1`.
+
+Subagents also get their own rows in the agent panel through `subagentStatusLine`: status, model, effort, a context bar and elapsed time. `--install` and `--setup` add that setting.
 
 ### Agent team limitations
 
@@ -274,55 +343,225 @@ The team segment only knows what the three team hooks tell it, so:
 - **Split-pane teammates** (tmux/iTerm2) run as separate sessions with their own session id, so they don't appear in the lead's segment. In-process teammates, the default, do.
 - **Six-hour sweep.** Once nothing in a session has changed for six hours its team state is removed, open tasks included.
 
-## Themes
+## Configuration
 
-<p align="center">
-  <img src="themes.png" alt="All 10 themes" width="700" />
-</p>
+The easy way is `/pulse` in Claude Code, or `--setup`. The flags below do the same from a shell, and the whole list is in [Full flag list](#full-flag-list).
 
-10 built-in themes with colour-coded bars that shift as usage increases. Set with `--theme <name>` or `/pulse <name>`.
+```bash
+--theme ocean              # default, ocean, sunset, mono, neon, pride, frost, ember, candy, rainbow
+--animate rainbow          # off, rainbow, pulse, glow, shift
+--bar-size large           # small, small-medium, medium, medium-large, large
+--bar-style block          # classic, block, shade, pipe, dot, square, star, braille
+--layout compact           # standard, compact, minimal, percent-first
+--currency £               # $, £, €, ¥, C$, A$, ₹, kr, and 20+ more
+--clock-format 12h         # 12h or 24h
+--effort-format labeled    # labeled 'Effort: Medium', full 'Medium', short 'med'
+--budget 25                # spend bar; use the number you pass to Claude Code's --max-budget-usd
+--limits subagent_spawns=200,subagent_concurrent=20,web_searches=200
+--show cache,pr            # turn widgets on
+--hide cost                # turn a widget off
+--preset minimal           # a compact bundle; --preset default is a factory reset
+--focus start 25           # focus timer; --focus stop, --focus status
+--config                   # print the current configuration
+--stats                    # usage statistics and streaks
+--heatmap                  # activity heatmap
+--update                   # update a git install
+```
 
-## Animation Modes
+`--budget` exists because Claude Code's `--max-budget-usd` can only be given on its command line and cannot be read from the status line. Set the same number here to track spend against it. `--limits` sets the denominators for the subagent counter, since Claude Code enforces those caps but does not report them.
 
-| Mode | Effect |
+### Where things live
+
+| What | Windows | macOS / Linux |
+|---|---|---|
+| `config.json` | `%LOCALAPPDATA%\claude-status\` | `~/.config/claude-status/` (or `$XDG_CONFIG_HOME`) |
+| State and caches | `%LOCALAPPDATA%\claude-status\` | `~/.cache/claude-status/` (or `$XDG_CACHE_HOME`) |
+| Settings backups | `<state folder>/settings-backups/` | `<state folder>/settings-backups/` |
+| Claude Code's `settings.json` | `$CLAUDE_CONFIG_DIR` or `~/.claude` | `$CLAUDE_CONFIG_DIR` or `~/.claude` |
+
+### `config.json` keys
+
+| Key | Meaning |
 |---|---|
-| `off` | Static, no animation |
-| `rainbow` | Flowing rainbow gradient across the entire bar |
-| `pulse` | Bars cycle through vivid colours (cyan → blue → purple → pink → gold → green) |
-| `glow` | Per-character gradient that shifts across the bar each frame |
-| `shift` | Bright highlight slides across the bar |
+| `theme`, `animate`, `animation_speed`, `text_color` | Colours and animation |
+| `bar_size`, `bar_style`, `layout`, `max_width`, `wrap` | Shape of the bars and line |
+| `show` | Widget on/off map (see [Widgets](#widgets)) |
+| `widget_priority` | Widget order, for example `{"model": 5}` |
+| `line1_widgets`, `line2_widgets` | Two-row split |
+| `currency`, `budget_usd`, `limits` | Cost display |
+| `clock_format`, `effort_format`, `context_format`, `extra_display`, `streak_style` | Number and time formats |
+| `weekly_timer_format`, `weekly_timer_prefix` | The weekly reset timer |
+| `providers` | List of `{id, type, enabled, label?, dir or path, bucket?}`. Manage it with `--providers` |
+| `providers_label_main` | `true` by default. Names the main line `Claude (<label>) 5h` on the standard layout |
+| `providers_refresh_seconds` | Poll interval for other Claude accounts. Default 300, minimum 60 |
+| `model_caps_refresh_seconds` | Poll interval for the per-model caps. Default 300, minimum 60 |
 
-Set with `--animate <mode>`. Animation advances on every repaint — Claude Code's own events plus the 2-second `refreshInterval` that `--install` configures while animation is on, so the bar keeps moving even while the session is idle.
+### The refresh timer
+
+Claude Code repaints the status line on its own events (a prompt, a tool call). Anything that moves with the clock, such as animation frames, the focus countdown or the heartbeat's elapsed time, needs a timer as well. Setup writes `statusLine.refreshInterval` into `settings.json` for this: 2 seconds while animating, 15 seconds for time-based widgets, and nothing at all for a static bar. It is kept in sync whenever you change a setting.
+
+## Full flag list
+
+This is the output of `python claude_status.py --help`:
+
+```
+claude-pulse 3.4.0 — usage status line for Claude Code
+
+Usage: python claude_status.py [flag [args]]
+With no flag and JSON on stdin (how Claude Code runs it) it prints the status line.
+
+Setup
+  --setup [--non-interactive]         Guided setup: status line, hooks, providers, theme, widgets
+  --install                           Install the status line, agent-panel rows and /pulse (no questions)
+  --update                            Update a git install to the latest release
+  --help                              Show this list (also -h)
+
+Look
+  --theme <name>                      Set the colour theme (see --themes)
+  --pick-theme                        Arrow-key theme picker with a live preview
+  --pick                              Same as --pick-theme
+  --themes                            List themes
+  --themes-demo                       Preview the status line in every theme
+  --show-themes                       Theme previews in their accent colours
+  --show-colors                       List text colours
+  --show-all                          --show-themes and --show-colors together
+  --text-color <name|auto>            Colour for labels and percentages
+  --animate <off|rainbow|pulse|glow|shift>
+                                      Bar animation
+  --animation-speed <slow|normal|fast>
+                                      Animation speed
+  --bar-size <small|small-medium|medium|medium-large|large>
+                                      Bar width
+  --bar-style <name>                  Bar characters (classic, block, dot, braille, ...)
+  --layout <standard|compact|minimal|percent-first>
+                                      How labels, bars and numbers are arranged
+  --max-width <20-100>                Percent of the terminal width to use
+  --wrap <off|auto>                   Wrap onto a second row instead of truncating
+  --preset <minimal|default>          Apply a bundle of settings (default = factory reset)
+
+Widgets
+  --show <parts>                      Turn widgets on (comma-separated)
+  --hide <parts>                      Turn widgets off (comma-separated)
+  --priority <widget=N,...>           Reorder widgets (lower = further left)
+  --currency <symbol>                 Currency for cost widgets (converted from USD)
+  --clock-format <12h|24h>            Clock for reset times
+  --effort-format <labeled|full|short>
+                                      How reasoning effort is written
+  --context-format <percent|tokens>   Context window as a percentage or tokens
+  --extra-display <auto|full|amount>  How extra-usage credits are shown
+  --weekly-timer-format <auto|countdown|date|full>
+                                      Weekly reset timer style
+  --weekly-timer-prefix <text>        Text before the weekly reset time (e.g. R:)
+  --streak-style <fire|text>          Usage streak style
+  --budget <amount|off>               Spend budget to match --max-budget-usd
+  --limits [key=N,...]                Subagent and web-search caps used as denominators
+  --focus <start [min]|stop|status>   Focus (pomodoro) timer
+
+Providers
+  --detect-providers [--json]         Find other Claude accounts, Codex, Gemini and MiniMax on this machine
+  --providers <list|detect|enable|disable|label|remove|add-file> [...]
+                                      Manage the extra status rows: --providers help lists the sub-commands
+
+Hooks
+  --install-hooks [--only heartbeat,agents,team]
+                                      Install hooks (all three groups unless --only)
+
+Info
+  --config                            Print the current configuration
+  --stats                             Usage statistics and streaks
+  --heatmap                           Usage heatmap
+  --debug-stdin                       Save and parse the JSON Claude Code pipes in
+
+Internal
+  --subagent-status-line              Agent-panel rows (run by Claude Code)
+  --hook-refresh [tool]               PostToolUse hook
+  --hook-subagent-start               SubagentStart hook
+  --hook-subagent-stop                SubagentStop hook
+  --hook-teammate-idle                TeammateIdle hook
+  --hook-task-created                 TaskCreated hook
+  --hook-task-completed               TaskCompleted hook
+
+Inside Claude Code: /pulse (or /pulse setup) does all of this by asking you.
+```
+
+Inside Claude Code, `/pulse` opens a menu: Setup, Look, Widgets, Providers, Hooks and Info. You can also go straight to a part: `/pulse setup`, `/pulse providers`, `/pulse hooks`, `/pulse ocean` (any theme name), `/pulse show`.
+
+## How it works
+
+```
+┌───────────────────────────────────────────────┐
+│  Claude Code                                  │
+│  Pipes JSON via stdin on every status refresh │
+│  (model, context, cost, rate_limits, effort,  │
+│   fast_mode, agent, pr, prompt_cache, repo)   │
+├───────────────────────────────────────────────┤
+│  claude_status.py                             │
+│  Reads stdin → builds the ANSI status line    │
+│  No API calls for the main bars (v2.1.80+)    │
+├───────────────────────────────────────────────┤
+│  Hooks (optional)                             │
+│  Agents, team, heartbeat: write small state   │
+│  files that the next repaint reads            │
+├───────────────────────────────────────────────┤
+│  Provider rows (optional)                     │
+│  Local files for Codex, Gemini, JSON files;   │
+│  one cached usage call per other Claude acct  │
+├───────────────────────────────────────────────┤
+│  Cache layer                                  │
+│  Exchange rates (24h) · update checks (1h)    │
+│  cumulative + weekly cost (5m) · 429 backoff  │
+│  animation state · history                    │
+└───────────────────────────────────────────────┘
+```
+
+**Rate limits from stdin.** Claude Code sends `rate_limits` on stdin, the 5-hour and 7-day windows, so the main bars need no OAuth call and cannot be rate limited. The API is used for three things, all optional or rare: extra (bonus) credits, the per-model caps you opted into, and the rows for other Claude accounts when none of their windows is open. A 429 backs off exponentially instead of retrying on every repaint.
+
+**Several windows.** Each window keeps its own account's state apart (see [Multiple Claude accounts](#multiple-claude-accounts)).
+
+**Corrupt state cannot blank the bar.** A truncated or hand-edited cache or settings file degrades to a cache miss instead of raising on the hot path.
+
+## Security
+
+- **No API calls for the main usage bars.** They come straight from Claude Code's stdin.
+- **Tokens only go to Anthropic.** OAuth tokens are sent only to `api.anthropic.com` (usage) and `platform.claude.com` (renewing your own expired token, kept in memory and never written back). A hardcoded allowlist enforces this, and redirects to any other host are blocked.
+- **Other accounts' tokens are read, never changed.** For a provider row, the token is read from that account's `.credentials.json` and is never refreshed, stored or logged. Refreshing it would rotate the refresh token and sign that account out.
+- **No e-mail addresses or account names are read.** Labels come from your config or from the folder name.
+- **Settings are backed up.** Before claude-pulse first writes `settings.json` it keeps a copy, and `--install-hooks` refuses to replace a file that is not valid JSON.
+- All file writes use atomic operations with 0o600 permissions
+- ANSI escape injection prevention on all external data, including provider labels and file contents
+- Hyperlink targets (PR badge) restricted to `http(s)` and rejected if they contain control characters, so nothing can break out of the OSC 8 escape
+- No `shell=True` in any subprocess call
+- Exchange rate API (frankfurter.dev): no auth, read-only, cached 24h
 
 ## Requirements
 
 - **Python 3.8+** (no pip installs needed)
 - **Claude Code** v2.1.80+ with a Pro or Max subscription (Fable reporting needs v2.1.170+)
-- No API key required — uses Claude Code's existing credentials
-
-## Security
-
-- **No API calls for usage data** — reads rate limits directly from Claude Code's stdin (v2.1.80+)
-- OAuth tokens only used as fallback for extra credits/per-model caps, sent only to `api.anthropic.com` (hardcoded allowlist)
-- All file writes use atomic operations with 0o600 permissions
-- ANSI escape injection prevention on all external data
-- Hyperlink targets (PR badge) restricted to `http(s)` and rejected if they contain control characters, so nothing can break out of the OSC 8 escape
-- No `shell=True` in any subprocess call
-- Exchange rate API (frankfurter.app) — no auth, read-only, cached 24h
+- No API key required: it uses Claude Code's existing credentials
 
 ## Troubleshooting
 
 | Issue | Fix |
 |---|---|
-| No status line visible | Run `--install` then restart Claude Code |
-| "Rate limited" message | v3.0.0+ reads limits from stdin, so the bars keep working. v3.2.0+ also backs off exponentially before retrying the API |
-| Animation/timer frozen when idle | Re-run `--install` on v3.2.0+. Earlier versions wrote a `refresh` key that Claude Code ignores; the real setting is `refreshInterval` |
-| Opus/Sonnet/Fable bar missing | Those bars render only when your plan reports that cap. Claude Pro returns `null` for the model-scoped windows |
-| Heartbeat not showing | Run `--install-hooks` then restart Claude Code. Shows after first tool call |
-| Heartbeat appears/disappears | Normal — shows when hook state is fresh (within 5 min of last tool call) |
-| Settings error after hook install | Run `/doctor` — hooks need nested format: `{matcher, hooks: [{type, command}]}` |
+| No status line visible | Run `--setup` (or `/claude-pulse:setup` for the plugin) and restart Claude Code |
+| `--setup` says it used the defaults | It found no interactive terminal. Run it in Windows Terminal, PowerShell or a normal shell, not Git Bash's mintty |
+| Setup says `settings.json` is invalid | Fix the JSON it names and run setup again. Nothing was changed |
+| Replaced my old status line by mistake | Setup prints the old command. Earlier copies of `settings.json` are in `settings-backups/` in the state folder |
+| A provider row is missing | `--providers list` shows what is configured and `--detect-providers` what exists. Check that the `providers` widget is on |
+| A Claude or MiniMax row shows `~29%` with dim bars | The data is more than 30 minutes old. Use that account once, or wait for the next refresh |
+| A provider row shows `--` | The source could not be read yet: no token, a missing file, or no rate-limit data in the newest Codex session |
+| "Rate limited" message | The main bars read stdin, so they keep working. API-backed parts back off exponentially before retrying |
+| Animation or timer frozen when idle | Run `--setup` or `--install` again. The real setting is `statusLine.refreshInterval` |
+| Opus/Sonnet/Fable bar missing | They are off by default (`--show fable`). They also render only when your plan reports that cap, and Claude Pro returns none |
+| Heartbeat not showing | Run `--install-hooks --only heartbeat`, switch the widget on with `--show heartbeat`, and restart Claude Code. It shows after the first tool call |
+| Heartbeat appears/disappears | Normal. It shows when hook state is fresh (within 5 min of the last tool call) |
+| Settings error after hook install | Run `/doctor`. Hooks need the nested format `{matcher, hooks: [{type, command}]}` |
 | Stale data showing | Data refreshes on every interaction. If idle, it shows the last known state |
 | Unicode characters broken | Try `--bar-style block` for better Windows terminal support |
+
+## Changelog
+
+What changed in each release is in [CHANGELOG.md](CHANGELOG.md).
 
 ## Support
 
@@ -345,7 +584,7 @@ If this project helped you, consider starring the repo, sharing it with others, 
 
 ## License
 
-MIT — see [LICENSE](LICENSE) for details.
+MIT, see [LICENSE](LICENSE) for details.
 
 ---
 
