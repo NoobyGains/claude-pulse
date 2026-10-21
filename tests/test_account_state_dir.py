@@ -59,6 +59,7 @@ class AccountStateDirTest(unittest.TestCase):
 
     def test_shared_files_stay_shared(self):
         self.sb.set_active(self.b)
+        self.assertEqual(cs._provider_state_dir(), self.sb.state / "providers")
         self.assertEqual(cs._team_root(), self.sb.state / "teams")
         self.assertEqual(cs._subagent_root(), self.sb.state / "subagents")
         self.assertEqual(cs._get_hook_state_path(), self.sb.state / "hook_state.json")

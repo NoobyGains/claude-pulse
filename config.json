@@ -64,5 +64,6 @@
     "subagent_spawns": 200,
     "subagent_concurrent": 20,
     "web_searches": 200
-  }
+  },
+  "providers": []
 }
