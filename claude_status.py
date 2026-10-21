@@ -1245,6 +1245,7 @@ def _cleanup_hooks():
             changed = True
 
     if changed:
+        _backup_settings(settings_path)
         _atomic_json_write(settings_path, settings)
 
     try:
@@ -1494,6 +1495,47 @@ def _load_settings_for_write(settings_path):
     return settings, None
 
 
+_SETTINGS_BACKUP_KEEP = 5
+_settings_backed_up = set()
+
+
+def _backup_settings(settings_path):
+    """Keep a copy of settings.json before claude-pulse first writes it.
+
+    The copy goes to ``<state dir>/settings-backups/<config dir name>-settings.json.<stamp>``
+    so a bad install or a wrong ``CLAUDE_CONFIG_DIR`` can be undone by hand.
+    One backup per file per process; the newest ``_SETTINGS_BACKUP_KEEP`` are
+    kept. Returns the backup path, or None when there was nothing to copy or
+    the copy failed (a failed backup never blocks the install).
+    """
+    settings_path = Path(settings_path)
+    key = str(settings_path)
+    if key in _settings_backed_up or not settings_path.is_file():
+        return None
+    try:
+        backup_dir = get_state_dir() / "settings-backups"
+        _secure_mkdir(backup_dir)
+        prefix = (_sanitize(settings_path.parent.name) or "claude")[:32]
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        dest = backup_dir / f"{prefix}-settings.json.{stamp}"
+        n = 0
+        while dest.exists():
+            n += 1
+            dest = backup_dir / f"{prefix}-settings.json.{stamp}-{n}"
+        shutil.copy2(str(settings_path), str(dest))
+        _settings_backed_up.add(key)
+        olds = sorted(backup_dir.glob(f"{prefix}-settings.json.*"),
+                      key=lambda q: (q.stat().st_mtime, q.name))
+        for old in olds[:-_SETTINGS_BACKUP_KEEP]:
+            try:
+                old.unlink()
+            except OSError:
+                pass
+        return dest
+    except (OSError, shutil.Error):
+        return None
+
+
 def _strip_pulse_hooks(hooks, groups):
     """Remove our entries for ``groups`` from a settings ``hooks`` dict in place.
 
@@ -1559,6 +1601,7 @@ def install_hooks(groups=None):
 
     settings["hooks"] = hooks
     _secure_mkdir(settings_path.parent)
+    _backup_settings(settings_path)
     _atomic_json_write(settings_path, settings)
     names = ", ".join(g for g in HOOK_GROUP_NAMES if g in groups)
     utf8_print(f"{GREEN}Installed claude-pulse hooks ({names}) to {settings_path}{RESET}")
@@ -1601,6 +1644,7 @@ def remove_hooks(groups):
     hooks = settings.get("hooks", {})
     _strip_pulse_hooks(hooks, groups)
     settings["hooks"] = hooks
+    _backup_settings(settings_path)
     _atomic_json_write(settings_path, settings)
     names = ", ".join(g for g in HOOK_GROUP_NAMES if g in groups)
     utf8_print(f"Removed claude-pulse hooks ({names}) from {settings_path}")
@@ -6368,6 +6412,7 @@ def sync_status_line_refresh(config=None):
     else:
         status_line["refreshInterval"] = interval
     try:
+        _backup_settings(settings_path)
         _atomic_json_write(settings_path, settings)
     except OSError:
         return False
@@ -6416,9 +6461,12 @@ def install_status_line():
     # Use --install-hooks for animate-while-working mode
 
     _secure_mkdir(settings_path.parent)
+    backup = _backup_settings(settings_path)
     _atomic_json_write(settings_path, settings)
 
     utf8_print(f"Installed status line to {settings_path}")
+    if backup:
+        utf8_print(f"Previous settings.json kept at {backup}")
     utf8_print("Installed subagent status line (per-agent rows in the agent panel)")
     utf8_print(f"Command: {python_cmd} \"{script_path}\"")
     if interval is not None:

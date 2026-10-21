@@ -84,6 +84,8 @@ class _Sandbox(unittest.TestCase):
             p.start()
             self.addCleanup(p.stop)
         os.environ.pop("CLAUDE_PULSE_NONINTERACTIVE", None)
+        cs._settings_backed_up.clear()
+        self.addCleanup(cs._settings_backed_up.clear)
 
     def write_config(self, data):
         self.user_config.write_text(json.dumps(data), encoding="utf-8")
@@ -562,6 +564,82 @@ class NonInteractiveTest(_WithProviders):
             with self.assertRaises(SystemExit) as ctx:
                 cs.main()
         self.assertEqual(ctx.exception.code, 1)
+
+
+class SettingsBackupTest(_Sandbox):
+    """Every write of settings.json keeps a copy first, so a bad install is undoable."""
+
+    def setUp(self):
+        super().setUp()
+        self.printed = []
+        p = mock.patch.object(cs, "utf8_print", lambda *a, **k: self.printed.append(" ".join(str(x) for x in a)))
+        p.start()
+        self.addCleanup(p.stop)
+        self.original = json.dumps({"theme": "dark", "statusLine": {"type": "command", "command": "other-tool"}})
+        self.settings.write_text(self.original, encoding="utf-8")
+
+    def backups(self):
+        d = self.state / "settings-backups"
+        return sorted(d.glob("*")) if d.exists() else []
+
+    def test_install_status_line_keeps_the_previous_file(self):
+        cs.install_status_line()
+        files = self.backups()
+        self.assertEqual(len(files), 1)
+        self.assertTrue(files[0].name.startswith("claude-settings.json."), files[0].name)
+        self.assertEqual(files[0].read_text(encoding="utf-8"), self.original)
+        self.assertIn("other-tool", files[0].read_text(encoding="utf-8"))
+        self.assertIn("claude_status.py", self.settings_data()["statusLine"]["command"])
+        self.assertTrue(any("Previous settings.json kept at" in line for line in self.printed))
+
+    def test_hooks_install_and_remove_back_up_too(self):
+        cs._settings_backed_up.clear()
+        self.assertTrue(cs.install_hooks({"agents"}))
+        self.assertEqual(len(self.backups()), 1)
+        cs._settings_backed_up.clear()
+        self.assertTrue(cs.remove_hooks({"agents"}))
+        self.assertEqual(len(self.backups()), 2)
+
+    def test_one_backup_per_file_per_process(self):
+        cs.install_status_line()
+        cs.install_hooks({"team"})
+        cs.sync_status_line_refresh({"refresh_interval": 7})
+        self.assertEqual(len(self.backups()), 1, "later writes in the same run reuse the first copy")
+
+    def test_missing_settings_means_no_backup(self):
+        self.settings.unlink()
+        cs.install_status_line()
+        self.assertEqual(self.backups(), [])
+        self.assertTrue(self.settings.exists())
+
+    def test_only_the_newest_five_are_kept(self):
+        d = self.state / "settings-backups"
+        d.mkdir()
+        for i in range(7):
+            f = d / f"claude-settings.json.2026010{i}-000000"
+            f.write_text(f"old {i}", encoding="utf-8")
+            os.utime(f, (1_600_000_000 + i, 1_600_000_000 + i))
+        (d / "other-settings.json.20260101-000000").write_text("another account", encoding="utf-8")
+        cs.install_status_line()
+        ours = sorted(d.glob("claude-settings.json.*"))
+        self.assertEqual(len(ours), cs._SETTINGS_BACKUP_KEEP)
+        self.assertFalse((d / "claude-settings.json.20260100-000000").exists())
+        self.assertFalse((d / "claude-settings.json.20260101-000000").exists())
+        self.assertTrue(any(f.read_text(encoding="utf-8") == self.original for f in ours))
+        self.assertTrue((d / "other-settings.json.20260101-000000").exists(), "other accounts' copies are untouched")
+
+    def test_a_failed_copy_never_blocks_the_install(self):
+        with mock.patch.object(cs.shutil, "copy2", side_effect=OSError("disk full")):
+            self.assertIsNone(cs._backup_settings(self.settings))
+            cs.install_status_line()
+        self.assertIn("claude_status.py", self.settings_data()["statusLine"]["command"])
+        self.assertEqual(self.backups(), [])
+
+    def test_wizard_defaults_keep_a_backup(self):
+        with mock.patch.object(cs, "_read_key", _keys([])):
+            self.assertEqual(cs.cmd_setup(["--setup", "--non-interactive"]), 0)
+        self.assertEqual(len(self.backups()), 1)
+        self.assertEqual(self.backups()[0].read_text(encoding="utf-8"), self.original)
 
 
 class NonInteractiveSubprocessTest(unittest.TestCase):
