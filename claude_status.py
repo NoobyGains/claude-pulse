@@ -117,19 +117,23 @@ PLAN_NAMES = {
 # Model id → short display name. Longest-prefix wins (see _model_short_name),
 # so "claude-opus-4-8" beats the bare "claude-opus-4" entry.
 MODEL_SHORT_NAMES = {
+    "claude-fable-5-1": "Fable",
     "claude-fable-5": "Fable",
     "claude-mythos-5": "Mythos",
     "claude-mythos-preview": "Mythos",
+    "claude-opus-5-5": "Opus",
     "claude-opus-5": "Opus",
     "claude-opus-4-8": "Opus",
     "claude-opus-4-7": "Opus",
     "claude-opus-4-6": "Opus",
     "claude-opus-4-5": "Opus",
     "claude-opus-4": "Opus",
+    "claude-sonnet-5-5": "Sonnet",
     "claude-sonnet-5": "Sonnet",
     "claude-sonnet-4-6": "Sonnet",
     "claude-sonnet-4-5": "Sonnet",
     "claude-sonnet-4": "Sonnet",
+    "claude-haiku-5-5": "Haiku",
     "claude-haiku-4-5": "Haiku",
     "claude-haiku-4": "Haiku",
     "claude-3-5-sonnet": "Sonnet",
@@ -147,32 +151,39 @@ MODEL_SHORT_NAMES = {
 MODEL_CONTEXT_WINDOWS = {
     "Fable": 1_000_000,
     "Fable 5": 1_000_000,
+    "Fable 5.1": 1_000_000,
     "Mythos": 1_000_000,
     "Mythos Preview": 1_000_000,
     "Mythos 5": 1_000_000,
     "Opus": 1_000_000,
     "Opus 5": 1_000_000,
+    "Opus 5.5": 1_000_000,
     "Opus 4.8": 1_000_000,
     "Opus 4.7": 1_000_000,
     "Opus 4.6": 1_000_000,
     "Opus 4.5": 200_000,
     "Sonnet": 1_000_000,
     "Sonnet 5": 1_000_000,
+    "Sonnet 5.5": 1_000_000,
     "Sonnet 4.6": 1_000_000,
     "Sonnet 4.5": 200_000,
     "Sonnet 4": 200_000,
     "Haiku": 200_000,
     "Haiku 4.5": 200_000,
+    "Haiku 5.5": 1_000_000,
 }
 DEFAULT_CONTEXT_WINDOW = 200_000
 
 # API pricing per million tokens (USD).
-# https://platform.claude.com/docs/en/pricing
-# Cache read is 0.1x input; 5-minute cache write is 1.25x input.
+# https://platform.claude.com/docs/en/about-claude/pricing
+# Cache read is 0.1x input (0.05x for Opus 5.5 / Sonnet 5.5, 0.025x for
+# Fable 5.1); 5-minute cache write is 1.25x input.
 API_PRICING = {
+    "claude-fable-5-1": {"input": 10.0, "output": 50.0, "cache_read": 0.25, "cache_write": 12.5},
     "claude-fable-5": {"input": 10.0, "output": 50.0, "cache_read": 1.0, "cache_write": 12.5},
     "claude-mythos-5": {"input": 10.0, "output": 50.0, "cache_read": 1.0, "cache_write": 12.5},
     "claude-mythos-preview": {"input": 25.0, "output": 125.0, "cache_read": 2.5, "cache_write": 31.25},
+    "claude-opus-5-5": {"input": 4.0, "output": 20.0, "cache_read": 0.20, "cache_write": 5.0},
     "claude-opus-5": {"input": 5.0, "output": 25.0, "cache_read": 0.50, "cache_write": 6.25},
     "claude-opus-4-8": {"input": 5.0, "output": 25.0, "cache_read": 0.50, "cache_write": 6.25},
     "claude-opus-4-7": {"input": 5.0, "output": 25.0, "cache_read": 0.50, "cache_write": 6.25},
@@ -183,10 +194,14 @@ API_PRICING = {
     # on 2026-09-01; Anthropic cancelled the increase and made the launch
     # rate the standard price (pricing docs, note
     # "claude-sonnet-5-introductory-pricing"), so $2/$10 is the list price.
+    "claude-sonnet-5-5": {"input": 2.0, "output": 10.0, "cache_read": 0.10, "cache_write": 2.5},
     "claude-sonnet-5": {"input": 2.0, "output": 10.0, "cache_read": 0.20, "cache_write": 2.5},
     "claude-sonnet-4-6": {"input": 3.0, "output": 15.0, "cache_read": 0.30, "cache_write": 3.75},
     "claude-sonnet-4-5": {"input": 3.0, "output": 15.0, "cache_read": 0.30, "cache_write": 3.75},
     "claude-sonnet-4": {"input": 3.0, "output": 15.0, "cache_read": 0.30, "cache_write": 3.75},
+    # Haiku 5.5 rates are for prompts up to 100K tokens; see
+    # API_PRICING_LONG_CONTEXT for the surcharge above that.
+    "claude-haiku-5-5": {"input": 0.10, "output": 0.50, "cache_read": 0.01, "cache_write": 0.125},
     "claude-haiku-4-5-20251001": {"input": 1.0, "output": 5.0, "cache_read": 0.10, "cache_write": 1.25},
     "claude-haiku-4-5": {"input": 1.0, "output": 5.0, "cache_read": 0.10, "cache_write": 1.25},
     "claude-3-5-sonnet": {"input": 3.0, "output": 15.0, "cache_read": 0.30, "cache_write": 3.75},
@@ -195,19 +210,23 @@ API_PRICING = {
 }
 # Display names for pricing table
 API_PRICING_DISPLAY = {
+    "claude-fable-5-1": "Fable 5.1",
     "claude-fable-5": "Fable 5",
     "claude-mythos-5": "Mythos 5",
     "claude-mythos-preview": "Mythos Preview",
+    "claude-opus-5-5": "Opus 5.5",
     "claude-opus-5": "Opus 5",
     "claude-opus-4-8": "Opus 4.8",
     "claude-opus-4-7": "Opus 4.7",
     "claude-opus-4-6": "Opus 4.6",
     "claude-opus-4-5": "Opus 4.5",
     "claude-opus-4": "Opus 4",
+    "claude-sonnet-5-5": "Sonnet 5.5",
     "claude-sonnet-5": "Sonnet 5",
     "claude-sonnet-4-6": "Sonnet 4.6",
     "claude-sonnet-4-5": "Sonnet 4.5",
     "claude-sonnet-4": "Sonnet 4",
+    "claude-haiku-5-5": "Haiku 5.5",
     "claude-haiku-4-5-20251001": "Haiku 4.5",
     "claude-haiku-4-5": "Haiku 4.5",
     "claude-3-5-sonnet": "Sonnet 3.5",
@@ -225,12 +244,29 @@ API_PRICING_DISPLAY = {
 #     "model-id": {"until": "YYYY-MM-DD", "pricing": {...API_PRICING shape...}},
 API_PRICING_PROMOS = {}
 
+# Long-context surcharge. Haiku 5.5 is the only model whose per-request price
+# steps up with prompt size: a request whose prompt (input + cache reads +
+# cache writes) exceeds ``threshold`` tokens is billed at the ``pricing`` rates
+# for the WHOLE request, cache hits included. Every request is priced on its
+# own. Source: the "Long context pricing" section of
+# https://platform.claude.com/docs/en/about-claude/pricing
+API_PRICING_LONG_CONTEXT = {
+    "claude-haiku-5-5": {
+        "threshold": 100_000,
+        "pricing": {"input": 0.50, "output": 2.50, "cache_read": 0.05, "cache_write": 0.625},
+    },
+}
 
-def _pricing_for(model_id, at=None):
+
+def _pricing_for(model_id, at=None, prompt_tokens=None):
     """Return the per-MTok rates for *model_id*, honouring active promos.
 
     *at* is a UTC date (defaults to today). A promo whose end date has passed
     falls back to the list price automatically.
+
+    *prompt_tokens* (input + cache reads + cache writes of one request) selects
+    the long-context rates for models listed in ``API_PRICING_LONG_CONTEXT``
+    (Haiku 5.5 above 100K). Left as None, the standard rates are returned.
 
     Known limitation: fast mode bills Opus 5 / 4.8 at $10/$50 rather than
     $5/$25, but transcripts do not record whether a request used it, so
@@ -240,6 +276,9 @@ def _pricing_for(model_id, at=None):
     base = API_PRICING.get(model_id)
     if base is None:
         return None
+    long_ctx = API_PRICING_LONG_CONTEXT.get(model_id)
+    if long_ctx and isinstance(prompt_tokens, (int, float))             and prompt_tokens > long_ctx["threshold"]:
+        return long_ctx["pricing"]
     promo = API_PRICING_PROMOS.get(model_id)
     if not promo:
         return base
@@ -3460,6 +3499,9 @@ def _scan_session_costs(since_ts=None):
                         out = int(usage.get("output_tokens") or 0)
                         cr = int(usage.get("cache_read_input_tokens") or 0)
                         cw = int(usage.get("cache_creation_input_tokens") or 0)
+                        # Haiku 5.5 steps up above 100K prompt tokens, priced
+                        # per request (no-op for every other model).
+                        pricing = _pricing_for(model_id, entry_date, inp + cr + cw) or pricing
 
                         cost = (
                             inp * pricing["input"]

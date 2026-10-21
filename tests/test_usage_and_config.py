@@ -151,6 +151,72 @@ class PricingLookupTest(unittest.TestCase):
         self.assertEqual(cs.MODEL_CONTEXT_WINDOWS["Haiku 4.5"], 200_000)
 
 
+class Claude55PricingTest(unittest.TestCase):
+    """Fable 5.1 / Opus 5.5 / Sonnet 5.5 / Haiku 5.5 rates, as listed on
+    https://platform.claude.com/docs/en/about-claude/pricing (per MTok)."""
+
+    EXPECTED = {
+        "claude-fable-5-1": (10.0, 50.0, 0.25, 12.5),
+        "claude-opus-5-5": (4.0, 20.0, 0.20, 5.0),
+        "claude-sonnet-5-5": (2.0, 10.0, 0.10, 2.5),
+        "claude-haiku-5-5": (0.10, 0.50, 0.01, 0.125),
+    }
+
+    def test_rates_match_the_pricing_page(self):
+        for model_id, (inp, out, cr, cw) in self.EXPECTED.items():
+            p = cs._pricing_for(model_id)
+            self.assertIsNotNone(p, model_id)
+            self.assertEqual(
+                (p["input"], p["output"], p["cache_read"], p["cache_write"]),
+                (inp, out, cr, cw), model_id)
+
+    def test_dated_ids_resolve_to_the_55_entry_not_the_older_prefix(self):
+        """Longest prefix: claude-opus-5-5 must not fall back to claude-opus-5."""
+        def resolve(model_id):
+            best = None
+            for key in cs.API_PRICING:
+                if model_id.startswith(key) and (best is None or len(key) > len(best)):
+                    best = key
+            return best
+        self.assertEqual(resolve("claude-opus-5-5"), "claude-opus-5-5")
+        self.assertEqual(resolve("claude-opus-5-5-20261001"), "claude-opus-5-5")
+        self.assertEqual(resolve("claude-opus-5-20260601"), "claude-opus-5")
+        self.assertEqual(resolve("claude-sonnet-5-5"), "claude-sonnet-5-5")
+        self.assertEqual(resolve("claude-fable-5-1"), "claude-fable-5-1")
+        self.assertEqual(resolve("claude-haiku-5-5"), "claude-haiku-5-5")
+        self.assertEqual(cs._pricing_for("claude-opus-5")["input"], 5.0)
+
+    def test_short_names_and_display_names(self):
+        for model_id, short in (("claude-fable-5-1", "Fable"), ("claude-opus-5-5", "Opus"),
+                                ("claude-sonnet-5-5", "Sonnet"), ("claude-haiku-5-5", "Haiku"),
+                                ("claude-opus-5-5-20261001", "Opus")):
+            self.assertEqual(cs._model_short_name(model_id), short, model_id)
+        self.assertEqual(cs.API_PRICING_DISPLAY["claude-opus-5-5"], "Opus 5.5")
+        self.assertEqual(cs.API_PRICING_DISPLAY["claude-fable-5-1"], "Fable 5.1")
+
+    def test_context_windows(self):
+        for name in ("Fable 5.1", "Opus 5.5", "Sonnet 5.5", "Haiku 5.5"):
+            self.assertEqual(cs.MODEL_CONTEXT_WINDOWS[name], 1_000_000, name)
+
+    def test_haiku_long_context_rates_above_100k_prompt_tokens(self):
+        base = cs._pricing_for("claude-haiku-5-5", prompt_tokens=100_000)
+        long_ = cs._pricing_for("claude-haiku-5-5", prompt_tokens=100_001)
+        self.assertEqual(base["input"], 0.10)
+        self.assertEqual((long_["input"], long_["output"], long_["cache_read"],
+                          long_["cache_write"]), (0.50, 2.50, 0.05, 0.625))
+        # No prompt size given: standard rates.
+        self.assertEqual(cs._pricing_for("claude-haiku-5-5")["input"], 0.10)
+
+    def test_other_models_have_no_long_context_tier(self):
+        for model_id in ("claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1"):
+            self.assertEqual(cs._pricing_for(model_id, prompt_tokens=900_000),
+                             cs._pricing_for(model_id), model_id)
+
+    def test_junk_prompt_tokens_never_raise(self):
+        for junk in (None, "x", [], {}, float("nan")):
+            self.assertEqual(cs._pricing_for("claude-haiku-5-5", prompt_tokens=junk)["input"], 0.10)
+
+
 class TranscriptTimestampTest(unittest.TestCase):
     def test_z_suffix_parsed(self):
         """Claude Code writes Z-suffixed stamps; fromisoformat only accepted
@@ -273,6 +339,23 @@ class ScanPricesEntriesByTheirOwnDateTest(unittest.TestCase):
         self.assertAlmostEqual(
             result["models"]["claude-sonnet-5"]["cost_usd"], 1.5 + 2.0 + 1.5
         )
+
+    def test_haiku_55_is_priced_per_request_by_prompt_size(self):
+        """Prompt = input + cache read + cache write; over 100K the whole
+        request (cache hits and output included) takes the higher rates."""
+        def entry(**usage):
+            return {"type": "assistant", "timestamp": "2026-10-01T12:00:00Z",
+                    "message": {"model": "claude-haiku-5-5", "usage": usage}}
+        result = self._scan([
+            # 50K prompt: standard. 50K*0.10 + 10K*0.50 = 0.005 + 0.005
+            entry(input_tokens=50_000, output_tokens=10_000),
+            # 20K input + 90K cache read = 110K > 100K: surcharged.
+            # 20K*0.50 + 90K*0.05 + 10K*2.50 = 0.01 + 0.0045 + 0.025
+            entry(input_tokens=20_000, cache_read_input_tokens=90_000,
+                  output_tokens=10_000),
+        ])
+        self.assertAlmostEqual(
+            result["models"]["claude-haiku-5-5"]["cost_usd"], 0.010 + 0.0395)
 
     def test_undated_entries_still_price_at_the_scan_day(self):
         """No timestamp means no better information — the scan-day default
