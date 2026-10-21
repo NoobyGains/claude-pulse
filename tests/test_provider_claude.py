@@ -14,6 +14,7 @@ Run: ``python -m unittest tests.test_provider_claude``
 """
 import io
 import json
+import os
 import sys
 import time
 import unittest
@@ -250,6 +251,50 @@ class SeedTest(unittest.TestCase):
         text = out.getvalue().decode("utf-8")
         self.assertEqual(len(text.rstrip("\n").split("\n")), 2)  # main line + Claude row
 
+
+
+class RefreshLockTest(unittest.TestCase):
+    """Two windows must not both fetch one account in the same second."""
+
+    def setUp(self):
+        self.sb = ProviderSandbox(self)
+        self.sb.claude_dir(".claude", token="main-token")
+        self.sb.claude_dir(".claude-b", token="other-secret-token")
+        self.entry = {"id": "claude:b", "type": "claude", "dir": "~/.claude-b", "enabled": True}
+        self.config = {"providers": [dict(self.entry)], "providers_refresh_seconds": 300}
+        self.lock = cs._provider_cache_path("claude:b", create=True).with_suffix(".lock")
+
+    def test_live_lock_from_another_window_skips_the_fetch(self):
+        self.lock.write_text("", encoding="utf-8")
+        with mock.patch.object(cs, "fetch_usage", side_effect=AssertionError("fetched")):
+            cs._refresh_claude_provider(self.entry, self.config)
+        self.assertTrue(self.lock.exists(), "another window's lock is left alone")
+
+    def test_stale_lock_is_broken_then_released(self):
+        self.lock.write_text("", encoding="utf-8")
+        old = time.time() - cs._PROVIDER_LOCK_STALE - 5
+        os.utime(self.lock, (old, old))
+        with mock.patch.object(cs, "fetch_usage", return_value=dict(API_USAGE)) as fu:
+            cs._refresh_claude_provider(self.entry, self.config)
+        self.assertEqual(fu.call_count, 1)
+        self.assertFalse(self.lock.exists())
+
+    def test_lock_released_after_an_error(self):
+        with mock.patch.object(cs, "fetch_usage", side_effect=OSError("down")):
+            cs._refresh_claude_provider(self.entry, self.config)
+        self.assertFalse(self.lock.exists())
+
+    def test_unsaved_attempt_means_no_fetch(self):
+        with mock.patch.object(cs, "_write_provider_cache", return_value=False), \
+                mock.patch.object(cs, "fetch_usage", side_effect=AssertionError("fetched")):
+            cs._refresh_claude_provider(self.entry, self.config)
+
+    def test_second_window_sees_the_first_windows_stamp(self):
+        # Window A stamps and fetches; window B (same second) must not fetch.
+        with mock.patch.object(cs, "fetch_usage", return_value=dict(API_USAGE)) as fu:
+            cs._refresh_claude_provider(self.entry, self.config, now=1_000_000.0)
+            cs._refresh_claude_provider(self.entry, self.config, now=1_000_000.0)
+        self.assertEqual(fu.call_count, 1)
 
 if __name__ == "__main__":
     unittest.main()

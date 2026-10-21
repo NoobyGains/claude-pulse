@@ -43,6 +43,10 @@ Ideas, not promises:
 - **`--install-hooks` no longer replaces an invalid `settings.json`.** It refuses, says why, and exits 1.
 - **Per-model cap refreshes no longer repeat on every repaint.** Claude Code cancels an in-flight status-line run when a newer repaint arrives, which left no timestamp; the attempt is now stamped before the request.
 - **The cap tests no longer touch your real state.** They ran against the real `cache.json` and `settings.json`; they now use throwaway folders.
+- **Two windows cannot double-fetch one account.** A per-account lock file makes the first window that repaints do the usage-API call; the other keeps its cached numbers. Concurrent cache writes use a unique temp file per writer.
+- **Removing or reinstalling a hook group keeps foreign commands** that share a settings.json entry with ours; only our command is replaced.
+- **A Python path under a home folder with spaces** is quoted in the installed commands, so `$HOME` expands safely.
+- **The Codex row notices updates from an older, still-running session**, not only from the newest session file.
 
 ### Security
 

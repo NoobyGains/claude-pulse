@@ -123,7 +123,8 @@ class CodexTest(unittest.TestCase):
                               name="rollout-new.jsonl", mtime=now)
         r = cs._read_codex_quota(self.codex)
         self.assertEqual(r["usage"]["five_hour"]["utilization"], 42.0)
-        self.assertTrue(r["src"]["path"].endswith("rollout-new.jsonl"))
+        self.assertTrue(r["src"][0]["path"].endswith("rollout-new.jsonl"))
+        self.assertEqual(len(r["src"]), 2, "every candidate is part of the cache key")
 
     def test_empty_or_missing_sessions(self):
         self.assertIsNone(cs._read_codex_quota(self.codex))
@@ -176,6 +177,21 @@ class CodexTest(unittest.TestCase):
             r = cs._read_codex_quota(self.sb.home / ".codex")
         self.assertEqual(r["usage"]["five_hour"]["utilization"], 64.0)
         self.assertLessEqual(sum(reads), cs._CODEX_TAIL_BYTES)
+
+    def test_change_in_the_rollout_actually_used_invalidates(self):
+        now = time.time()
+        self.sb.codex_rollout([codex_line(20.0, 2.0)], name="rollout-old.jsonl", mtime=now - 100)
+        self.sb.codex_rollout(['{"type":"event_msg","payload":{"type":"user_message"}}'],
+                              name="rollout-new.jsonl", mtime=now)
+        first = cs._read_codex_quota(self.codex)
+        self.assertEqual(first["usage"]["five_hour"]["utilization"], 20.0)
+        cached = json.loads(json.dumps({"timestamp": first["data_ts"], "usage": first["usage"],
+                                        "src": first["src"], "plan": first["tier"]}))
+        # The older, still-running session reports new numbers; the newest file is untouched.
+        self.sb.codex_rollout([codex_line(80.0, 8.0)], name="rollout-old.jsonl", mtime=now - 50)
+        again = cs._read_codex_quota(self.codex, cached)
+        self.assertTrue(again["changed"])
+        self.assertEqual(again["usage"]["five_hour"]["utilization"], 80.0)
 
     def test_cache_hit_skips_file_read(self):
         self.sb.codex_rollout([codex_line(29.0, 5.0)])

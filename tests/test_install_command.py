@@ -29,9 +29,13 @@ class InstallCommandTest(unittest.TestCase):
             # expanduser("~") resolve inside it on both Windows and POSIX.
             env["HOME"] = str(home)
             env["USERPROFILE"] = str(home)
-            env.pop("HOMEDRIVE", None)
-            env.pop("HOMEPATH", None)
-            env.pop("CLAUDE_CONFIG_DIR", None)
+            # The config and state dirs too, or the subprocess reads (and may
+            # migrate) the developer's real config.json.
+            env["LOCALAPPDATA"] = str(home / "AppData" / "Local")
+            env["XDG_CACHE_HOME"] = str(home / ".cache")
+            env["XDG_CONFIG_HOME"] = str(home / ".config")
+            for key in ("HOMEDRIVE", "HOMEPATH", "CLAUDE_CONFIG_DIR"):
+                env.pop(key, None)
 
             result = subprocess.run(
                 [sys.executable, str(SCRIPT), "--install"],

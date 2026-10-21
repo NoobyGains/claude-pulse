@@ -1002,11 +1002,14 @@ def _secure_open_write(filepath):
 def _atomic_json_write(filepath, data, indent=2):
     """Atomically write JSON with 0o600 permissions on Unix.
 
-    Writes to a .tmp sibling first, then uses os.replace() for an atomic swap.
-    Cleans up the temp file on failure.
+    Writes to a temp sibling first, then uses os.replace() for an atomic swap.
+    The sibling's name is unique per writer: two windows that write the same
+    cache at the same moment must not truncate, rename or delete each other's
+    file. Cleans up its own temp file on failure.
     """
     filepath = Path(filepath)
-    tmp_path = filepath.with_suffix(".tmp")
+    tmp_path = filepath.with_name(
+        f"{filepath.name}.{os.getpid()}-{random.randrange(1 << 32):08x}.tmp")
     try:
         with _secure_open_write(tmp_path) as f:
             json.dump(data, f, indent=indent)
@@ -1444,17 +1447,38 @@ def _parse_hook_groups(raw):
     return set(names)
 
 
+def _is_pulse_command(hook, flag):
+    """True when one inner ``{type, command}`` hook is ours for ``flag``."""
+    if not isinstance(hook, dict):
+        return False
+    cmd = str(hook.get("command", ""))
+    return "claude_status.py" in cmd and flag in cmd
+
+
 def _is_pulse_hook_entry(entry, flag):
-    """True when a settings.json hook entry is one of ours for ``flag``."""
+    """True when a settings.json hook entry carries our command for ``flag``."""
     if not isinstance(entry, dict):
         return False
     inner = entry.get("hooks")
     if not isinstance(inner, list):
         return False
-    return any(isinstance(h, dict)
-               and "claude_status.py" in str(h.get("command", ""))
-               and flag in str(h.get("command", ""))
-               for h in inner)
+    return any(_is_pulse_command(h, flag) for h in inner)
+
+
+def _without_pulse_command(entry, flag):
+    """``entry`` minus our command for ``flag``; None when nothing is left.
+
+    Someone may have merged our command into an entry next to their own by
+    hand. Only ours goes; the entry's matcher and other commands stay.
+    """
+    if not _is_pulse_hook_entry(entry, flag):
+        return entry
+    inner = [h for h in entry["hooks"] if not _is_pulse_command(h, flag)]
+    if not inner:
+        return None
+    kept = dict(entry)
+    kept["hooks"] = inner
+    return kept
 
 
 def _installed_pulse_hooks(settings):
@@ -1553,7 +1577,8 @@ def _strip_pulse_hooks(hooks, groups):
             entries = hooks.get(event)
             if not isinstance(entries, list):
                 continue
-            kept = [e for e in entries if not _is_pulse_hook_entry(e, flag)]
+            kept = [k for k in (_without_pulse_command(e, flag) for e in entries)
+                    if k is not None]
             if kept:
                 hooks[event] = kept
             elif event in hooks:
@@ -1597,7 +1622,8 @@ def install_hooks(groups=None):
             existing = hooks.get(event)
             if not isinstance(existing, list):
                 existing = []
-            kept = [h for h in existing if not _is_pulse_hook_entry(h, flag)]
+            kept = [k for k in (_without_pulse_command(h, flag) for h in existing)
+                    if k is not None]
             if blocking:
                 kept.append({"hooks": [{"type": "command", "command":
                                         _blocking_hook_command(flag, python_cmd, script_path)}]})
@@ -3088,14 +3114,59 @@ _PROVIDER_CACHE_FIELDS = (
 
 
 def _write_provider_cache(pid, data):
-    """Persist only known fields (never a token) via an atomic write."""
+    """Persist only known fields (never a token) via an atomic write.
+
+    Returns True when the file was written; a caller that is about to make a
+    network request must not when the attempt stamp cannot be saved.
+    """
     try:
         clean = {k: data[k] for k in _PROVIDER_CACHE_FIELDS
                  if k in data and data[k] is not None}
         if "usage" in clean:
             clean["usage"] = _clean_provider_usage(clean["usage"])
         _atomic_json_write(_provider_cache_path(pid, create=True), clean, indent=None)
+        return True
     except Exception:
+        return False
+
+
+_PROVIDER_LOCK_STALE = 30   # seconds; an older lock belongs to a killed run
+
+
+def _acquire_provider_lock(pid):
+    """Take ``<cache>.lock`` for one provider; None when another process holds it.
+
+    Two windows repainting in the same second must not both call the usage
+    API for the same account: whoever creates the lock file (O_EXCL) fetches,
+    the other keeps its cached numbers. A lock older than
+    ``_PROVIDER_LOCK_STALE`` was left by a killed run and is broken.
+    """
+    path = _provider_cache_path(pid, create=True).with_suffix(".lock")
+    for _attempt in range(2):
+        try:
+            fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            os.close(fd)
+            return path
+        except FileExistsError:
+            try:
+                age = time.time() - path.stat().st_mtime
+            except OSError:
+                return None
+            if age <= _PROVIDER_LOCK_STALE:
+                return None
+            try:
+                path.unlink()
+            except OSError:
+                return None
+        except OSError:
+            return None
+    return None
+
+
+def _release_provider_lock(path):
+    try:
+        os.unlink(str(path))
+    except OSError:
         pass
 
 
@@ -3280,38 +3351,50 @@ def _refresh_claude_provider(entry, config, now=None, budget=None):
     token, plan = _read_other_claude_token(loc, now)
     if not token:
         return cache
-    if budget is not None:
-        budget[0] -= 1
-    cache = dict(cache)
-    cache["last_attempt"] = now
-    _write_provider_cache(pid, cache)
+    lock = _acquire_provider_lock(pid)
+    if lock is None:
+        return cache            # another window is fetching this account now
     try:
-        usage = fetch_usage(token, timeout=_PROVIDER_TIMEOUT)
-        token = None
-        fresh = {"timestamp": time.time(), "usage": _clean_provider_usage(usage),
-                 "plan": plan or cache.get("plan"), "last_attempt": now}
-        _write_provider_cache(pid, fresh)
-        return fresh
-    except urllib.error.HTTPError as exc:
-        code = getattr(exc, "code", None)
-        if code == 429:
-            try:
-                retry_after = float(exc.headers.get("retry-after") or 0)
-            except (TypeError, ValueError, AttributeError):
-                retry_after = 0.0
-            delay, fails = _rate_limit_backoff(cache.get("rate_limit_fails"))
-            cache["rate_limited_until"] = now + max(delay, retry_after)
-            cache["rate_limit_fails"] = fails
-        elif code in (401, 403):
-            # Do not refresh: the window running that account will.
-            cache["auth_failed_until"] = now + _PROVIDER_AUTH_BACKOFF
-        else:
+        # Re-read under the lock: that window may just have stamped or refreshed.
+        cache = _read_provider_cache(pid) or cache
+        if now - _num("timestamp") < _provider_refresh_seconds(config) \
+                or now - _num("last_attempt") < _PROVIDER_RETRY:
+            return cache
+        if budget is not None:
+            budget[0] -= 1
+        cache = dict(cache)
+        cache["last_attempt"] = now
+        if not _write_provider_cache(pid, cache):
+            return cache        # unsaved attempt: never risk one fetch per repaint
+        try:
+            usage = fetch_usage(token, timeout=_PROVIDER_TIMEOUT)
+            token = None
+            fresh = {"timestamp": time.time(), "usage": _clean_provider_usage(usage),
+                     "plan": plan or cache.get("plan"), "last_attempt": now}
+            _write_provider_cache(pid, fresh)
+            return fresh
+        except urllib.error.HTTPError as exc:
+            code = getattr(exc, "code", None)
+            if code == 429:
+                try:
+                    retry_after = float(exc.headers.get("retry-after") or 0)
+                except (TypeError, ValueError, AttributeError):
+                    retry_after = 0.0
+                delay, fails = _rate_limit_backoff(cache.get("rate_limit_fails"))
+                cache["rate_limited_until"] = now + max(delay, retry_after)
+                cache["rate_limit_fails"] = fails
+            elif code in (401, 403):
+                # Do not refresh: the window running that account will.
+                cache["auth_failed_until"] = now + _PROVIDER_AUTH_BACKOFF
+            else:
+                cache["error_until"] = now + _PROVIDER_ERROR_BACKOFF
+        except Exception:
             cache["error_until"] = now + _PROVIDER_ERROR_BACKOFF
-    except Exception:
-        cache["error_until"] = now + _PROVIDER_ERROR_BACKOFF
-    token = None
-    _write_provider_cache(pid, cache)
-    return cache
+        token = None
+        _write_provider_cache(pid, cache)
+        return cache
+    finally:
+        _release_provider_lock(lock)
 
 
 def _seed_active_provider_cache(usage, config, now=None):
@@ -3496,8 +3579,12 @@ def _codex_rate_limits_from_tail(path, now=None):
 
 
 def _read_codex_quota(codex_home, cached=None, now=None):
-    """Codex windows from the newest rollouts, cached on the newest file's
-    path + mtime + size so an unchanged tree costs no file read at all.
+    """Codex windows from the newest rollouts, cached on every candidate
+    file's path + mtime + size, so a quiet tree costs a few stats and no read.
+
+    Every candidate counts, not just the newest: a brand-new session has no
+    rate limits yet, so the numbers come from an older, still-running one,
+    and a change to that file must invalidate the cache too.
 
     Returns ``{"usage", "data_ts", "tier", "src", "changed"}`` or None when
     there are no rollouts. ``changed`` tells the caller to rewrite the cache.
@@ -3505,11 +3592,15 @@ def _read_codex_quota(codex_home, cached=None, now=None):
     files = _find_codex_rollouts(codex_home)
     if not files:
         return None
-    try:
-        st = files[0].stat()
-    except OSError:
+    src = []
+    for f in files:
+        try:
+            st = f.stat()
+        except OSError:
+            continue
+        src.append({"path": str(f), "mtime": st.st_mtime, "size": st.st_size})
+    if not src:
         return None
-    src = {"path": str(files[0]), "mtime": st.st_mtime, "size": st.st_size}
     if isinstance(cached, dict) and cached.get("src") == src:
         return {"usage": _clean_provider_usage(cached.get("usage"), now),
                 "data_ts": cached.get("timestamp"), "tier": cached.get("plan"),
@@ -7555,8 +7646,10 @@ def _get_python_cmd():
     On Linux this is typically 'python3', on Windows 'python'.
     """
     exe = _win_portable_path(sys.executable)
-    # If the executable path contains spaces, quote it
-    if " " in exe:
+    # Quote a path with spaces, and any path under $HOME: the shell expands
+    # $HOME at run time, and a home folder like "C:/Users/First Last" would
+    # otherwise split the command. Double quotes keep the expansion.
+    if " " in exe or "$HOME" in exe:
         return f'"{exe}"'
     return exe
 
@@ -8436,13 +8529,24 @@ def _configured_provider_ids(config):
     return {str(e.get("id")) for e in entries if isinstance(e, dict) and e.get("id")}
 
 
+def _enabled_provider_ids(config):
+    """Ids of providers that are configured *and* switched on."""
+    entries = config.get("providers")
+    if not isinstance(entries, list):
+        return set()
+    return {str(e.get("id")) for e in entries
+            if isinstance(e, dict) and e.get("id") and e.get("enabled")}
+
+
 def _auto_provider_ids(rows, config):
     """Providers the defaults switch on: detected, not the active account, a
-    file/login reader (never MiniMax), and never configured before — so a
-    provider the user disabled stays disabled when setup runs again."""
+    file/login reader (never MiniMax), never configured before (a provider
+    the user disabled stays disabled when setup runs again), and recommended
+    by detection: for an unconfigured row ``enabled`` is the recommendation
+    (a Gemini file older than a week, for instance, comes back False)."""
     known = _configured_provider_ids(config)
     return {str(r["id"]) for r in rows
-            if not r.get("active") and not r.get("enabled")
+            if not r.get("active") and r.get("enabled")
             and r.get("type") in _AUTO_PROVIDER_TYPES
             and str(r["id"]) not in known}
 
@@ -8688,7 +8792,9 @@ def _setup_interactive(env):
         if not isinstance(r, set):
             return r
         plan["_prov_seen"] = r
-        was = {str(x["id"]) for x in rows if x.get("enabled")}
+        # What is on today comes from the config: for a row that is not
+        # configured yet, detection's "enabled" is only its recommendation.
+        was = _enabled_provider_ids(config)
         labels = {pid: lab for pid, lab in prov_labels.items() if lab != prov_orig_labels.get(pid)}
         plan["providers"] = {"enable": r - was, "disable": was - r, "labels": labels}
         return True

@@ -251,6 +251,19 @@ class HookGroupsTest(_Sandbox):
             self.assertFalse(cs.remove_hooks({"agents"}))
         self.assertEqual(self.settings.read_text(encoding="utf-8"), "{not json")
 
+    def test_foreign_command_sharing_our_entry_survives(self):
+        cs.install_hooks({"agents"})
+        data = self.settings_data()
+        data["hooks"]["SubagentStop"][0]["hooks"].append({"type": "command", "command": "echo foreign"})
+        self.settings.write_text(json.dumps(data), encoding="utf-8")
+        self.assertTrue(cs.remove_hooks({"agents"}))
+        left = self.settings_data()["hooks"]["SubagentStop"]
+        self.assertEqual([h["command"] for e in left for h in e["hooks"]], ["echo foreign"])
+        self.assertTrue(cs.install_hooks({"agents"}))
+        cmds = [h["command"] for e in self.settings_data()["hooks"]["SubagentStop"] for h in e["hooks"]]
+        self.assertIn("echo foreign", cmds)
+        self.assertEqual(sum("--hook-subagent-stop" in c for c in cmds), 1)
+
     def test_unknown_group_raises(self):
         with self.assertRaises(ValueError):
             cs.install_hooks({"nope"})
@@ -272,10 +285,11 @@ class HookGroupsTest(_Sandbox):
 PROVIDER_ROWS = [
     {"id": "claude:default", "type": "claude", "label": "Claude", "path": "~/.claude",
      "active": True, "enabled": False, "tier": "Max", "age_seconds": 5, "note": ""},
+    # For an unconfigured row, "enabled" is detection's recommendation.
     {"id": "claude:b", "type": "claude", "label": "Claude (b)", "path": "~/.claude-b",
-     "active": False, "enabled": False, "tier": "Max", "age_seconds": 50, "note": ""},
+     "active": False, "enabled": True, "tier": "Max", "age_seconds": 50, "note": ""},
     {"id": "codex", "type": "codex", "label": "Codex", "path": "~/.codex",
-     "active": False, "enabled": False, "tier": "", "age_seconds": 60, "note": ""},
+     "active": False, "enabled": True, "tier": "", "age_seconds": 60, "note": ""},
     {"id": "minimax", "type": "minimax", "label": "MiniMax", "path": "mmx",
      "active": False, "enabled": False, "tier": "", "age_seconds": None, "note": "runs mmx"},
 ]
@@ -300,7 +314,20 @@ class _WithProviders(_Sandbox):
             config["providers"] = [{"id": i, "type": types.get(i, "codex"), "enabled": True}
                                    for i in sorted(enable_ids)]
             return config
-        for name, fn in (("detect_providers", lambda: [dict(r) for r in self.rows]),
+        def fake_detect(config=None):
+            # Like the real one: a configured id reports its configured state,
+            # an unconfigured one its recommendation.
+            cfg = config if isinstance(config, dict) else cs.load_config()
+            conf = {e["id"]: e for e in cfg.get("providers", [])
+                    if isinstance(e, dict) and e.get("id")}
+            out = []
+            for r in self.rows:
+                r = dict(r)
+                if r["id"] in conf:
+                    r["enabled"] = bool(conf[r["id"]].get("enabled"))
+                out.append(r)
+            return out
+        for name, fn in (("detect_providers", fake_detect),
                          ("set_providers", fake_set)):
             p = mock.patch.object(cs, name, fn, create=True)
             p.start()
@@ -677,6 +704,48 @@ class NonInteractiveSubprocessTest(unittest.TestCase):
             self.assertNotIn("hooks", data)
             self.assertTrue((home / ".claude" / "commands" / "pulse.md").exists())
 
+
+
+class AutoProviderIdsTest(unittest.TestCase):
+    """Unattended setup switches on rows that are new AND recommended."""
+
+    ROWS = [
+        {"id": "claude:default", "type": "claude", "active": True, "enabled": True},
+        {"id": "claude:b", "type": "claude", "active": False, "enabled": True},
+        {"id": "codex", "type": "codex", "active": False, "enabled": True},
+        {"id": "gemini", "type": "gemini", "active": False, "enabled": False},   # stale file
+        {"id": "minimax", "type": "minimax", "active": False, "enabled": True},
+        {"id": "file:kimi", "type": "file", "active": False, "enabled": True},
+    ]
+
+    def test_fresh_machine(self):
+        self.assertEqual(cs._auto_provider_ids(self.ROWS, {}), {"claude:b", "codex"})
+
+    def test_configured_rows_are_left_alone(self):
+        cfg = {"providers": [{"id": "codex", "type": "codex", "enabled": False}]}
+        self.assertEqual(cs._auto_provider_ids(self.ROWS, cfg), {"claude:b"})
+
+
+class PythonCommandQuotingTest(unittest.TestCase):
+    """The interpreter path is quoted whenever the shell will expand $HOME into it."""
+
+    def _cmd(self, home, exe):
+        with mock.patch.object(sys, "platform", "win32"), \
+                mock.patch.object(Path, "home", lambda: Path(home)), \
+                mock.patch.object(sys, "executable", exe):
+            return cs._get_python_cmd()
+
+    def test_home_with_a_space(self):
+        self.assertEqual(self._cmd(r"C:\Users\First Last", r"C:\Users\First Last\Py\python.exe"),
+                         '"$HOME/Py/python.exe"')
+
+    def test_home_without_a_space_is_quoted_too(self):
+        self.assertEqual(self._cmd(r"C:\Users\Plain", r"C:\Users\Plain\Py\python.exe"),
+                         '"$HOME/Py/python.exe"')
+
+    def test_path_outside_home_stays_bare(self):
+        self.assertEqual(self._cmd(r"C:\Users\Plain", r"C:\Python313\python.exe"),
+                         "C:/Python313/python.exe")
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
