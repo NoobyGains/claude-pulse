@@ -1,12 +1,12 @@
 {
-  "name": "claude-pulse",
-  "description": "Live usage status bar for Claude Code — session limits, weekly usage, lines changed, 10 themes, widget priorities, shimmer animations, and zero API calls",
-  "version": "3.4.2",
+  "name": "usage-pulse",
+  "description": "Usage Pulse: a live usage status bar for Claude Code. Session and weekly limits, your other accounts and tools on their own rows, cost, context, agents, 10 themes, zero API calls",
+  "version": "3.5.0",
   "author": {
     "name": "PigeonDroid"
   },
-  "homepage": "https://github.com/NoobyGains/claude-pulse",
-  "repository": "https://github.com/NoobyGains/claude-pulse",
+  "homepage": "https://github.com/NoobyGains/usage-pulse",
+  "repository": "https://github.com/NoobyGains/usage-pulse",
   "license": "MIT",
   "keywords": ["status", "usage", "themes", "status-bar", "monitoring", "pulse", "widgets"],
   "commands": "./commands/"

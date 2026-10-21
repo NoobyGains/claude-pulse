@@ -36,9 +36,9 @@
   <polyline points="40,140 100,140 140,140 170,60 200,180 230,35 260,185 290,75 320,140 360,140 400,140"
     fill="none" stroke="url(#g)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
 
-  <!-- "claude" in white -->
+  <!-- "usage" in white -->
   <text x="430" y="120" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif"
-    font-size="48" font-weight="700" fill="#ffffff" letter-spacing="-1">claude</text>
+    font-size="48" font-weight="700" fill="#ffffff" letter-spacing="-1">usage</text>
 
   <!-- "pulse" in gradient -->
   <text x="430" y="168" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif"
@@ -46,5 +46,5 @@
 
   <!-- Subtle tagline -->
   <text x="432" y="195" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif"
-    font-size="13" fill="#8b949e" letter-spacing="0.5">real-time usage monitor for Claude Code</text>
+    font-size="13" fill="#8b949e" letter-spacing="0.5">the live usage status line for Claude Code</text>
 </svg>

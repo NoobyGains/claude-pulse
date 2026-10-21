@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Claude Code status line — reads usage data from Claude Code's stdin and displays real-time bars."""
 
-VERSION = "3.4.2"
+VERSION = "3.5.0"
 
 import hashlib
 import json
@@ -598,7 +598,7 @@ PR_STATE_COLOURS = {
 }
 
 # Claude Code enforces its own per-session caps but exposes them neither on
-# stdin nor in settings.json, so these are claude-pulse's own denominators.
+# stdin nor in settings.json, so these are usage-pulse's own denominators.
 # They default to Claude Code's documented values; override under "limits" in
 # config.json if your setup differs. Set any to 0 to hide that denominator.
 DEFAULT_LIMITS = {
@@ -1203,7 +1203,7 @@ def save_config(config):
 
 
 def _cleanup_hooks():
-    """Remove any legacy claude-pulse hooks from settings.json.
+    """Remove any legacy usage-pulse hooks from settings.json.
 
     v2.2.0 removed all hooks — animation is now purely refresh-based.
     This runs once on upgrade and writes a marker to avoid repeat work.
@@ -1482,7 +1482,7 @@ def _without_pulse_command(entry, flag):
 
 
 def _installed_pulse_hooks(settings):
-    """Return the hook groups claude-pulse has entries for in ``settings``.
+    """Return the hook groups usage-pulse has entries for in ``settings``.
 
     A group counts as installed when any of its events carries one of our
     entries; re-installing it repairs a partial set.
@@ -1530,7 +1530,7 @@ _settings_backed_up = set()
 
 
 def _backup_settings(settings_path):
-    """Keep a copy of settings.json before claude-pulse first writes it.
+    """Keep a copy of settings.json before usage-pulse first writes it.
 
     The copy goes to ``<state dir>/settings-backups/<config dir name>-settings.json.<stamp>``
     so a bad install or a wrong ``CLAUDE_CONFIG_DIR`` can be undone by hand.
@@ -1586,7 +1586,7 @@ def _strip_pulse_hooks(hooks, groups):
 
 
 def install_hooks(groups=None):
-    """Install claude-pulse's hooks into Claude Code's settings.json.
+    """Install usage-pulse's hooks into Claude Code's settings.json.
 
     ``groups`` is any subset of ``HOOK_GROUP_NAMES`` (``heartbeat``,
     ``agents``, ``team``); ``None`` installs all three, which is what
@@ -1636,7 +1636,7 @@ def install_hooks(groups=None):
     _backup_settings(settings_path)
     _atomic_json_write(settings_path, settings)
     names = ", ".join(g for g in HOOK_GROUP_NAMES if g in groups)
-    utf8_print(f"{GREEN}Installed claude-pulse hooks ({names}) to {settings_path}{RESET}")
+    utf8_print(f"{GREEN}Installed usage-pulse hooks ({names}) to {settings_path}{RESET}")
     if "heartbeat" in groups:
         utf8_print(f"  Command: {python_cmd} \"{script_path}\" --hook-refresh")
     utf8_print(f"")
@@ -1656,7 +1656,7 @@ def install_hooks(groups=None):
 
 
 def remove_hooks(groups):
-    """Remove claude-pulse's entries for ``groups`` from settings.json.
+    """Remove usage-pulse's entries for ``groups`` from settings.json.
 
     Used by the setup wizard when a hook group is unticked. Other tools' hooks
     on the same events are kept. Returns True when settings.json was written
@@ -1679,7 +1679,7 @@ def remove_hooks(groups):
     _backup_settings(settings_path)
     _atomic_json_write(settings_path, settings)
     names = ", ".join(g for g in HOOK_GROUP_NAMES if g in groups)
-    utf8_print(f"Removed claude-pulse hooks ({names}) from {settings_path}")
+    utf8_print(f"Removed usage-pulse hooks ({names}) from {settings_path}")
     return True
 
 
@@ -1738,7 +1738,10 @@ def get_cache_path():
 
 _UPDATE_CHECK_BUDGET = 6  # seconds; hard ceiling on one update check
 UPDATE_CHECK_TTL = 3600  # check at most once per hour
-GITHUB_REPO = "NoobyGains/claude-pulse"
+GITHUB_REPO = "NoobyGains/usage-pulse"
+# The project was called claude-pulse until 3.5.0; clones from before still
+# name that in their origin, and GitHub redirects the old name.
+GITHUB_REPO_ALIASES = (GITHUB_REPO.lower(), "noobygains/claude-pulse")
 _GIT_PATH = shutil.which("git") or "git"  # resolve once at import time
 _CLAUDE_PATH = shutil.which("claude")  # resolve once at import time
 
@@ -1854,7 +1857,7 @@ def get_remote_commit(deadline=None):
         url = f"https://api.github.com/repos/{GITHUB_REPO}/commits/main"
         req = urllib.request.Request(url, headers={
             "Accept": "application/vnd.github.sha",
-            "User-Agent": "claude-pulse-update-checker",
+            "User-Agent": "usage-pulse-update-checker",
         })
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             sha = resp.read(1024).decode().strip()
@@ -1905,7 +1908,7 @@ def _git(*args, timeout=2, deadline=None, env=None):
 
 
 def _tracks_upstream(deadline=None):
-    """True when this checkout's origin is the upstream claude-pulse repo.
+    """True when this checkout's origin is the upstream usage-pulse repo.
 
     A fork's origin points somewhere else, and its own commits are never on
     upstream's main, so the plain ``local != remote`` comparison flagged an
@@ -1914,12 +1917,11 @@ def _tracks_upstream(deadline=None):
     url = _git("remote", "get-url", "origin", timeout=3, deadline=deadline)
     if url is None:
         return None
-    owner_repo = GITHUB_REPO.lower()
     normalised = url.lower().rstrip("/")
     if normalised.endswith(".git"):
         normalised = normalised[:-4]
     # Matches both git@github.com:owner/repo and https://github.com/owner/repo
-    return normalised.endswith(owner_repo)
+    return any(normalised.endswith(alias) for alias in GITHUB_REPO_ALIASES)
 
 
 def _remote_is_ancestor(remote, deadline=None):
@@ -2138,7 +2140,7 @@ def check_claude_code_update(local_version=None):
     try:
         req = urllib.request.Request(
             "https://registry.npmjs.org/@anthropic-ai/claude-code/latest",
-            headers={"User-Agent": "claude-pulse-update-checker"},
+            headers={"User-Agent": "usage-pulse-update-checker"},
         )
         with urllib.request.urlopen(req, timeout=3) as resp:
             data = json.loads(resp.read(100_000).decode("utf-8"))
@@ -2196,7 +2198,7 @@ def _fetch_remote_version():
     """Fetch the VERSION string from the latest main on GitHub. Returns None on failure."""
     try:
         url = f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/claude_status.py"
-        req = urllib.request.Request(url, headers={"User-Agent": "claude-pulse-update-checker"})
+        req = urllib.request.Request(url, headers={"User-Agent": "usage-pulse-update-checker"})
         with urllib.request.urlopen(req, timeout=5) as resp:
             for raw_line in resp:
                 line = raw_line.decode("utf-8", errors="replace")
@@ -2212,7 +2214,7 @@ def cmd_update():
     """Pull the latest version from GitHub."""
     repo_dir = Path(__file__).resolve().parent
     script_path = Path(__file__).resolve()
-    utf8_print(f"{BRIGHT_WHITE}claude-pulse update{RESET}\n")
+    utf8_print(f"{BRIGHT_WHITE}usage-pulse update{RESET}\n")
     utf8_print(f"  Current version: {BRIGHT_WHITE}v{VERSION}{RESET}")
 
     # Check if we're in a git repo
@@ -2230,10 +2232,11 @@ def cmd_update():
             cwd=str(repo_dir),
         )
         origin_url = origin_result.stdout.strip().lower() if origin_result.returncode == 0 else ""
-        repo_lower = GITHUB_REPO.lower()
         expected_suffixes = [
-            "/" + repo_lower, "/" + repo_lower + ".git",
-            ":" + repo_lower, ":" + repo_lower + ".git",  # SSH git@github.com:user/repo
+            sep + alias + ext
+            for alias in GITHUB_REPO_ALIASES
+            for sep in ("/", ":")        # https://github.com/user/repo, git@github.com:user/repo
+            for ext in ("", ".git")
         ]
         if not any(origin_url.endswith(s) for s in expected_suffixes):
             utf8_print(f"  {RED}Origin URL does not match expected repository.{RESET}")
@@ -2548,7 +2551,7 @@ def _authorized_request(url, token, headers=None, data=None, method=None, timeou
     hdrs = dict(headers) if headers else {}
     if token:
         hdrs["Authorization"] = f"Bearer {token}"
-    hdrs.setdefault("User-Agent", f"claude-pulse/{VERSION}")
+    hdrs.setdefault("User-Agent", f"usage-pulse/{VERSION}")
     req = urllib.request.Request(url, headers=hdrs, data=data, method=method)
     return _safe_opener.open(req, timeout=timeout)
 
@@ -3695,8 +3698,8 @@ def _file_window(w, now=None):
 def _read_file_quota(path, now=None):
     """Read a provider row from a JSON file another tool keeps up to date.
 
-    This is the hook for any provider claude-pulse cannot read itself (Kimi,
-    GLM, a company gateway...): a tiny script writes the file, claude-pulse
+    This is the hook for any provider usage-pulse cannot read itself (Kimi,
+    GLM, a company gateway...): a tiny script writes the file, usage-pulse
     draws the row. Shape, matching Claude Code's own stdin ``rate_limits``::
 
         {
@@ -4313,7 +4316,7 @@ def _get_exchange_rate(currency_symbol):
     # Fetch from frankfurter.app (free, no API key)
     try:
         url = f"https://api.frankfurter.dev/v1/latest?from=USD&to={code}"
-        req = urllib.request.Request(url, headers={"User-Agent": "claude-pulse"})
+        req = urllib.request.Request(url, headers={"User-Agent": "usage-pulse"})
         with urllib.request.urlopen(req, timeout=3) as resp:
             data = json.loads(resp.read(10000))
         rate = data.get("rates", {}).get(code)
@@ -4664,7 +4667,7 @@ def _parse_transcript_ts(value):
 
     Claude Code writes them Z-suffixed ("2026-07-18T15:01:07.532Z").
     ``datetime.fromisoformat`` only learned to accept "Z" in Python 3.11, and
-    claude-pulse supports 3.8, so normalise it to an explicit offset first.
+    usage-pulse supports 3.8, so normalise it to an explicit offset first.
     Returns None for anything unparseable.
     """
     if not value or not isinstance(value, str):
@@ -4850,7 +4853,7 @@ def cmd_stats():
     today = _today_local()
     current, longest = _calculate_streak(stats.get("daily_dates", []), today)
 
-    utf8_print(f"\n{BOLD}claude-pulse stats{RESET}\n")
+    utf8_print(f"\n{BOLD}usage-pulse stats{RESET}\n")
     utf8_print(f"  First seen:     {_sanitize(str(stats.get('first_seen', 'unknown')))}")
     utf8_print(f"  Total sessions: {stats.get('total_sessions', 0)}")
     utf8_print(f"  Days active:    {len(set(stats.get('daily_dates', [])))}")
@@ -5055,7 +5058,7 @@ def _parse_stdin_context(raw_stdin):
     # Reasoning effort, fast mode and thinking state.
     #
     # Claude Code reports the session's effort on stdin as `effort.level`.
-    # Earlier versions of claude-pulse read a CLAUDE_CODE_EFFORT_LEVEL
+    # Earlier versions of usage-pulse read a CLAUDE_CODE_EFFORT_LEVEL
     # environment variable instead, which Claude Code does not actually export
     # — so the effort widget only ever rendered for users who happened to set
     # that variable by hand. stdin is the real source; the env var is kept
@@ -6838,7 +6841,7 @@ def _render_subagents(config, session_id=None):
     Counts are scoped to *session_id* — the session this repaint belongs to —
     so one window never displays another window's agents. Claude Code enforces
     its own caps (spawns and concurrency) but does not expose them on stdin or
-    in settings, so the denominators come from ``limits`` in claude-pulse's
+    in settings, so the denominators come from ``limits`` in usage-pulse's
     own config and default to Claude Code's documented values.
     """
     if not session_id:
@@ -7203,7 +7206,7 @@ def _render_budget(config, stdin_ctx):
 
     ``--max-budget-usd`` is a Claude Code CLI flag with no settings key and no
     environment variable, so its value cannot be discovered from here. The
-    ceiling is therefore claude-pulse's own ``budget_usd`` setting, which the
+    ceiling is therefore usage-pulse's own ``budget_usd`` setting, which the
     user sets to match whatever they pass on the command line.
     """
     try:
@@ -7728,7 +7731,7 @@ def sync_status_line_refresh(config=None):
 
     Called after any setting that changes the answer (animation mode, focus
     timer, widget visibility). Rewrites only that one key, leaving the rest of
-    settings.json untouched, and is a no-op when claude-pulse is not the
+    settings.json untouched, and is a no-op when usage-pulse is not the
     installed status line — we must never edit another tool's block.
 
     Returns the interval that was written (None when the key was removed), or
@@ -7837,9 +7840,12 @@ def install_pulse_command():
     meter worked yet the command silently did nothing.  Making --install
     self-sufficient closes that gap no matter how the user installed.
     """
-    source = Path(__file__).resolve().parent / "pulse.md"
-    if not source.exists():
-        utf8_print("Note: pulse.md not found next to claude_status.py; skipped installing the /pulse command.")
+    here = Path(__file__).resolve().parent
+    # commands/pulse.md is the source; a raw download from before 3.5.0 kept
+    # a copy next to the script.
+    source = next((p for p in (here / "commands" / "pulse.md", here / "pulse.md") if p.exists()), None)
+    if source is None:
+        utf8_print("Note: commands/pulse.md not found next to claude_status.py; skipped installing the /pulse command.")
         utf8_print("      Re-run the full installer (install.sh / install.ps1) to add it.")
         return
 
@@ -7865,14 +7871,16 @@ def _pulse_script_in_command(command):
 
 
 def _is_plugin_cache_path(path):
-    """True for ``<cache>/<marketplace>/claude-pulse/<version>/claude_status.py``.
+    """True for ``<cache>/<marketplace>/usage-pulse/<version>/claude_status.py``.
 
-    Marketplace installs live in a per-version folder named after the plugin;
-    a git clone (``~/.claude-pulse/claude_status.py``) or a checkout of the
-    repo (``.../claude-pulse/claude_status.py``) has no version folder.
+    Marketplace installs live in a per-version folder named after the plugin
+    (``claude-pulse`` before 3.5.0); a git clone (``~/.usage-pulse/claude_status.py``)
+    or a checkout of the repo (``.../usage-pulse/claude_status.py``) has no
+    version folder.
     """
     parts = [p.lower() for p in Path(str(path)).parts]
-    return len(parts) >= 3 and parts[-1] == "claude_status.py" and parts[-3] == "claude-pulse"
+    return (len(parts) >= 3 and parts[-1] == "claude_status.py"
+            and parts[-3] in ("usage-pulse", "claude-pulse"))
 
 
 def cmd_sync_install_path():
@@ -7881,7 +7889,7 @@ def cmd_sync_install_path():
     Marketplace plugins live in a per-version folder that Claude Code removes
     a fortnight after an update, so a status line registered from the old
     folder dies with it (issue #54). The plugin's SessionStart hook runs this
-    at every session start: when settings.json runs claude-pulse from another
+    at every session start: when settings.json runs usage-pulse from another
     plugin folder, the status line, the agent-panel rows, whichever hook
     groups were installed, and /pulse are re-registered from here. A git or
     manual install the user chose on purpose is never touched, and nothing is
@@ -7905,7 +7913,7 @@ def cmd_sync_install_path():
     if not (_is_plugin_cache_path(old_path) and _is_plugin_cache_path(here)):
         return 0
     groups = _installed_pulse_hooks(settings)
-    utf8_print(f"claude-pulse: settings.json still pointed at an old plugin folder; re-pointing it at {here.parent}")
+    utf8_print(f"usage-pulse: settings.json still pointed at an old plugin folder; re-pointing it at {here.parent}")
     install_status_line()
     install_pulse_command()
     if groups:
@@ -8247,10 +8255,10 @@ def _tty_write(text):
 
 
 def _screen_header(step):
-    """The dim 'claude-pulse setup · Step 3/13 · Providers' line."""
+    """The dim 'usage-pulse setup · Step 3/13 · Providers' line."""
     if not step:
         return ""
-    return f"\n  {DIM}claude-pulse setup · {step}{RESET}\n"
+    return f"\n  {DIM}usage-pulse setup · {step}{RESET}\n"
 
 
 def _screen_frame(step, title, body_lines, hint):
@@ -8557,7 +8565,7 @@ def _setup_env_lines(env):
     """The environment report as plain text lines (shared by both modes)."""
     py = ".".join(str(n) for n in env["python"])
     lines = [
-        f"Python        {py}" + ("" if env["python_ok"] else "  (claude-pulse needs 3.8 or newer)"),
+        f"Python        {py}" + ("" if env["python_ok"] else "  (usage-pulse needs 3.8 or newer)"),
         "Claude Code   " + (_short_home(env["claude"]) if env["claude"]
                             else "not found on PATH (fine if you start it another way)"),
         f"Config dir    {_short_home(env['config_dir'])}"
@@ -8571,12 +8579,12 @@ def _setup_env_lines(env):
         lines.append("settings.json ok")
     kind = env["status_line"]
     if kind == "ours":
-        lines.append("Status line   claude-pulse (installed)")
+        lines.append("Status line   usage-pulse (installed)")
     elif kind == "other":
         lines.append(f"Status line   another tool: {_sanitize(env['status_line_cmd'])[:70]}")
     else:
         lines.append("Status line   not set")
-    lines.append("Agent panel   " + {"ours": "claude-pulse rows", "other": "another tool's rows",
+    lines.append("Agent panel   " + {"ours": "usage-pulse rows", "other": "another tool's rows",
                                      "none": "Claude Code's default rows"}[env["subagent_line"]])
     hooks = ", ".join(g for g in HOOK_GROUP_NAMES if g in env["hooks"]) or "none"
     lines.append(f"Hooks         {hooks}")
@@ -8678,11 +8686,11 @@ def _setup_changes(original, plan, env):
     out = []
     if plan["install"]:
         if env["status_line"] == "ours":
-            out.append("Status line: reinstall claude-pulse + agent-panel rows + /pulse")
+            out.append("Status line: reinstall usage-pulse + agent-panel rows + /pulse")
         elif env["status_line"] == "other":
-            out.append(f"Status line: replace {_sanitize(env['status_line_cmd'])[:50]} with claude-pulse")
+            out.append(f"Status line: replace {_sanitize(env['status_line_cmd'])[:50]} with usage-pulse")
         else:
-            out.append("Status line: install claude-pulse + agent-panel rows + /pulse")
+            out.append("Status line: install usage-pulse + agent-panel rows + /pulse")
     else:
         out.append("Status line: leave as it is")
     add = [g for g in HOOK_GROUP_NAMES if g in plan["hooks"]]
@@ -8786,7 +8794,7 @@ def _setup_interactive(env):
                                      "Fix settings.json, then run --setup again. Press any key."))
             _read_key()
             return None
-        r = _screen_confirm(step, "Set up claude-pulse", True,
+        r = _screen_confirm(step, "Set up usage-pulse", True,
                             body=lines + ["", "Nothing is written until you confirm the summary at the end."],
                             yes="Start", no="Quit", hint="Enter start · Esc quit")
         return None if r is False else r
@@ -8794,16 +8802,16 @@ def _setup_interactive(env):
     def status_line(step):
         kind = env["status_line"]
         if kind == "ours":
-            title = "Reinstall the claude-pulse status line?"
+            title = "Reinstall the usage-pulse status line?"
             body = ["Refreshes the command in settings.json, the agent-panel rows",
                     "(subagentStatusLine) and the /pulse command. Safe to repeat."]
         elif kind == "other":
             title = "Replace your current status line?"
             body = [f"settings.json runs: {_sanitize(env['status_line_cmd'])[:70]}",
-                    "claude-pulse replaces it. The old command is printed when setup",
+                    "usage-pulse replaces it. The old command is printed when setup",
                     "finishes, so you can put it back."]
         else:
-            title = "Install the claude-pulse status line?"
+            title = "Install the usage-pulse status line?"
             body = ["Adds statusLine and subagentStatusLine (one row per running agent)",
                     "to settings.json, and the /pulse command for later tweaks."]
         r = _screen_confirm(step, title, plan["install"], body=body)
@@ -8816,7 +8824,7 @@ def _setup_interactive(env):
         installed = env["hooks"]
         default = set(installed) if installed else {"agents", "team"}
         current = plan.get("_hooks_seen", default)
-        r = _screen_multiselect(step, "Which hooks should claude-pulse install?",
+        r = _screen_multiselect(step, "Which hooks should usage-pulse install?",
                                 list(_SETUP_HOOK_ITEMS), current,
                                 body=["Hooks are commands Claude Code runs on events. None of these can",
                                       "block Claude: the events that could are pinned to exit 0."])
@@ -9075,7 +9083,7 @@ def _setup_noninteractive(env):
     newly detected file/login providers. It installs no hooks and never
     enables MiniMax: an unattended install keeps a static bar.
     """
-    utf8_print("claude-pulse setup (defaults)")
+    utf8_print("usage-pulse setup (defaults)")
     for line in _setup_env_lines(env):
         utf8_print(f"  {line}")
     utf8_print("")
@@ -9114,13 +9122,15 @@ def cmd_setup(args):
     """``--setup [--non-interactive]``: guided first-run setup.
 
     Interactive when stdin and stdout are both terminals and neither
-    ``--non-interactive`` nor ``CLAUDE_PULSE_NONINTERACTIVE`` asks otherwise;
+    ``--non-interactive`` nor ``USAGE_PULSE_NONINTERACTIVE`` (or the older
+    ``CLAUDE_PULSE_NONINTERACTIVE``) asks otherwise;
     unattended defaults everywhere else (pipes, CI, Git Bash's mintty).
     Returns a process exit code.
     """
     try:
         forced = ("--non-interactive" in args
-                  or os.environ.get("CLAUDE_PULSE_NONINTERACTIVE", "").strip() not in ("", "0"))
+                  or any(os.environ.get(k, "").strip() not in ("", "0")
+                         for k in ("USAGE_PULSE_NONINTERACTIVE", "CLAUDE_PULSE_NONINTERACTIVE")))
         env = _setup_env()
         if forced:
             return _setup_noninteractive(env)
@@ -9221,7 +9231,7 @@ def cmd_print_config():
         colours = THEMES.get(theme_name, THEMES["default"])
         preview = f"{colours['low']}{FILL * 3}{colours['mid']}{FILL * 3}{colours['high']}{FILL * 2}{RESET}"
 
-    utf8_print(f"\n{BOLD}claude-pulse v{VERSION}{RESET}\n")
+    utf8_print(f"\n{BOLD}usage-pulse v{VERSION}{RESET}\n")
     utf8_print(f"  Theme:     {theme_name}  {preview}")
     utf8_print(f"  Cache TTL: {config.get('cache_ttl_seconds', DEFAULT_CACHE_TTL)}s")
     utf8_print(f"  Currency:  {_sanitize(config.get('currency', chr(163)))}")
@@ -9864,7 +9874,7 @@ _CLI_SUBOPTIONS = ("--non-interactive", "--only", "--json")
 
 def cmd_help():
     """Print CLI_FLAGS grouped, for --help / -h."""
-    utf8_print(f"claude-pulse {VERSION} — usage status line for Claude Code")
+    utf8_print(f"usage-pulse {VERSION} — usage status line for Claude Code")
     utf8_print("")
     utf8_print("Usage: python claude_status.py [flag [args]]")
     utf8_print("With no flag and JSON on stdin (how Claude Code runs it) it prints the status line.")
@@ -10836,7 +10846,7 @@ def main():
     token, plan = get_credentials()
     if not token:
         if os.environ.get("ANTHROPIC_API_KEY"):
-            line = "API key detected \u2014 claude-pulse requires a Pro/Max subscription"
+            line = "API key detected \u2014 usage-pulse requires a Pro/Max subscription"
         else:
             line = "No credentials \u2014 run claude and /login"
         write_cache(cache_path, line)

@@ -17,7 +17,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = REPO_ROOT / "claude_status.py"
-PULSE_SRC = REPO_ROOT / "pulse.md"
+PULSE_SRC = REPO_ROOT / "commands" / "pulse.md"
 
 
 class InstallCommandTest(unittest.TestCase):

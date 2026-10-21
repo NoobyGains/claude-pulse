@@ -1,5 +1,5 @@
 ---
-description: Configure the claude-pulse status bar (setup, themes, widgets, providers, hooks)
+description: Configure the usage-pulse status bar (setup, themes, widgets, providers, hooks)
 argument-hint: "[setup | <theme> | show | providers | hooks | update | help]"
 ---
 Configure your Claude status bars — setup, themes, widgets, providers, hooks and more. $ARGUMENTS
@@ -9,9 +9,9 @@ Configure your Claude status bars — setup, themes, widgets, providers, hooks a
 ## 1. Find the script (once, before anything else)
 
 1. Read `settings.json` in Claude Code's config dir (`$CLAUDE_CONFIG_DIR` if it is set, otherwise `~/.claude`). If `statusLine.command` contains `claude_status.py`, take the script path from it: strip the quotes and expand `$HOME`. Keep the interpreter at the start of that same command as PY (for example `C:/Users/me/AppData/Local/Programs/Python/Python313/python.exe` or `python3`).
-2. Otherwise use the Glob tool for `**/claude_status.py` under `~/.claude/plugins/` and pick the result whose path contains `claude-pulse`.
-3. Otherwise try `~/.claude-pulse/claude_status.py`.
-4. If nothing is found, say: "claude-pulse isn't installed yet. Run `/claude-pulse:setup` (plugin) or the installer from the README, then `/pulse setup`." and stop.
+2. Otherwise use the Glob tool for `**/claude_status.py` under `~/.claude/plugins/` and pick the result whose path contains `usage-pulse` (or `claude-pulse`, the name before 3.5.0).
+3. Otherwise try `~/.usage-pulse/claude_status.py`, then `~/.claude-pulse/claude_status.py` (an install from before the rename).
+4. If nothing is found, say: "usage-pulse isn't installed yet. Run `/usage-pulse:setup` (plugin) or the installer from the README, then `/pulse setup`." and stop.
 
 Save the path as SCRIPT_PATH. If no PY was found, use `python` (Windows) or `python3` (macOS/Linux). Every command below is `PY "SCRIPT_PATH" <flag>`.
 

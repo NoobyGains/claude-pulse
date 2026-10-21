@@ -439,7 +439,7 @@ class WizardChoicesTest(_WithProviders):
         # welcome, status line, hooks → back → status line again, then on.
         keys = ["enter", "enter", "left", "enter"] + ["enter"] * 12
         self.assertEqual(self.run_wizard(keys), 0)
-        self.assertEqual(self.out.text().count("Install the claude-pulse status line?"), 2)
+        self.assertEqual(self.out.text().count("Install the usage-pulse status line?"), 2)
 
     def test_caps_opt_in(self):
         keys = ["enter"] * 4 + [" ", "down", "down", " ", "enter"] + ["enter"] * 9
@@ -553,7 +553,7 @@ class WizardWithoutProvidersTest(_Sandbox):
         # welcome, status, hooks, caps → back lands on hooks, not providers.
         keys = ["enter"] * 3 + ["left", "enter"] + ["enter"] * 10
         self.assertEqual(self.run_wizard(keys), 0)
-        self.assertEqual(self.out.text().count("Which hooks should claude-pulse install?"), 2)
+        self.assertEqual(self.out.text().count("Which hooks should usage-pulse install?"), 2)
 
 
 class NonInteractiveTest(_WithProviders):

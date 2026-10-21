@@ -1,18 +1,18 @@
 {
-  "name": "claude-pulse",
+  "name": "usage-pulse",
   "owner": {
     "name": "PigeonDroid"
   },
   "metadata": {
-    "description": "Live usage status bar for Claude Code — session limits, weekly usage, lines changed, widget priorities, 10 themes, and zero API calls"
+    "description": "Usage Pulse: the live usage status bar for Claude Code"
   },
   "plugins": [
     {
-      "name": "claude-pulse",
+      "name": "usage-pulse",
       "source": "./",
-      "description": "Real-time usage monitor with 20+ widgets, priority ordering, +N/-N code changes, 10 themes, shimmer animations, and zero API calls for usage data",
-      "version": "3.4.2",
-      "homepage": "https://github.com/NoobyGains/claude-pulse"
+      "description": "Session and weekly limits, your other accounts and tools on their own rows, cost, context, live agents, 10 themes and animations. Zero API calls for the main bars",
+      "version": "3.5.0",
+      "homepage": "https://github.com/NoobyGains/usage-pulse"
     }
   ]
 }

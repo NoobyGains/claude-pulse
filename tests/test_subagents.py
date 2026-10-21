@@ -9,7 +9,7 @@ a session accumulates them quietly. Four surfaces are covered here:
   rendering rather than emit a broken row;
 * the caps widget, whose denominators come from config because Claude Code
   enforces its limits without reporting them;
-* the budget bar, whose ceiling is a claude-pulse setting because
+* the budget bar, whose ceiling is a usage-pulse setting because
   ``--max-budget-usd`` is CLI-only with no settings key or env var.
 
 Run: ``python tests/test_subagents.py``

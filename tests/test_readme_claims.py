@@ -30,7 +30,7 @@ except Exception:
 
 readme = (REPO / "README.md").read_text(encoding="utf-8")
 changelog = (REPO / "CHANGELOG.md").read_text(encoding="utf-8")
-pulse_md = (REPO / "pulse.md").read_text(encoding="utf-8")
+pulse_md = (REPO / "commands" / "pulse.md").read_text(encoding="utf-8")
 issues = []
 
 
@@ -108,7 +108,7 @@ for w, state in sorted(_defaults.items()):
 
 print("\n== flags ==")
 _known_flags = {r[0] for r in cs.CLI_FLAGS} | set(cs._CLI_SUBOPTIONS)
-_known_flags.add("--max-budget-usd")           # Claude Code's own flag
+_known_flags.update({"--max-budget-usd", "--marketplace"})   # Claude Code's own flags
 _readme_flags = set(re.findall(r"(?<![\w-])(--[a-z][a-z0-9-]+)", readme))
 for f in sorted(_readme_flags - _known_flags):
     check(f"README flag {f} exists", False, "not in CLI_FLAGS or the sub-options")

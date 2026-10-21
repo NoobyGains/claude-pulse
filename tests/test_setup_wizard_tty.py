@@ -12,7 +12,7 @@ files the wizard leaves behind in a sandbox.
 Windows: ConPTY through pywinpty, the console behind Windows Terminal and
 PowerShell. ``pip install pywinpty``; skipped without it.
 POSIX: the stdlib ``pty``. That transport has not been run by the maintainer
-yet, so it is opt-in: ``CLAUDE_PULSE_TTY_TESTS=1``.
+yet, so it is opt-in: ``USAGE_PULSE_TTY_TESTS=1``.
 
 Run: ``python tests/test_setup_wizard_tty.py``
 """
@@ -30,7 +30,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = REPO_ROOT / "claude_status.py"
-PULSE_SRC = REPO_ROOT / "pulse.md"
+PULSE_SRC = REPO_ROOT / "commands" / "pulse.md"
 WIN = sys.platform == "win32"
 
 if WIN:
@@ -40,8 +40,8 @@ if WIN:
     except ImportError:
         HAVE_PTY, SKIP_REASON = False, "needs pywinpty on Windows: pip install pywinpty"
 else:
-    HAVE_PTY = os.environ.get("CLAUDE_PULSE_TTY_TESTS", "").strip() not in ("", "0")
-    SKIP_REASON = "the POSIX pty transport is opt-in: CLAUDE_PULSE_TTY_TESTS=1"
+    HAVE_PTY = os.environ.get("USAGE_PULSE_TTY_TESTS", "").strip() not in ("", "0")
+    SKIP_REASON = "the POSIX pty transport is opt-in: USAGE_PULSE_TTY_TESTS=1"
 
 # What a terminal sends for each key.
 ENTER, ESC, BACKSPACE = "\r", "\x1b", "\x7f"
