@@ -121,4 +121,14 @@ for src in re.findall(r'src="([^"]+)"', readme):
 print("\n" + ("README AUDIT CLEAN" if not issues else f"{len(issues)} ISSUE(S):"))
 for i in issues:
     print("  -", i)
-sys.exit(1 if issues else 0)
+
+
+class ReadmeClaimsTest(__import__("unittest").TestCase):
+    """Lets ``unittest discover`` run this audit alongside the suite."""
+
+    def test_readme_audit_is_clean(self):
+        self.assertEqual(issues, [], "; ".join(issues))
+
+
+if __name__ == "__main__":
+    sys.exit(1 if issues else 0)

@@ -345,6 +345,17 @@ def _detect_terminal_width():
 
 def _detect_terminal_width_uncached():
     """Internal: attempt each detection method in order."""
+    # 0. Claude Code sets COLUMNS/LINES for the status-line command (statusline
+    #    docs). When stdout is a pipe we are being run by it, and that value
+    #    is the width of the area the line is drawn in — the controlling
+    #    terminal's width (steps 4 and 6) can be wider than the pane.
+    try:
+        if not sys.stdout.isatty():
+            cols = int(os.environ["COLUMNS"])
+            if cols > 0:
+                return cols
+    except (KeyError, ValueError, AttributeError, OSError):
+        pass
     # 1-3. Try each standard fd — stderr/stdin may still be a TTY
     for fd in (sys.stdout, sys.stderr, sys.stdin):
         try:
@@ -575,9 +586,11 @@ DEFAULT_SHOW = {
     "update": True,
     "claude_update": True,
     # Per-model caps (show when available)
-    "opus": True,
-    "sonnet": True,
-    "fable": True,
+    # Per-model weekly caps are not on stdin; drawing them costs one usage-API
+    # call every model_caps_refresh_seconds, so they are opt-in (--show fable).
+    "opus": False,
+    "sonnet": False,
+    "fable": False,
     # Opt-in features
     "plan": False,
     "extra": False,
@@ -1377,9 +1390,11 @@ def install_hooks():
     # key. They can also steer the team — exit code 2 keeps a teammate from
     # going idle, deletes a new task, or refuses a completion — so their
     # command is built to run in every hook shell and to always exit 0; see
-    # _blocking_hook_command.
+    # _blocking_hook_command. SubagentStop is blocking too: exit 2 keeps the
+    # subagent running (hooks reference), and Python exits 2 by itself when
+    # the script path has gone missing, so it gets the same pinned command.
     for event, flag, blocking in (("SubagentStart", "--hook-subagent-start", False),
-                                  ("SubagentStop", "--hook-subagent-stop", False),
+                                  ("SubagentStop", "--hook-subagent-stop", True),
                                   ("TeammateIdle", "--hook-teammate-idle", True),
                                   ("TaskCreated", "--hook-task-created", True),
                                   ("TaskCompleted", "--hook-task-completed", True)):
@@ -2040,10 +2055,25 @@ _RATE_LIMIT_CACHE_TTL = 120  # seconds — back off longer on 429 to avoid retry
 # must come from the OAuth usage endpoint. They are refreshed at most this
 # often, and served from the last cached value in between, so a repaint costs
 # a network call once every 5 minutes rather than on every draw.
-_MODEL_CAPS_TTL = 300  # seconds
+_MODEL_CAPS_TTL = 300  # seconds; config "model_caps_refresh_seconds" overrides
+_MODEL_CAPS_MIN_TTL = 60
 # Hard ceiling on that request. The status line blocks on it, so it must be
 # short — matches the spirit of _UPDATE_CHECK_BUDGET (6s) for the same reason.
 _MODEL_CAPS_TIMEOUT = 5  # seconds
+# Minimum gap between two refresh *attempts*, whatever their outcome. Claude
+# Code cancels an in-flight status-line run when a newer repaint arrives, and
+# a cancelled run leaves no fetched_at stamp — so without this, a busy session
+# would start the request again on every repaint until one survived.
+_MODEL_CAPS_RETRY = 60  # seconds
+
+
+def _model_caps_ttl(config):
+    """Return the per-model caps refresh interval from config, floored."""
+    try:
+        ttl = int((config or {}).get("model_caps_refresh_seconds", _MODEL_CAPS_TTL))
+    except (TypeError, ValueError):
+        return _MODEL_CAPS_TTL
+    return max(_MODEL_CAPS_MIN_TTL, ttl)
 
 
 def read_cache(cache_path, ttl):
@@ -2119,7 +2149,8 @@ _USAGE_CACHE_KEYS = {
 
 def write_cache(cache_path, line, usage=None, plan=None,
                 rate_limited_until=None, rate_limit_fails=None,
-                data_timestamp=None, model_caps_fetched_at=None):
+                data_timestamp=None, model_caps_fetched_at=None,
+                model_caps_attempted_at=None):
     """Persist the rendered line plus optional usage/plan and 429 backoff state.
 
     ``rate_limited_until`` is an epoch after which it is worth calling the API
@@ -2147,6 +2178,8 @@ def write_cache(cache_path, line, usage=None, plan=None,
             data["rate_limit_fails"] = rate_limit_fails
         if model_caps_fetched_at:
             data["model_caps_fetched_at"] = model_caps_fetched_at
+        if model_caps_attempted_at:
+            data["model_caps_attempted_at"] = model_caps_attempted_at
         with _secure_open_write(cache_path) as f:
             json.dump(data, f)
     except OSError:
@@ -7264,27 +7297,40 @@ def main():
         # "Extra: n/a" and the "check failed" credits line.
         has_core = "five_hour" in usage_from_stdin or "seven_day" in usage_from_stdin
         _caps_age = time.time() - float((_stale or {}).get("model_caps_fetched_at") or 0)
-        _caps_stale = _caps_age > _MODEL_CAPS_TTL
+        _caps_stale = _caps_age > _model_caps_ttl(config)
         # Only refresh if a widget that consumes this data is actually on
-        # screen. Without this gate every Claude Pro user pays a network call
-        # every _MODEL_CAPS_TTL for windows the API returns as null for them,
-        # which is the per-repaint fetch #47 removed, just slower.
+        # screen. The per-model bars are opt-in (DEFAULT_SHOW has them off)
+        # precisely because this is a network call: a user who never turned
+        # them on must never pay for it, and Claude Pro would get null windows
+        # back anyway — the per-repaint fetch #47 removed, just slower.
         _caps_show = config.get("show", {})
-        _caps_wanted = any(_caps_show.get(k, DEFAULT_SHOW.get(k, True))
+        _caps_wanted = any(_caps_show.get(k, DEFAULT_SHOW.get(k, False))
                            for k in ("opus", "sonnet", "fable", "extra"))
         # Preserve across the end-of-branch write_cache below. Without this the
         # final write drops the field, the age reads as 0 on the next repaint,
         # and the "stale" test fires every single draw — a fetch per repaint,
         # which is what the 5-minute TTL exists to prevent.
         _caps_ts = (_stale or {}).get("model_caps_fetched_at") or None
+        _caps_attempted = (_stale or {}).get("model_caps_attempted_at") or None
         # Same reason: the end-of-branch write must not erase 429 backoff.
         _rl_until = (_stale or {}).get("rate_limited_until") or None
         _rl_fails = (_stale or {}).get("rate_limit_fails") or None
         _blocked_until = float((_stale or {}).get("rate_limited_until") or 0)
         _backoff_active = time.time() < _blocked_until
+        _recent_attempt = (time.time() - float(_caps_attempted or 0)) < _MODEL_CAPS_RETRY
         if (not has_core and not has_model_caps and "extra_usage" not in usage_from_stdin) or \
-                (_caps_wanted and _caps_stale and not _backoff_active):
+                (_caps_wanted and _caps_stale and not _backoff_active and not _recent_attempt):
             try:
+                # Stamp the attempt before the request so a run that Claude
+                # Code cancels mid-flight (or one that times out) still holds
+                # the next attempt off for _MODEL_CAPS_RETRY seconds.
+                _caps_attempted = time.time()
+                write_cache(cache_path, "", usage=usage_from_stdin,
+                            plan=plan_from_cache,
+                            model_caps_fetched_at=_caps_ts,
+                            rate_limited_until=_rl_until,
+                            rate_limit_fails=_rl_fails,
+                            model_caps_attempted_at=_caps_attempted)
                 token, api_plan = get_credentials()
                 if token:
                     api_usage = fetch_usage(token, timeout=_MODEL_CAPS_TIMEOUT)
@@ -7304,7 +7350,8 @@ def main():
                     _rl_fails = None
                     write_cache(cache_path, "", usage=usage_from_stdin,
                                 plan=plan_from_cache,
-                                model_caps_fetched_at=_caps_ts)
+                                model_caps_fetched_at=_caps_ts,
+                                model_caps_attempted_at=_caps_attempted)
             except urllib.error.HTTPError as exc:
                 # A 429 here must set the shared backoff. Without it this path
                 # retried on every repaint: each draw saw no timestamp, judged
@@ -7326,7 +7373,8 @@ def main():
                                 plan=plan_from_cache,
                                 model_caps_fetched_at=_caps_ts,
                                 rate_limited_until=_rl_until,
-                                rate_limit_fails=_rl_fails)
+                                rate_limit_fails=_rl_fails,
+                                model_caps_attempted_at=_caps_attempted)
             except Exception:
                 pass
 
@@ -7344,7 +7392,8 @@ def main():
         # Write to cache so staleness tracking works
         write_cache(cache_path, line, usage_from_stdin, plan_from_cache,
                     model_caps_fetched_at=_caps_ts,
-                    rate_limited_until=_rl_until, rate_limit_fails=_rl_fails)
+                    rate_limited_until=_rl_until, rate_limit_fails=_rl_fails,
+                    model_caps_attempted_at=_caps_attempted)
 
         line = append_update_indicator(line, config)
         line = append_claude_update_indicator(line, config, stdin_ctx)

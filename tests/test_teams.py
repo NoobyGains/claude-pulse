@@ -878,15 +878,23 @@ class InstallTeamHooksTest(unittest.TestCase):
         for event, flag in self.TEAM_EVENTS.items():
             self.assertEqual(len(self._pulse_entries(self._hooks(), event, flag)), 1)
 
-    def test_subagent_entries_are_unchanged(self):
+    def test_subagent_entries_keep_their_contract(self):
+        """SubagentStart cannot block, so it keeps the plain matcher form.
+        SubagentStop *can* (exit 2 keeps the subagent running — hooks
+        reference), so it gets the same always-exit-0 command as the team
+        events; a moved install must never pin every subagent open."""
         cs.install_hooks()
         hooks = self._hooks()
-        for event, flag in (("SubagentStart", "--hook-subagent-start"),
-                            ("SubagentStop", "--hook-subagent-stop")):
-            entries = self._pulse_entries(hooks, event, flag)
-            self.assertEqual(len(entries), 1)
-            self.assertEqual(entries[0]["matcher"], "")
-            self.assertTrue(entries[0]["hooks"][0]["command"].endswith(flag))
+        start = self._pulse_entries(hooks, "SubagentStart", "--hook-subagent-start")
+        self.assertEqual(len(start), 1)
+        self.assertEqual(start[0]["matcher"], "")
+        self.assertTrue(start[0]["hooks"][0]["command"].endswith("--hook-subagent-start"))
+        stop = self._pulse_entries(hooks, "SubagentStop", "--hook-subagent-stop")
+        self.assertEqual(len(stop), 1)
+        self.assertNotIn("matcher", stop[0])
+        command = stop[0]["hooks"][0]["command"]
+        self.assertIn("--hook-subagent-stop", command)
+        self.assertTrue(command.rstrip().endswith("exit 0"), command)
 
     def test_foreign_hooks_on_the_same_events_survive(self):
         mine = {"hooks": [{"type": "command", "command": "run-quality-gate.sh"}]}
