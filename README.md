@@ -80,6 +80,7 @@ Python floor is **3.8** — 3.1.0 advertised 3.6+ but did not parse below 3.12. 
 | **Two-line layout** | Split widgets across two rows with `line1_widgets` / `line2_widgets` |
 | **Subagent rows** | Custom per-agent rows in the agent panel via `subagentStatusLine` — status, model, effort, a context bar from `tokenCount`/`contextWindowSize`, and elapsed time |
 | **Live agent counter** | `agents 3 live · 47/200` from `SubagentStart`/`SubagentStop` hooks, colour-escalating toward the caps |
+| **Agent team** | `team 3 · tasks 4/7` — teammates seen so far and shared-task progress from the `TeammateIdle`/`TaskCreated`/`TaskCompleted` hooks (`--install-hooks`); the task tally turns green when the list is done. Task counts need Claude Code's Task tools, which newer models only get with `CLAUDE_CODE_ENABLE_TODO_TOOLS=1`. See [its limitations](#agent-team-limitations) |
 | **Budget bar** | Spend against a ceiling you set with `--budget` to match your `--max-budget-usd` |
 | **Live heartbeat** | Opt-in spinner with tool count and elapsed time — `--show heartbeat` plus `--install-hooks` |
 | **Git branch** | Current branch name always visible |
@@ -208,12 +209,14 @@ Use `/pulse` in Claude Code for an interactive setup wizard, or configure direct
 --hide fast_mode           # Hide the ⚡fast badge
 --hide agent               # Hide the active subagent name
 --hide subagents           # Hide the live agent counter
+--hide team                # Hide the agent-team segment
 --hide budget              # Hide the budget bar
 
 # Internal (invoked by Claude Code, not by you):
 #   --subagent-status-line   renders the agent-panel rows
 #   --hook-refresh           PostToolUse heartbeat
 #   --hook-subagent-start/-stop   live agent counter
+#   --hook-teammate-idle, --hook-task-created/-completed   agent-team segment
 #   --debug-stdin            dump the raw stdin payload for troubleshooting
 
 # Focus timer
@@ -259,6 +262,17 @@ Use `/pulse` in Claude Code for an interactive setup wizard, or configure direct
 **Refresh cadence:** Claude Code repaints on its own events (prompt, tool use), which covers anything derived from stdin. Content that moves with the clock — animation frames, the focus countdown, the heartbeat's elapsed time — also needs a timer, so `--install` sets `statusLine.refreshInterval` (2s when animating, 15s for time-based widgets, omitted entirely for a static bar). It is re-synced automatically whenever you change a setting.
 
 **PostToolUse hook:** When installed, the hook fires on every tool call (Read, Edit, Bash, etc.), updating the heartbeat counter and git branch. The status line refreshes on each tool call, making the spinner animate during active work.
+
+### Agent team limitations
+
+The team segment only knows what the three team hooks tell it, so:
+
+- **No "working" count.** Claiming or doing work fires no hook, so the segment shows how many teammates have appeared, not how many are busy.
+- **Blocked by another hook.** claude-pulse records the event before any quality-gate hook of yours decides. A creation your hook blocks still counts as an open task, and a completion it blocks still counts as done.
+- **Deleted tasks stay open.** Deleting a task with `TaskUpdate` fires no hook.
+- **Reused task ids.** If a task's completion is recorded before its creation, a later task with the same id stays hidden.
+- **Split-pane teammates** (tmux/iTerm2) run as separate sessions with their own session id, so they don't appear in the lead's segment. In-process teammates, the default, do.
+- **Six-hour sweep.** Once nothing in a session has changed for six hours its team state is removed, open tasks included.
 
 ## Themes
 

@@ -3,6 +3,7 @@
 
 VERSION = "3.3.0"
 
+import hashlib
 import json
 import math
 import os
@@ -488,7 +489,8 @@ WIDGET_PRIORITY = {
     "thinking": 124, "agent": 126, "worktree": 130,
     "heartbeat": 140, "activity": 150, "last_tool": 160, "branch": 170,
     "pr": 175,
-    "subagents": 178, "sessions": 180, "budget": 185, "pomodoro": 190, "git_drift": 200, "files_changed": 210,
+    "subagents": 178, "team": 179, "sessions": 180, "budget": 185, "pomodoro": 190, "git_drift": 200,
+    "files_changed": 210,
 }
 
 # Reasoning-effort display. Claude Code reports low|medium|high|xhigh|max.
@@ -593,6 +595,7 @@ DEFAULT_SHOW = {
     "weekly_cost": False,
     "cache": False,
     "subagents": True,
+    "team": True,
     "budget": True,
     "pr": False,
     "burn_rate": False,
@@ -1302,6 +1305,37 @@ def hook_refresh(tool_name_arg):
         pass
 
 
+# Characters an unquoted interpreter path may hold and still be one plain
+# command word in sh, Git Bash, pwsh 7 and Windows PowerShell 5.1 alike.
+_SHELL_NEUTRAL_WORD = re.compile(r"[A-Za-z0-9/][A-Za-z0-9_./:~-]*")
+
+
+def _blocking_hook_command(flag, python_cmd, script_path):
+    """Return the command for a hook whose exit code can steer the team.
+
+    Claude Code runs a hook's command through sh, or on Windows through Git
+    Bash — or PowerShell when Git Bash isn't installed. The other hooks'
+    ``$HOME/...`` interpreter is a ParserError in both PowerShells, so there
+    they never run. An unquoted forward-slash absolute interpreter plus a
+    single-quoted script path parses the same in all of them (checked in Git
+    Bash, pwsh 7 and PowerShell 5.1, which also pass the payload through on
+    stdin). A *quoted* interpreter cannot: PowerShell needs ``& "..."`` to
+    run one and bash reads ``&`` as "background". So an interpreter path
+    with a space (or anything else unsafe unquoted) falls back to the
+    bash-only form the other hooks use.
+
+    ``; exit 0`` pins the status whichever shell runs it: Python exits 2 by
+    itself when the script path is missing (a moved or deleted install), and
+    for these events exit 2 would delete every task the team creates, block
+    every completion, or keep teammates from ever going idle.
+    """
+    python = Path(sys.executable).as_posix()
+    script = Path(__file__).resolve().as_posix()
+    if _SHELL_NEUTRAL_WORD.fullmatch(python) and "'" not in script:
+        return f"{python} '{script}' {flag}; exit 0"
+    return f'{python_cmd} "{script_path}" {flag}; exit 0'
+
+
 def install_hooks():
     """Install a PostToolUse hook into ~/.claude/settings.json."""
     settings_path = _claude_config_dir() / "settings.json"
@@ -1337,8 +1371,18 @@ def install_hooks():
 
     # SubagentStart / SubagentStop drive the live agent counter. They carry
     # agent_id and agent_type, so no polling is needed.
-    for event, flag in (("SubagentStart", "--hook-subagent-start"),
-                        ("SubagentStop", "--hook-subagent-stop")):
+    #
+    # The three agent-team events drive the team segment. They take no
+    # matcher (Claude Code silently ignores one), so their entries omit the
+    # key. They can also steer the team — exit code 2 keeps a teammate from
+    # going idle, deletes a new task, or refuses a completion — so their
+    # command is built to run in every hook shell and to always exit 0; see
+    # _blocking_hook_command.
+    for event, flag, blocking in (("SubagentStart", "--hook-subagent-start", False),
+                                  ("SubagentStop", "--hook-subagent-stop", False),
+                                  ("TeammateIdle", "--hook-teammate-idle", True),
+                                  ("TaskCreated", "--hook-task-created", True),
+                                  ("TaskCompleted", "--hook-task-completed", True)):
         command = f'{python_cmd} "{script_path}" {flag}'
         existing = hooks.setdefault(event, [])
         kept = []
@@ -1349,7 +1393,11 @@ def install_hooks():
             )
             if not is_pulse:
                 kept.append(h)
-        kept.append({"matcher": "", "hooks": [{"type": "command", "command": command}]})
+        if blocking:
+            kept.append({"hooks": [{"type": "command", "command":
+                                    _blocking_hook_command(flag, python_cmd, script_path)}]})
+        else:
+            kept.append({"matcher": "", "hooks": [{"type": "command", "command": command}]})
         hooks[event] = kept
 
     settings["hooks"] = hooks
@@ -1363,6 +1411,7 @@ def install_hooks():
     utf8_print(f"  {BOLD}Activity{RESET}     \u2014 {BRIGHT_YELLOW}\u26a1 Active{RESET} indicator during rapid tool calls")
     utf8_print(f"  {BOLD}Last tool{RESET}    \u2014 shows last tool used (opt-in: --show last_tool)")
     utf8_print(f"  {BOLD}Git branch{RESET}   \u2014 current branch name")
+    utf8_print(f"  {BOLD}Agent team{RESET}   \u2014 teammates seen and shared tasks done ({DIM}team 3 \u00b7 tasks 4/7{RESET})")
     utf8_print(f"")
     utf8_print(f"Restart Claude Code for hooks to take effect.")
 
@@ -4700,6 +4749,14 @@ def build_status_line(usage, plan, config=None, stdin_ctx=None, cache_age=None):
         except Exception:
             pass
 
+    if show.get("team", True):
+        try:
+            team_str = _render_team(config, (stdin_ctx or {}).get("session_id"))
+            if team_str:
+                parts.append((_pri("team"), team_str))
+        except Exception:
+            pass
+
     if show.get("budget", True):
         try:
             budget_str = _render_budget(config, stdin_ctx)
@@ -5093,6 +5150,8 @@ def _prune_subagent_dirs(root, now=None):
 
     Sessions end without a goodbye event, so their dirs would otherwise
     accumulate forever. Anything recent enough to still be rendered is kept.
+    Shared by the subagent and agent-team roots; the latter keep their
+    markers one level down, in ``tasks/`` and ``teammates/``.
     """
     now = now or time.time()
     try:
@@ -5105,12 +5164,25 @@ def _prune_subagent_dirs(root, now=None):
                 continue
             # The newest marker decides; the dir's own mtime only matters for
             # an empty dir (a concurrent hook mid-mkdir must not be swept).
-            newest = max((c.stat().st_mtime for c in os.scandir(entry.path)),
+            newest = max((_newest_marker_mtime(c) for c in os.scandir(entry.path)),
                          default=entry.stat().st_mtime)
             if now - newest > SUBAGENT_STATE_TTL:
                 shutil.rmtree(entry.path, ignore_errors=True)
         except OSError:
             continue
+
+
+def _newest_marker_mtime(entry):
+    """Return a marker's mtime, or for a marker subdir its newest marker's.
+
+    A subdir's own mtime is no proxy for activity: rewriting a file inside
+    it (a teammate going idle again) leaves the directory's mtime untouched,
+    so a busy team would look abandoned and be swept mid-session.
+    """
+    if entry.is_dir(follow_symlinks=False):
+        return max((c.stat().st_mtime for c in os.scandir(entry.path)),
+                   default=entry.stat().st_mtime)
+    return entry.stat().st_mtime
 
 
 def _count_subagents(session_id, now=None):
@@ -5189,6 +5261,327 @@ def _render_subagents(config, session_id=None):
     if layout == "compact":
         return f"⚇{live_part} {total_part}"
     return f"{DIM}agents{RESET} {live_part} live {DIM}·{RESET} {total_part}"
+
+
+# ---------------------------------------------------------------------------
+# Agent-team tracking
+# ---------------------------------------------------------------------------
+# With agent teams enabled Claude Code fires TeammateIdle, TaskCreated and
+# TaskCompleted, which is enough to show how big the team is and how far the
+# shared task list has got without polling anything. A teammate becomes known
+# the first time its name appears in any of the three.
+#
+# Whether a teammate is working *right now* is not observable from them: it
+# only surfaces when a Task* event happens to carry its name, and claiming or
+# doing work fires nothing, so "0 working" would be the normal reading for a
+# busy team. The idle/working markers are still kept (they are cheap) but not
+# displayed. SubagentStart does fire each time an in-process teammate handles
+# a message — but with agent_id/agent_type, no teammate_name — so it is the
+# likely future link, once a real capture confirms how those ids map to names.
+#
+# State follows the subagent marker design above, for the same two reasons
+# (parallel hooks lose read-modify-write increments; windows must not clobber
+# each other). ``teams/<session_id>/`` holds:
+#
+# * ``tasks/<task_id>.open``, renamed to ``.done`` on completion, with the
+#   same tombstone handling as a subagent's Stop-before-Start;
+# * ``teammates/<name>.idle`` or ``teammates/<name>.working``. The state is
+#   the file name, not the file's content, so the status line only ever lists
+#   the directory and never holds a marker open — on Windows an open handle
+#   makes a hook's rename or replace fail (the overlap the subagent tombstone
+#   logic has to heal).
+#
+# In-process teammates (the default backend) run inside the lead's process
+# and have no session id of their own, so their events carry the lead's
+# session id and land in the lead's directory.
+
+TEAM_LEAD_NAME = "team-lead"  # Claude Code's roster name for the lead itself
+_WIN_RESERVED_STEMS = {"CON", "PRN", "AUX", "NUL",
+                       *(f"COM{i}" for i in range(1, 10)),
+                       *(f"LPT{i}" for i in range(1, 10))}
+
+
+def _team_root():
+    return get_state_dir() / "teams"
+
+
+def _team_key(value):
+    """Reduce an untrusted task id or teammate name to a distinct file stem.
+
+    Returns "" for anything unusable: not a string or int, or without a
+    single letter or digit (``..``, ``///``). A plain lower-case id passes
+    through readable. One that ``_safe_path_id`` had to alter (spaces,
+    non-ASCII, path tricks, too long), that has capitals, or that Windows
+    reserves as a device name gets a digest suffix, so "Zoë" and "Zo" — or
+    "Impl" and "impl" on a case-insensitive disk, or a name written entirely
+    in CJK — stay distinct teammates instead of colliding or vanishing.
+    """
+    if isinstance(value, bool) or not isinstance(value, (str, int)):
+        return ""
+    raw = _sanitize(str(value)).strip()
+    if not any(ch.isalnum() for ch in raw):
+        return ""
+    key = _safe_path_id(raw)
+    if (key != raw or raw != raw.lower()
+            or key.split(".")[0].upper() in _WIN_RESERVED_STEMS):
+        digest = hashlib.sha256(raw.encode("utf-8", "replace")).hexdigest()[:10]
+        key = f"{key[:40]}-{digest}" if key else f"x-{digest}"
+    return key
+
+
+def hook_team(event):
+    """Handle --hook-teammate-idle / --hook-task-created / --hook-task-completed.
+
+    Unlike the subagent hooks, these events can steer the team rather than
+    just report on it: exit code 2 keeps a teammate from going idle, deletes
+    a new task, or refuses a completion, and ``{"continue": false}`` on stdout
+    stops a teammate. So this prints nothing and lets nothing escape — a
+    failure costs the status line one event, never the team its work.
+
+    ``BaseException`` on purpose, KeyboardInterrupt included: a stray
+    ``sys.exit(2)`` on this path would block the team, and exit 0 is the only
+    status that is harmless for all three events. An interrupt has already
+    reached Claude Code itself, and there is nothing here to clean up.
+    """
+    try:
+        _record_team_event(event, _read_hook_payload())
+    except BaseException:
+        pass
+
+
+def _read_hook_payload(limit=1 << 20):
+    """Return the hook's stdin JSON object, or {} for anything else.
+
+    Reads bytes and decodes UTF-8 itself: that is what Claude Code sends, but
+    a text-mode stdin on Windows decodes with the ANSI code page and garbles a
+    non-ASCII task subject. The cap is roomier than the subagent hooks'
+    because ``task_description`` is free text, and a payload cut off mid-JSON
+    would lose the whole event.
+    """
+    raw = ""
+    try:
+        if not sys.stdin.isatty():
+            stream = getattr(sys.stdin, "buffer", None)
+            if stream is not None:
+                raw = stream.read(limit).decode("utf-8-sig", "replace")
+            else:
+                raw = sys.stdin.read(limit)
+    except (OSError, ValueError, AttributeError):
+        pass
+    try:
+        data = json.loads(raw) if raw.strip() else {}
+    except (ValueError, TypeError, RecursionError):
+        data = {}
+    return data if isinstance(data, dict) else {}
+
+
+def _record_team_event(event, data):
+    """Record one team event as marker files. Concurrency-safe.
+
+    A missing or unusable task id drops the event: unlike a subagent spawn
+    there is no cap to protect, so a made-up id could only ever surface as a
+    phantom open task. The lead is not a teammate, so its own task actions
+    update the list but never the teammate count.
+    """
+    session_id = _safe_path_id(data.get("session_id"))
+    if not session_id or event not in ("idle", "created", "completed"):
+        return
+    session_dir = _team_root() / session_id
+    name = _team_key(data.get("teammate_name"))
+    member = "" if name == TEAM_LEAD_NAME else name
+
+    if event == "idle":
+        if not member:
+            return
+        _set_teammate_state(session_dir / "teammates", member, "idle")
+    else:
+        task_id = _team_key(data.get("task_id"))
+        if not task_id:
+            return
+        subject = " ".join(_sanitize(data.get("task_subject") or "").split())[:60]
+        _record_task(session_dir / "tasks", task_id, event, subject, name)
+        # Creating or completing a task is work: the teammate is mid-turn.
+        # A turn-end completion is still followed by its TeammateIdle (the
+        # hook lifecycle runs TaskCompleted, then Stop, then TeammateIdle).
+        if member:
+            _set_teammate_state(session_dir / "teammates", member, "working")
+
+    _prune_subagent_dirs(_team_root())
+
+
+def _record_task(tasks_dir, task_id, event, subject, owner):
+    """Create or complete one task marker; mirrors ``_record_subagent_event``.
+
+    A completion that overtakes its creation leaves a tombstone ``.done``
+    (no ``created`` stamp) that keeps the late creation from opening it. A
+    ``.done`` that *does* carry one saw a whole create→complete cycle, so a
+    fresh creation for that id is a new task reusing it (ids are small
+    counters), not a race — it reopens instead of being swallowed.
+    """
+    pending = tasks_dir / (task_id + ".open")
+    done = tasks_dir / (task_id + ".done")
+    # Same TOCTOU retry as the subagent writer: a pruner in another process
+    # can sweep the dir between the mkdir and the marker write.
+    for _attempt in (0, 1):
+        _secure_mkdir(tasks_dir)
+        if event == "created":
+            if done.exists() and not _is_task_tombstone(done):
+                try:
+                    os.unlink(done)
+                except OSError:
+                    pass
+            if not done.exists():
+                try:
+                    with open(pending, "x", encoding="utf-8") as f:
+                        json.dump({"subject": subject, "owner": owner,
+                                   "created": time.time()}, f)
+                except OSError:  # FileExistsError: a repeat — first one stands
+                    pass
+                # A completion may have slipped in between check and create.
+                if done.exists():
+                    try:
+                        os.replace(pending, done)
+                    except OSError:
+                        pass
+        else:
+            try:
+                os.replace(pending, done)
+                # os.replace keeps the creation mtime; without a touch a task
+                # that took longer than the TTL would look ancient to the pruner.
+                os.utime(done, None)
+            except OSError:
+                # No .open to rename: the completion came first, the creation
+                # was never recorded, or this is a repeat. "x" keeps a repeat
+                # idempotent — the first record stands.
+                try:
+                    with open(done, "x", encoding="utf-8") as f:
+                        json.dump({"subject": subject, "owner": owner,
+                                   "completed": time.time()}, f)
+                except OSError:
+                    pass
+        if pending.exists() or done.exists():
+            break
+
+
+def _is_task_tombstone(path):
+    """True unless *path* records a task whose creation was also seen."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            record = json.load(f)
+        return not (isinstance(record, dict) and "created" in record)
+    except (OSError, ValueError):
+        return True
+
+
+def _set_teammate_state(mates_dir, member, state):
+    """Mark *member* idle or working without ever leaving it markerless.
+
+    A transition renames the old state's marker onto the new name, then
+    rewrites it to refresh the mtime (a rename keeps the old one). Nothing is
+    ever deleted: a rename always leaves its target behind, so however two
+    writers for the same teammate interleave, a marker survives. Deleting the
+    other state's marker — even only when it looks older — cannot promise
+    that: between one writer's check and its unlink the other can rewrite
+    that marker and delete this one, and both are gone. A race can instead
+    leave both names in place; ``_count_team`` then takes the newer mtime,
+    and the next transition renames them back into one.
+    """
+    other = "working" if state == "idle" else "idle"
+    marker = mates_dir / f"{member}.{state}"
+    for _attempt in (0, 1):
+        _secure_mkdir(mates_dir)
+        try:
+            os.replace(mates_dir / f"{member}.{other}", marker)
+        except OSError:
+            pass  # nothing to move: a new teammate, or already in this state
+        try:
+            with open(marker, "w", encoding="utf-8") as f:
+                json.dump({"state": state, "ts": time.time()}, f)
+        except OSError:
+            pass
+        if marker.exists():
+            break
+
+
+def _count_team(session_id, now=None):
+    """Return (teammates, working, tasks_open, tasks_done) for one session.
+
+    Only lists directories; never opens a marker. A teammate whose last word
+    was "working" but has been silent past the TTL was stopped or crashed
+    without an idle event, so it stops counting as working — the straggler
+    rule a subagent's ``.live`` marker follows. An open task is never aged
+    out on its own (a pending task has no missed goodbye event, and expiring
+    it would paint an unfinished list as done), but once nothing in the
+    session has changed for the TTL the pruner removes the whole session dir,
+    open tasks included.
+    """
+    session_id = _safe_path_id(session_id)
+    if not session_id:
+        return 0, 0, 0, 0
+    now = now or time.time()
+    session_dir = _team_root() / session_id
+
+    try:
+        task_names = [e.name for e in os.scandir(session_dir / "tasks")]
+    except OSError:
+        task_names = []
+    # As with subagents, a task caught owning both markers is done.
+    done_ids = {n[:-5] for n in task_names if n.endswith(".done")}
+    open_ids = {n[:-5] for n in task_names if n.endswith(".open")} - done_ids
+
+    marks = {}
+    try:
+        mate_entries = list(os.scandir(session_dir / "teammates"))
+    except OSError:
+        mate_entries = []
+    for entry in mate_entries:
+        member, _, state = entry.name.rpartition(".")
+        if not member or state not in ("idle", "working"):
+            continue
+        try:
+            marks.setdefault(member, {})[state] = entry.stat().st_mtime
+        except OSError:
+            continue
+    working = 0
+    for states in marks.values():
+        busy = states.get("working")
+        if (busy is not None and busy > states.get("idle", float("-inf"))
+                and now - busy < SUBAGENT_STATE_TTL):
+            working += 1
+    return len(marks), working, len(open_ids), len(done_ids)
+
+
+def _render_team(config, session_id=None):
+    """Return the agent-team segment, or None when there is nothing to say.
+
+    Scoped to the painting session like the subagent counter. The team part
+    is the roster size — teammates seen so far — not a working count, which
+    these hooks cannot observe (see the section comment). A session that
+    uses the shared task list without teammates shows only the tasks; a team
+    whose tasks never reached the list shows only the roster. Only the task
+    tally changes colour: green once every task is done.
+    """
+    if not session_id:
+        return None
+    mates, _working, tasks_open, tasks_done = _count_team(session_id)
+    tasks = tasks_open + tasks_done
+    if not mates and not tasks:
+        return None
+
+    layout = config.get("layout", DEFAULT_LAYOUT)
+    mate_part = f"{mates}" if mates else ""
+    task_colour = GREEN if tasks and not tasks_open else ""
+    task_part = f"{task_colour}{tasks_done}{RESET}{DIM}/{tasks}{RESET}" if tasks else ""
+    if layout == "minimal":
+        return f"⚑{mate_part or task_part}"
+    if layout == "compact":
+        return "⚑" + " ".join(p for p in (mate_part, task_part) if p)
+    pieces = []
+    if mate_part:
+        pieces.append(f"{DIM}team{RESET} {mate_part}")
+    if task_part:
+        pieces.append(f"{DIM}tasks{RESET} {task_part}")
+    return f" {DIM}·{RESET} ".join(pieces)
 
 
 def _render_budget(config, stdin_ctx):
@@ -6644,6 +7037,18 @@ def main():
 
     if "--hook-subagent-stop" in args:
         hook_subagent("stop")
+        return
+
+    if "--hook-teammate-idle" in args:
+        hook_team("idle")
+        return
+
+    if "--hook-task-created" in args:
+        hook_team("created")
+        return
+
+    if "--hook-task-completed" in args:
+        hook_team("completed")
         return
 
     if "--budget" in args:

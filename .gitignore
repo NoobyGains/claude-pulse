@@ -1,3 +1,11 @@
 __pycache__/
 *.pyc
 .env
+
+# local preview/scratch artefacts
+*_preview.png
+preview.html
+session-resume.md
+.playwright-mcp/
+assets/frames/
+.claude/
