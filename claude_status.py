@@ -117,19 +117,23 @@ PLAN_NAMES = {
 # Model id → short display name. Longest-prefix wins (see _model_short_name),
 # so "claude-opus-4-8" beats the bare "claude-opus-4" entry.
 MODEL_SHORT_NAMES = {
+    "claude-fable-5-1": "Fable",
     "claude-fable-5": "Fable",
     "claude-mythos-5": "Mythos",
     "claude-mythos-preview": "Mythos",
+    "claude-opus-5-5": "Opus",
     "claude-opus-5": "Opus",
     "claude-opus-4-8": "Opus",
     "claude-opus-4-7": "Opus",
     "claude-opus-4-6": "Opus",
     "claude-opus-4-5": "Opus",
     "claude-opus-4": "Opus",
+    "claude-sonnet-5-5": "Sonnet",
     "claude-sonnet-5": "Sonnet",
     "claude-sonnet-4-6": "Sonnet",
     "claude-sonnet-4-5": "Sonnet",
     "claude-sonnet-4": "Sonnet",
+    "claude-haiku-5-5": "Haiku",
     "claude-haiku-4-5": "Haiku",
     "claude-haiku-4": "Haiku",
     "claude-3-5-sonnet": "Sonnet",
@@ -147,32 +151,39 @@ MODEL_SHORT_NAMES = {
 MODEL_CONTEXT_WINDOWS = {
     "Fable": 1_000_000,
     "Fable 5": 1_000_000,
+    "Fable 5.1": 1_000_000,
     "Mythos": 1_000_000,
     "Mythos Preview": 1_000_000,
     "Mythos 5": 1_000_000,
     "Opus": 1_000_000,
     "Opus 5": 1_000_000,
+    "Opus 5.5": 1_000_000,
     "Opus 4.8": 1_000_000,
     "Opus 4.7": 1_000_000,
     "Opus 4.6": 1_000_000,
     "Opus 4.5": 200_000,
     "Sonnet": 1_000_000,
     "Sonnet 5": 1_000_000,
+    "Sonnet 5.5": 1_000_000,
     "Sonnet 4.6": 1_000_000,
     "Sonnet 4.5": 200_000,
     "Sonnet 4": 200_000,
     "Haiku": 200_000,
     "Haiku 4.5": 200_000,
+    "Haiku 5.5": 1_000_000,
 }
 DEFAULT_CONTEXT_WINDOW = 200_000
 
 # API pricing per million tokens (USD).
-# https://platform.claude.com/docs/en/pricing
-# Cache read is 0.1x input; 5-minute cache write is 1.25x input.
+# https://platform.claude.com/docs/en/about-claude/pricing
+# Cache read is 0.1x input (0.05x for Opus 5.5 / Sonnet 5.5, 0.025x for
+# Fable 5.1); 5-minute cache write is 1.25x input.
 API_PRICING = {
+    "claude-fable-5-1": {"input": 10.0, "output": 50.0, "cache_read": 0.25, "cache_write": 12.5},
     "claude-fable-5": {"input": 10.0, "output": 50.0, "cache_read": 1.0, "cache_write": 12.5},
     "claude-mythos-5": {"input": 10.0, "output": 50.0, "cache_read": 1.0, "cache_write": 12.5},
     "claude-mythos-preview": {"input": 25.0, "output": 125.0, "cache_read": 2.5, "cache_write": 31.25},
+    "claude-opus-5-5": {"input": 4.0, "output": 20.0, "cache_read": 0.20, "cache_write": 5.0},
     "claude-opus-5": {"input": 5.0, "output": 25.0, "cache_read": 0.50, "cache_write": 6.25},
     "claude-opus-4-8": {"input": 5.0, "output": 25.0, "cache_read": 0.50, "cache_write": 6.25},
     "claude-opus-4-7": {"input": 5.0, "output": 25.0, "cache_read": 0.50, "cache_write": 6.25},
@@ -183,10 +194,14 @@ API_PRICING = {
     # on 2026-09-01; Anthropic cancelled the increase and made the launch
     # rate the standard price (pricing docs, note
     # "claude-sonnet-5-introductory-pricing"), so $2/$10 is the list price.
+    "claude-sonnet-5-5": {"input": 2.0, "output": 10.0, "cache_read": 0.10, "cache_write": 2.5},
     "claude-sonnet-5": {"input": 2.0, "output": 10.0, "cache_read": 0.20, "cache_write": 2.5},
     "claude-sonnet-4-6": {"input": 3.0, "output": 15.0, "cache_read": 0.30, "cache_write": 3.75},
     "claude-sonnet-4-5": {"input": 3.0, "output": 15.0, "cache_read": 0.30, "cache_write": 3.75},
     "claude-sonnet-4": {"input": 3.0, "output": 15.0, "cache_read": 0.30, "cache_write": 3.75},
+    # Haiku 5.5 rates are for prompts up to 100K tokens; see
+    # API_PRICING_LONG_CONTEXT for the surcharge above that.
+    "claude-haiku-5-5": {"input": 0.10, "output": 0.50, "cache_read": 0.01, "cache_write": 0.125},
     "claude-haiku-4-5-20251001": {"input": 1.0, "output": 5.0, "cache_read": 0.10, "cache_write": 1.25},
     "claude-haiku-4-5": {"input": 1.0, "output": 5.0, "cache_read": 0.10, "cache_write": 1.25},
     "claude-3-5-sonnet": {"input": 3.0, "output": 15.0, "cache_read": 0.30, "cache_write": 3.75},
@@ -195,19 +210,23 @@ API_PRICING = {
 }
 # Display names for pricing table
 API_PRICING_DISPLAY = {
+    "claude-fable-5-1": "Fable 5.1",
     "claude-fable-5": "Fable 5",
     "claude-mythos-5": "Mythos 5",
     "claude-mythos-preview": "Mythos Preview",
+    "claude-opus-5-5": "Opus 5.5",
     "claude-opus-5": "Opus 5",
     "claude-opus-4-8": "Opus 4.8",
     "claude-opus-4-7": "Opus 4.7",
     "claude-opus-4-6": "Opus 4.6",
     "claude-opus-4-5": "Opus 4.5",
     "claude-opus-4": "Opus 4",
+    "claude-sonnet-5-5": "Sonnet 5.5",
     "claude-sonnet-5": "Sonnet 5",
     "claude-sonnet-4-6": "Sonnet 4.6",
     "claude-sonnet-4-5": "Sonnet 4.5",
     "claude-sonnet-4": "Sonnet 4",
+    "claude-haiku-5-5": "Haiku 5.5",
     "claude-haiku-4-5-20251001": "Haiku 4.5",
     "claude-haiku-4-5": "Haiku 4.5",
     "claude-3-5-sonnet": "Sonnet 3.5",
@@ -225,12 +244,29 @@ API_PRICING_DISPLAY = {
 #     "model-id": {"until": "YYYY-MM-DD", "pricing": {...API_PRICING shape...}},
 API_PRICING_PROMOS = {}
 
+# Long-context surcharge. Haiku 5.5 is the only model whose per-request price
+# steps up with prompt size: a request whose prompt (input + cache reads +
+# cache writes) exceeds ``threshold`` tokens is billed at the ``pricing`` rates
+# for the WHOLE request, cache hits included. Every request is priced on its
+# own. Source: the "Long context pricing" section of
+# https://platform.claude.com/docs/en/about-claude/pricing
+API_PRICING_LONG_CONTEXT = {
+    "claude-haiku-5-5": {
+        "threshold": 100_000,
+        "pricing": {"input": 0.50, "output": 2.50, "cache_read": 0.05, "cache_write": 0.625},
+    },
+}
 
-def _pricing_for(model_id, at=None):
+
+def _pricing_for(model_id, at=None, prompt_tokens=None):
     """Return the per-MTok rates for *model_id*, honouring active promos.
 
     *at* is a UTC date (defaults to today). A promo whose end date has passed
     falls back to the list price automatically.
+
+    *prompt_tokens* (input + cache reads + cache writes of one request) selects
+    the long-context rates for models listed in ``API_PRICING_LONG_CONTEXT``
+    (Haiku 5.5 above 100K). Left as None, the standard rates are returned.
 
     Known limitation: fast mode bills Opus 5 / 4.8 at $10/$50 rather than
     $5/$25, but transcripts do not record whether a request used it, so
@@ -240,6 +276,9 @@ def _pricing_for(model_id, at=None):
     base = API_PRICING.get(model_id)
     if base is None:
         return None
+    long_ctx = API_PRICING_LONG_CONTEXT.get(model_id)
+    if long_ctx and isinstance(prompt_tokens, (int, float))             and prompt_tokens > long_ctx["threshold"]:
+        return long_ctx["pricing"]
     promo = API_PRICING_PROMOS.get(model_id)
     if not promo:
         return base
@@ -502,6 +541,8 @@ WIDGET_PRIORITY = {
     "pr": 175,
     "subagents": 178, "team": 179, "sessions": 180, "budget": 185, "pomodoro": 190, "git_drift": 200,
     "files_changed": 210,
+    # stdin widgets (3.4.0)
+    "cache_warm": 66, "spend_limit": 52, "repo": 172, "session_name": 105,
 }
 
 # Reasoning-effort display. Claude Code reports low|medium|high|xhigh|max.
@@ -621,6 +662,11 @@ DEFAULT_SHOW = {
     "pace": False,
     "git_drift": False,
     "files_changed": False,
+    # stdin widgets (3.4.0)
+    "cache_warm": False,
+    "spend_limit": True,
+    "repo": False,
+    "session_name": False,
 }
 
 # Presets — one-command config bundles
@@ -3460,6 +3506,9 @@ def _scan_session_costs(since_ts=None):
                         out = int(usage.get("output_tokens") or 0)
                         cr = int(usage.get("cache_read_input_tokens") or 0)
                         cw = int(usage.get("cache_creation_input_tokens") or 0)
+                        # Haiku 5.5 steps up above 100K prompt tokens, priced
+                        # per request (no-op for every other model).
+                        pricing = _pricing_for(model_id, entry_date, inp + cr + cw) or pricing
 
                         cost = (
                             inp * pricing["input"]
@@ -3592,6 +3641,20 @@ def cmd_stats():
         utf8_print(f"  {DIM}No session transcript data found for cost analysis.{RESET}\n")
 
 
+def _stdin_number(value):
+    """Return *value* as a finite float, or None for anything else.
+
+    Booleans are rejected (``True`` is an int in Python) and so are NaN and
+    infinity, which json.loads happily produces from ``NaN``/``Infinity``.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    value = float(value)
+    if value != value or value in (float("inf"), float("-inf")):
+        return None
+    return value
+
+
 def _parse_stdin_context(raw_stdin):
     """Parse Claude Code's stdin JSON for session context.
 
@@ -3639,6 +3702,12 @@ def _parse_stdin_context(raw_stdin):
         result["pr_kind"] = None
         result["cache_hit_pct"] = None
         result["cache_read_tokens"] = None
+        result["prompt_cache_warm"] = None
+        result["prompt_cache_hit_pct"] = None
+        result["prompt_cache_expires_at"] = None
+        result["spend_limit"] = None
+        result["repo_slug"] = None
+        result["session_name"] = None
 
     # Model name
     try:
@@ -3783,6 +3852,101 @@ def _parse_stdin_context(raw_stdin):
             if billable > 0:
                 result["cache_read_tokens"] = cache_read
                 result["cache_hit_pct"] = (cache_read / billable) * 100.0
+    except (AttributeError, KeyError, TypeError, ValueError):
+        pass
+
+    # Prompt-cache state (v2.1.251+): `prompt_cache{warm, hit_ratio,
+    # expires_at}` where hit_ratio is 0..1 (null while no input has been
+    # counted) and expires_at is epoch seconds (null once the cache is cold).
+    # Session state, so a present-but-malformed block clears the badge.
+    try:
+        payload = data.get("data", data)
+        if "prompt_cache" in payload:
+            pc = payload.get("prompt_cache")
+            warm = hit_pct = expires_at = None
+            if isinstance(pc, dict):
+                if isinstance(pc.get("warm"), bool):
+                    warm = pc["warm"]
+                ratio = _stdin_number(pc.get("hit_ratio"))
+                if ratio is not None:
+                    hit_pct = max(0.0, min(ratio, 1.0)) * 100.0
+                exp = _stdin_number(pc.get("expires_at"))
+                if exp is not None and exp > 0:
+                    expires_at = exp
+            result["prompt_cache_warm"] = warm
+            result["prompt_cache_hit_pct"] = hit_pct
+            result["prompt_cache_expires_at"] = expires_at
+    except (AttributeError, KeyError, TypeError, ValueError):
+        pass
+
+    # Spend limit (claude.ai gateway): `rate_limits.spend_limit{used_percentage,
+    # resets_at, used_usd?, limit_usd?, period?}`. Kept out of `_rate_limits`,
+    # which the usage bars enumerate. Claude Code drops a window it no longer
+    # reports, so a `rate_limits` block without a usable spend_limit clears it.
+    try:
+        payload = data.get("data", data)
+        if "rate_limits" in payload:
+            rl_all = payload.get("rate_limits")
+            sl = rl_all.get("spend_limit") if isinstance(rl_all, dict) else None
+            spend = None
+            if isinstance(sl, dict):
+                used_pct = _stdin_number(sl.get("used_percentage"))
+                if used_pct is not None:
+                    resets_iso = None
+                    resets_raw = _stdin_number(sl.get("resets_at"))
+                    if resets_raw is not None:
+                        try:
+                            resets_iso = datetime.fromtimestamp(
+                                resets_raw, tz=timezone.utc
+                            ).isoformat()
+                        except (ValueError, OSError, OverflowError):
+                            pass
+                    used_usd = _stdin_number(sl.get("used_usd"))
+                    limit_usd = _stdin_number(sl.get("limit_usd"))
+                    period = sl.get("period")
+                    period = _sanitize(period).strip().lower()[:16] if isinstance(period, str) else ""
+                    spend = {
+                        "used_percentage": max(0.0, used_pct),
+                        "resets_at": resets_iso,
+                        # usd fields are optional; a limit of 0 is not a limit.
+                        "used_usd": used_usd if used_usd is not None and used_usd >= 0 else None,
+                        "limit_usd": limit_usd if limit_usd is not None and limit_usd > 0 else None,
+                        "period": period or None,
+                    }
+            result["spend_limit"] = spend
+    except (AttributeError, KeyError, TypeError, ValueError):
+        pass
+
+    # Repository identity parsed from the origin remote: workspace.repo
+    # {host, owner, name}. Absent outside a git repo with an origin, so a
+    # workspace without a usable repo clears the badge.
+    try:
+        ws = data.get("data", data).get("workspace")
+        if isinstance(ws, dict):
+            repo = ws.get("repo")
+            slug = None
+            if isinstance(repo, dict):
+                owner = _sanitize(repo.get("owner") or "").strip() if isinstance(repo.get("owner"), str) else ""
+                rname = _sanitize(repo.get("name") or "").strip() if isinstance(repo.get("name"), str) else ""
+                if owner and rname:
+                    slug = owner + "/" + rname
+                    if len(slug) > 60:
+                        slug = slug[:59] + "…"
+            result["repo_slug"] = slug
+    except (AttributeError, KeyError, TypeError, ValueError):
+        pass
+
+    # Session name: custom --name / /rename, else the AI-generated title.
+    # Absent when the session has neither, which on a full payload clears it
+    # (see the defaults block above).
+    try:
+        payload = data.get("data", data)
+        if "session_name" in payload:
+            sname = payload.get("session_name")
+            sname = _sanitize(sname).strip() if isinstance(sname, str) else ""
+            if len(sname) > 40:
+                sname = sname[:39] + "…"
+            result["session_name"] = sname or None
     except (AttributeError, KeyError, TypeError, ValueError):
         pass
 
@@ -4315,6 +4479,31 @@ def cmd_heatmap():
     utf8_print("")
 
 
+_SPEND_PERIOD_SHORT = {"daily": "day", "weekly": "wk", "monthly": "mo"}
+
+
+def _format_cache_ttl(seconds):
+    """Compact time-to-cold for the prompt cache: ``45s``, ``3m``, ``1h``."""
+    seconds = int(seconds)
+    if seconds < 60:
+        return f"{max(seconds, 0)}s"
+    minutes = (seconds + 59) // 60          # round up: 179.2s is "3m", not "2m"
+    if minutes < 60:
+        return f"{minutes}m"
+    hours, rem = divmod(minutes, 60)
+    return f"{hours}h" if rem == 0 else f"{hours}h{rem:02d}m"
+
+
+def _format_spend_amount(usd, currency, rate, code):
+    """Format a USD amount in the user's currency; whole amounts drop the cents
+    (``$50``) so a spend limit reads ``$12.40/$50``."""
+    value = usd * rate
+    symbol = "$" if code == "USD" else currency
+    if abs(value - round(value)) < 0.005:
+        return f"{symbol}{value:.0f}"
+    return f"{symbol}{value:.2f}"
+
+
 def build_status_line(usage, plan, config=None, stdin_ctx=None, cache_age=None):
     if config is None:
         config = load_config()
@@ -4718,6 +4907,93 @@ def build_status_line(usage, plan, config=None, stdin_ctx=None, cache_age=None):
                 parts.append((_pri("cache"), f"{colour}{hit:.0f}%{RESET}"))
             else:
                 parts.append((_pri("cache"), f"{DIM}cache{RESET} {colour}{hit:.0f}%{RESET}"))
+
+    # Prompt-cache warmth (opt-in): hit share and time until the cached prefix
+    # goes cold, straight from stdin `prompt_cache`. Unlike `cache` above, which
+    # derives a ratio from the last turn, this is Claude Code's own session figure.
+    if stdin_ctx and show.get("cache_warm", False):
+        try:
+            warm = stdin_ctx.get("prompt_cache_warm")
+            hit = stdin_ctx.get("prompt_cache_hit_pct")
+            expires = stdin_ctx.get("prompt_cache_expires_at")
+            remaining = None
+            if isinstance(expires, (int, float)) and not isinstance(expires, bool):
+                remaining = float(expires) - time.time()
+            # A persisted "warm" is only as fresh as its expiry: once that has
+            # passed the cache really is cold, whatever the last payload said.
+            if warm and remaining is not None and remaining <= 0:
+                warm = False
+            if warm is False:
+                parts.append((_pri("cache_warm"), f"{DIM}cache cold{RESET}"))
+            elif warm:
+                if hit is not None:
+                    hit_colour = GREEN if hit >= 70 else (YELLOW if hit >= 40 else RED)
+                else:
+                    hit_colour = GREEN
+                ttl_txt = _format_cache_ttl(remaining) if remaining is not None else ""
+                ttl_colour = YELLOW if remaining is not None and remaining < 60 else DIM
+                if layout == "minimal":
+                    body = f"{hit:.0f}%" if hit is not None else ttl_txt
+                    parts.append((_pri("cache_warm"), f"{hit_colour}♨{body}{RESET}"))
+                else:
+                    head = f"{hit_colour}♨ {hit:.0f}%{RESET}" if hit is not None else f"{hit_colour}♨{RESET}"
+                    if hit is not None and ttl_txt:
+                        parts.append((_pri("cache_warm"), f"{head} {ttl_colour}· {ttl_txt}{RESET}"))
+                    elif ttl_txt:
+                        parts.append((_pri("cache_warm"), f"{head} {ttl_colour}{ttl_txt}{RESET}"))
+                    else:
+                        parts.append((_pri("cache_warm"), head))
+        except (TypeError, ValueError, OverflowError):
+            pass
+
+    # Spend limit (shown whenever the gateway reports one): money used against
+    # the cap, or just the percentage when the gateway omits the usd fields.
+    if stdin_ctx and show.get("spend_limit", True):
+        try:
+            spend = stdin_ctx.get("spend_limit")
+            if isinstance(spend, dict) and spend.get("used_percentage") is not None:
+                pct = float(spend["used_percentage"])
+                # Claude Code stops reporting a window once it resets; a value
+                # persisted from before that would be stale, so hide it too.
+                stale = False
+                if spend.get("resets_at"):
+                    try:
+                        stale = datetime.fromisoformat(_sanitize(str(spend["resets_at"]))) <= datetime.now(timezone.utc)
+                    except (ValueError, TypeError):
+                        stale = False
+                if not stale:
+                    colour = bar_colour(pct, theme)
+                    used_usd, limit_usd = spend.get("used_usd"), spend.get("limit_usd")
+                    if used_usd is not None and limit_usd:
+                        currency = _sanitize(config.get("currency", "$"))[:5]
+                        rate, code = _get_exchange_rate(currency)
+                        amount = (_format_spend_amount(float(used_usd), currency, rate, code)
+                                  + "/" + _format_spend_amount(float(limit_usd), currency, rate, code))
+                    else:
+                        amount = f"{pct:.0f}%"
+                    period = spend.get("period")
+                    period_txt = _SPEND_PERIOD_SHORT.get(period, _sanitize(str(period))[:8]) if period else ""
+                    period_tail = f" {DIM}{period_txt}{RESET}" if period_txt else ""
+                    if layout == "minimal":
+                        parts.append((_pri("spend_limit"), f"{colour}{amount}{RESET}"))
+                    elif layout == "compact":
+                        parts.append((_pri("spend_limit"), f"{colour}{amount}{RESET}{period_tail}"))
+                    else:
+                        parts.append((_pri("spend_limit"), f"{DIM}spend{RESET} {colour}{amount}{RESET}{period_tail}"))
+        except (TypeError, ValueError, OverflowError):
+            pass
+
+    # Repository badge (opt-in): owner/name from the origin remote.
+    if stdin_ctx and show.get("repo", False):
+        slug = stdin_ctx.get("repo_slug")
+        if isinstance(slug, str) and slug:
+            parts.append((_pri("repo"), f"{DIM}{_sanitize(slug)}{RESET}"))
+
+    # Session name (opt-in): the /rename or --name title, else the AI title.
+    if stdin_ctx and show.get("session_name", False):
+        sname = stdin_ctx.get("session_name")
+        if isinstance(sname, str) and sname:
+            parts.append((_pri("session_name"), f"{DIM}{_sanitize(sname)}{RESET}"))
 
     # Pull request badge (opt-in), clickable via OSC 8 where supported.
     if stdin_ctx and show.get("pr", False):
@@ -5718,7 +5994,9 @@ def _render_subagent_row(task, config, columns=None):
     """
     if not isinstance(task, dict):
         return ""
-    name = _sanitize(str(task.get("name") or task.get("type") or "agent"))[:28]
+    # `name` is optional; fall back to the subagent type (agentType, v2.1.293+:
+    # "Explore", "code-reviewer", ...) before the generic task kind.
+    name = _sanitize(str(task.get("name") or task.get("agentType") or task.get("type") or "agent"))[:28]
     status = _sanitize(str(task.get("status") or "")).lower()
     glyph = SUBAGENT_STATUS_GLYPHS.get(status, "·")
     colour = SUBAGENT_STATUS_COLOURS.get(status, "")
@@ -7218,6 +7496,8 @@ def main():
         "effort", "fast_mode", "thinking", "cc_version",
         "cache_hit_pct", "cache_read_tokens",
         "pr_number", "pr_url", "pr_review_state", "pr_kind",
+        "prompt_cache_warm", "prompt_cache_hit_pct", "prompt_cache_expires_at",
+        "spend_limit", "repo_slug", "session_name",
     }
     stdin_ctx_path = get_state_dir() / "stdin_ctx.json"
     persisted = {}

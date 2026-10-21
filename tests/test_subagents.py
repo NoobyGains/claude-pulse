@@ -239,6 +239,31 @@ class SubagentRowTest(unittest.TestCase):
             {"id": "t", "name": "n" * 40, "status": "running"}, self._cfg(), columns=20)
         self.assertLessEqual(cs._visible_len(row), 20)
 
+    def test_unnamed_task_shows_its_agent_type(self):
+        row = cs._render_subagent_row(
+            {"id": "t", "type": "local_agent", "agentType": "Explore", "status": "running"},
+            self._cfg())
+        self.assertIn("Explore", row)
+        self.assertNotIn("local_agent", row)
+
+    def test_name_wins_over_agent_type(self):
+        row = cs._render_subagent_row(
+            {"id": "t", "name": "reviewer", "agentType": "code-reviewer", "status": "running"},
+            self._cfg())
+        self.assertIn("reviewer", row)
+        self.assertNotIn("code-reviewer", row)
+
+    def test_agent_type_is_sanitised_and_wrong_types_fall_through(self):
+        row = cs._render_subagent_row(
+            {"id": "t", "agentType": "\x1b[31mEvil\x07", "status": "running"}, self._cfg())
+        self.assertNotIn("\x07", row)
+        self.assertNotIn("\x1b[31mEvil", row)
+        for bad in (None, "", 0):
+            row = cs._render_subagent_row(
+                {"id": "t", "agentType": bad, "type": "local_agent", "status": "running"},
+                self._cfg())
+            self.assertIn("local_agent", row)
+
     def test_garbage_task_returns_empty(self):
         for bad in (None, "str", 7, []):
             self.assertEqual(cs._render_subagent_row(bad, self._cfg()), "")
