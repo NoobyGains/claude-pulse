@@ -26,15 +26,15 @@ A single-file Python status bar for Claude Code. It shows how much of your 5-hou
 It needs no API key and no dependencies, and it works with your existing Claude Code login. Setup is a guided wizard with live previews.
 
 <p align="center">
-  <img src="assets/demo.gif" alt="claude-pulse themes demo" width="700" />
+  <img src="assets/providers.png" alt="The status line: this account on the main line, one row each for a second Claude login, Gemini and Codex" width="900" />
   <br>
-  <sub>10 built-in themes with colour-coded bars that shift green, yellow, red as usage increases</sub>
+  <sub>This account on the main line, and one row each for a second Claude login, Gemini and Codex. All drawn by the same code, in the same theme</sub>
 </p>
 
 <p align="center">
-  <img src="assets/rainbow.gif" alt="Rainbow animation demo" width="700" />
+  <img src="assets/demo.gif" alt="claude-pulse themes demo" width="700" />
   <br>
-  <sub>Rainbow animation: a flowing gradient that shifts on every refresh</sub>
+  <sub>10 built-in themes with colour-coded bars that shift green, yellow, red as usage increases</sub>
 </p>
 
 <p align="center">
@@ -89,6 +89,8 @@ See [Providers and accounts](#providers-and-accounts).
 
 `/claude-pulse:setup` installs the status line with safe defaults. A plugin cannot register a status line by itself, so this step is needed. Then run `/claude-pulse:pulse setup` to choose hooks, providers, theme and widgets. Restart Claude Code.
 
+Plugin updates land in a new version folder, and Claude Code removes the old one a fortnight later. The plugin ships one `SessionStart` hook that runs `--sync-install-path` at the start of each session: if `settings.json` still points at an old plugin folder, it re-registers the status line, the agent-panel rows, the hooks you had and `/pulse` from the current one. It never touches a git or manual install, and it prints nothing when there is nothing to do.
+
 ### One-liner install
 
 **macOS / Linux:**
@@ -115,6 +117,12 @@ Restart Claude Code. After that, `/pulse setup` inside Claude Code does the same
 ## Setup wizard
 
 `python3 claude_status.py --setup` opens a full-screen guided setup. Every choice that changes how the bar looks has a live preview. It has 14 screens:
+
+<p align="center">
+  <img src="assets/wizard.gif" alt="The setup wizard: welcome report, hooks, providers found on this machine, model caps, theme picker, bar style with live preview, widgets, summary" width="900" />
+  <br>
+  <sub>Eight of the screens: the environment report, hooks, the providers it found, model caps, the theme picker, bar style with its live preview, widgets and the summary. Nothing is written until you confirm the summary</sub>
+</p>
 
 1. **Welcome**: a short report on what it found (Python, Claude Code, your config folder, `settings.json`, the current status line, hooks and `/pulse`).
 2. **Status line**: install claude-pulse, or replace another tool's status line. The old command is printed at the end so you can put it back.
@@ -295,11 +303,23 @@ All four have a 1M-token context window. Costs are API-equivalent: a figure to c
 
 `--animation-speed` takes `slow`, `normal` or `fast`. Animation advances on every repaint, which includes the 2-second `refreshInterval` that setup configures while animation is on, so the bar keeps moving while the session is idle.
 
+<p align="center">
+  <img src="assets/rainbow.gif" alt="Rainbow animation demo" width="700" />
+  <br>
+  <sub>Rainbow animation: a flowing gradient that shifts on every refresh</sub>
+</p>
+
 **8 bar styles**, set with `--bar-style <name>`: classic, block, shade, pipe, dot, square, star, braille. If Unicode looks broken in your terminal, try `block`.
 
 **Bar sizes**: small, small-medium, medium, medium-large, large (`--bar-size`).
 
 **Layouts** (`--layout`): `standard` has full labels, `compact` uses one-letter labels, `minimal` drops the labels, and `percent-first` puts the number before the bar. `--max-width` sets the share of the terminal the bar may use, and `--wrap auto` wraps onto a second row instead of cutting the line off.
+
+<p align="center">
+  <img src="assets/layouts.png" alt="The same bar in the standard, compact, minimal and percent-first layouts" width="900" />
+  <br>
+  <sub>The same data in the four layouts</sub>
+</p>
 
 For a deliberate two-row split, set `line2_widgets` (these go to row 2) or `line1_widgets` (an allowlist for row 1, the rest flows to row 2) in `config.json`. `line1_widgets` wins if both are set.
 
@@ -319,6 +339,12 @@ The wizard's hooks screen does the same, and unticking a group there removes it 
 | `agents` | SubagentStart, SubagentStop | The live agent counter, `agents 3 live · 47/200` | A short Python run when a subagent starts or stops |
 | `team` | TeammateIdle, TaskCreated, TaskCompleted | The agent-team segment, `team 3 · tasks 4/7` | A short Python run on each of those events |
 | `heartbeat` | PostToolUse | The spinner and tool count, plus `activity` and `last_tool` | A Python run after **every** tool call, and it keeps the repaint timer alive. This is why it is off by default |
+
+<p align="center">
+  <img src="assets/agents.png" alt="The bar with the live agent counter and the team segment, and three agent-panel rows with status, model, effort, context bar and elapsed time" width="900" />
+  <br>
+  <sub>The <code>agents</code> and <code>team</code> groups drive the counter and the team segment on the bar. The agent panel rows come from <code>subagentStatusLine</code> and need no hook</sub>
+</p>
 
 The heartbeat widget itself is switched on with `--show heartbeat`.
 
@@ -405,7 +431,7 @@ Claude Code repaints the status line on its own events (a prompt, a tool call). 
 This is the output of `python claude_status.py --help`:
 
 ```
-claude-pulse 3.4.1 — usage status line for Claude Code
+claude-pulse 3.4.2 — usage status line for Claude Code
 
 Usage: python claude_status.py [flag [args]]
 With no flag and JSON on stdin (how Claude Code runs it) it prints the status line.
@@ -480,6 +506,7 @@ Internal
   --hook-teammate-idle                TeammateIdle hook
   --hook-task-created                 TaskCreated hook
   --hook-task-completed               TaskCompleted hook
+  --sync-install-path                 Plugin SessionStart hook: re-point settings.json after a plugin update
 
 Inside Claude Code: /pulse (or /pulse setup) does all of this by asking you.
 ```
@@ -544,6 +571,8 @@ Inside Claude Code, `/pulse` opens a menu: Setup, Look, Widgets, Providers, Hook
 | Issue | Fix |
 |---|---|
 | No status line visible | Run `--setup` (or `/claude-pulse:setup` for the plugin) and restart Claude Code |
+| Status line vanished after a plugin update | Start a new session: the plugin's `SessionStart` hook re-points `settings.json` at the new version folder. Or run `/claude-pulse:setup` again |
+| A new session shows the previous session's context % or cost | Fixed in 3.4.2: per-session values are dropped when the session changes. Update with `--update` or `/plugin update claude-pulse` |
 | `--setup` says it used the defaults | It found no interactive terminal. Run it in Windows Terminal, PowerShell or a normal shell, not Git Bash's mintty |
 | Setup says `settings.json` is invalid | Fix the JSON it names and run setup again. Nothing was changed |
 | Replaced my old status line by mistake | Setup prints the old command. Earlier copies of `settings.json` are in `settings-backups/` in the state folder |

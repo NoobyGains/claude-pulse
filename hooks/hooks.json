@@ -1,0 +1,17 @@
+{
+  "description": "Keeps the status line pointing at the current plugin folder after a plugin update",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/claude_status.py\" --sync-install-path 2>/dev/null || python \"${CLAUDE_PLUGIN_ROOT}/claude_status.py\" --sync-install-path 2>/dev/null || true",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}

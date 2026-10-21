@@ -1,3 +1,6 @@
+---
+description: Install the claude-pulse status bar with safe defaults (safe to run again)
+---
 Set up the claude-pulse status bar. Safe to run again: it only refreshes what is already there.
 
 ---

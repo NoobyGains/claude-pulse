@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Claude Code status line — reads usage data from Claude Code's stdin and displays real-time bars."""
 
-VERSION = "3.4.1"
+VERSION = "3.4.2"
 
 import hashlib
 import json
@@ -7855,6 +7855,64 @@ def install_pulse_command():
     utf8_print(f"Installed /pulse command to {dest}")
 
 
+def _pulse_script_in_command(command):
+    """The claude_status.py path a settings.json command runs, or None."""
+    m = re.search(r'"([^"]*claude_status\.py)"|\'([^\']*claude_status\.py)\'|(\S*claude_status\.py)',
+                  str(command or ""))
+    if not m:
+        return None
+    return next(g for g in m.groups() if g)
+
+
+def _is_plugin_cache_path(path):
+    """True for ``<cache>/<marketplace>/claude-pulse/<version>/claude_status.py``.
+
+    Marketplace installs live in a per-version folder named after the plugin;
+    a git clone (``~/.claude-pulse/claude_status.py``) or a checkout of the
+    repo (``.../claude-pulse/claude_status.py``) has no version folder.
+    """
+    parts = [p.lower() for p in Path(str(path)).parts]
+    return len(parts) >= 3 and parts[-1] == "claude_status.py" and parts[-3] == "claude-pulse"
+
+
+def cmd_sync_install_path():
+    """``--sync-install-path``: re-point settings.json at this copy.
+
+    Marketplace plugins live in a per-version folder that Claude Code removes
+    a fortnight after an update, so a status line registered from the old
+    folder dies with it (issue #54). The plugin's SessionStart hook runs this
+    at every session start: when settings.json runs claude-pulse from another
+    plugin folder, the status line, the agent-panel rows, whichever hook
+    groups were installed, and /pulse are re-registered from here. A git or
+    manual install the user chose on purpose is never touched, and nothing is
+    printed when there is nothing to do. Returns a process exit code.
+    """
+    here = Path(__file__).resolve()
+    settings, err = _load_settings_for_write(_claude_config_dir() / "settings.json")
+    if err or not isinstance(settings, dict):
+        return 0   # a broken settings.json is --setup's job to report, not a session hook's
+    status_line = settings.get("statusLine")
+    command = status_line.get("command", "") if isinstance(status_line, dict) else ""
+    old = _pulse_script_in_command(command)
+    if not old:
+        return 0
+    old_path = Path(os.path.expandvars(str(old).replace("$HOME", str(Path.home()))))
+    try:
+        if old_path.resolve() == here:
+            return 0
+    except OSError:
+        pass
+    if not (_is_plugin_cache_path(old_path) and _is_plugin_cache_path(here)):
+        return 0
+    groups = _installed_pulse_hooks(settings)
+    utf8_print(f"claude-pulse: settings.json still pointed at an old plugin folder; re-pointing it at {here.parent}")
+    install_status_line()
+    install_pulse_command()
+    if groups:
+        install_hooks(groups=sorted(groups))
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # CLI commands
 # ---------------------------------------------------------------------------
@@ -9798,6 +9856,7 @@ CLI_FLAGS = [
     ("--hook-teammate-idle", "", "Internal", "TeammateIdle hook"),
     ("--hook-task-created", "", "Internal", "TaskCreated hook"),
     ("--hook-task-completed", "", "Internal", "TaskCompleted hook"),
+    ("--sync-install-path", "", "Internal", "Plugin SessionStart hook: re-point settings.json after a plugin update"),
 ]
 # Options that only ever follow another flag; known to the unknown-flag guard.
 _CLI_SUBOPTIONS = ("--non-interactive", "--only", "--json")
@@ -9862,6 +9921,12 @@ def main():
 
     if "--setup" in args:
         code = cmd_setup(args)
+        if code:
+            sys.exit(code)
+        return
+
+    if "--sync-install-path" in args:
+        code = cmd_sync_install_path()
         if code:
             sys.exit(code)
         return
@@ -10554,18 +10619,34 @@ def main():
         "prompt_cache_warm", "prompt_cache_hit_pct", "prompt_cache_expires_at",
         "spend_limit", "repo_slug", "session_name",
     }
+    # Of those, only these describe the account or the machine. The rest
+    # belong to the session that sent them: a new session must start clean
+    # instead of showing the previous session's context % and cost until its
+    # own first reply arrives (issue #55). The file carries the id of the
+    # session that wrote it (never loaded into the context, see above), so a
+    # change of session can be noticed.
+    _STDIN_CTX_ACCOUNT_KEYS = {"_rate_limits", "cc_version", "spend_limit"}
     stdin_ctx_path = get_account_state_dir() / "stdin_ctx.json"
     persisted = {}
+    persisted_sid = None
     try:
         with open(str(stdin_ctx_path), "r", encoding="utf-8") as f:
             raw_persisted = json.load(f)
+        if isinstance(raw_persisted, dict):
+            persisted_sid = str(raw_persisted.get("session_id") or "") or None
             persisted = {k: _sanitize(str(v)) if isinstance(v, str) else v for k, v in raw_persisted.items() if k in _STDIN_CTX_KEYS}
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         pass
     if stdin_ctx:
+        sid = str(stdin_ctx.get("session_id") or "") or None
+        if sid and persisted_sid and sid != persisted_sid:
+            persisted = {k: v for k, v in persisted.items() if k in _STDIN_CTX_ACCOUNT_KEYS}
         persisted.update(stdin_ctx)
+        to_write = dict(persisted)
+        if not sid and persisted_sid:
+            to_write["session_id"] = persisted_sid   # a fragment repaint keeps the owner
         try:
-            _atomic_json_write(stdin_ctx_path, persisted, indent=None)
+            _atomic_json_write(stdin_ctx_path, to_write, indent=None)
         except OSError:
             pass
     stdin_ctx = persisted

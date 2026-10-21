@@ -13,6 +13,17 @@ Ideas, not promises:
 - Live Codex limits through its app-server instead of the last session file.
 - A `skills/` layout for the plugin.
 
+## [3.4.2] - 2026-10-21
+
+### Fixed
+
+- **A new session no longer inherits the previous session's context % and cost** (#55, reported by @hardikhappy). The persisted stdin context is now scoped to the session that wrote it: when the session id changes, only the account-wide fields (rate limits, Claude Code version, spend limit) carry over, so a fresh session shows nothing until its own first reply arrives, and two sessions open at once stop showing each other's numbers.
+- **Marketplace installs survive plugin updates** (#54, reported by @skywalkerisnull). A plugin lives in a per-version folder that Claude Code removes a fortnight after an update, and the status line registered from the old folder died with it. The plugin now ships a `SessionStart` hook that runs `--sync-install-path`: when `settings.json` still points at an old plugin folder, the status line, the agent-panel rows, the installed hook groups and `/pulse` are re-registered from the current one. A git or manual install is never touched, and nothing happens when the path is already current.
+
+### Changed
+
+- **The README is more visual**: the bar with provider rows, the setup wizard, the agent panel and the layouts are shown as images rendered from the real script.
+
 ## [3.4.1] - 2026-10-21
 
 ### Fixed

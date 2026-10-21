@@ -1,3 +1,7 @@
+---
+description: Configure the claude-pulse status bar (setup, themes, widgets, providers, hooks)
+argument-hint: "[setup | <theme> | show | providers | hooks | update | help]"
+---
 Configure your Claude status bars — setup, themes, widgets, providers, hooks and more. $ARGUMENTS
 
 ---
