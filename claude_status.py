@@ -1447,8 +1447,35 @@ def get_state_dir():
     return state_dir
 
 
+def get_account_state_dir():
+    """Per-account state dir for files that describe one Claude account.
+
+    The default account (``~/.claude``) keeps the shared dir, so nothing moves
+    for anyone with one account. Another ``CLAUDE_CONFIG_DIR`` gets
+    ``<state>/accounts/<name>-<sha1[:8]>`` so two accounts' windows stop
+    overwriting each other's usage cache, stdin context, history and sessions.
+    """
+    base = get_state_dir()
+    try:
+        config_dir = _claude_config_dir()
+        key = os.path.normcase(str(Path(config_dir).expanduser().resolve()))
+        default = os.path.normcase(str((Path.home() / ".claude").resolve()))
+    except (OSError, RuntimeError, ValueError):
+        return base
+    if key == default:
+        return base
+    name = _safe_path_id(Path(key).name, 32) or "account"
+    digest = hashlib.sha1(key.encode("utf-8")).hexdigest()[:8]
+    account_dir = base / "accounts" / f"{name}-{digest}"
+    try:
+        _secure_mkdir(account_dir)
+    except OSError:
+        return base
+    return account_dir
+
+
 def get_cache_path():
-    return get_state_dir() / "cache.json"
+    return get_account_state_dir() / "cache.json"
 
 
 
@@ -2031,9 +2058,9 @@ def cmd_update():
                     pass
             # Clear all caches so the update indicator disappears immediately
             state_dir = get_state_dir()
-            for cache_name in ("update_check.json", "cache.json"):
+            for cache_file in (state_dir / "update_check.json", get_cache_path()):
                 try:
-                    (state_dir / cache_name).unlink()
+                    cache_file.unlink()
                 except OSError:
                     pass
             utf8_print(f"\n  Restart Claude Code to use v{new_version or 'latest'}.")
@@ -2614,7 +2641,7 @@ def make_bar(pct, theme=None, plain=False, width=None, bar_style=None,
 # ---------------------------------------------------------------------------
 
 def _get_anim_state_path():
-    return get_state_dir() / "anim_state.json"
+    return get_account_state_dir() / "anim_state.json"
 
 
 def _load_anim_state():
@@ -2792,7 +2819,7 @@ def format_weekly_reset(resets_at_str, fmt="auto", clock="12h"):
 
 def _get_history_path():
     """Return path to usage history file."""
-    return get_state_dir() / "history.json"
+    return get_account_state_dir() / "history.json"
 
 
 def _read_history():
@@ -3021,7 +3048,7 @@ def _format_cost(stdin_ctx, config):
 
 
 def _get_context_history_path():
-    return get_state_dir() / "context_history.json"
+    return get_account_state_dir() / "context_history.json"
 
 
 def _read_context_history():
@@ -3274,7 +3301,7 @@ def _get_cached_weekly_cost():
     if now - _weekly_cost_mem["ts"] < _WEEKLY_COST_CACHE_TTL:
         return _weekly_cost_mem["data"]
 
-    cache_path = get_state_dir() / "weekly_cost_cache.json"
+    cache_path = get_account_state_dir() / "weekly_cost_cache.json"
     try:
         with open(cache_path, "r", encoding="utf-8") as f:
             cached = json.load(f)
@@ -3304,7 +3331,7 @@ def _get_cached_cumulative_cost():
         return _cumulative_cost_mem["data"]
 
     # Disk cache
-    cache_path = get_state_dir() / "cumulative_cost_cache.json"
+    cache_path = get_account_state_dir() / "cumulative_cost_cache.json"
     try:
         with open(cache_path, "r", encoding="utf-8") as f:
             cached = json.load(f)
@@ -3903,7 +3930,7 @@ def _parse_stdin_context(raw_stdin):
 
 def _get_heatmap_path():
     """Return path to heatmap data file."""
-    return get_state_dir() / "heatmap.json"
+    return get_account_state_dir() / "heatmap.json"
 
 
 def _update_heatmap(usage):
@@ -4031,7 +4058,7 @@ def _render_heatmap(config=None):
 # ---------------------------------------------------------------------------
 
 def _get_sessions_dir():
-    sessions_dir = get_state_dir() / SESSION_DIR_NAME
+    sessions_dir = get_account_state_dir() / SESSION_DIR_NAME
     _secure_mkdir(sessions_dir)
     return sessions_dir
 
@@ -7219,7 +7246,7 @@ def main():
         "cache_hit_pct", "cache_read_tokens",
         "pr_number", "pr_url", "pr_review_state", "pr_kind",
     }
-    stdin_ctx_path = get_state_dir() / "stdin_ctx.json"
+    stdin_ctx_path = get_account_state_dir() / "stdin_ctx.json"
     persisted = {}
     try:
         with open(str(stdin_ctx_path), "r", encoding="utf-8") as f:

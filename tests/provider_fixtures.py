@@ -1,0 +1,114 @@
+"""Shared sandbox for the provider tests (not a test module itself).
+
+Everything a provider touches is redirected into a temp dir: HOME/USERPROFILE
+(so ``Path.home()``, ``~/.claude*``, ``~/.codex`` and ``~/.gemini`` are fake),
+LOCALAPPDATA / XDG dirs (config.json), and ``get_state_dir`` (caches).
+``CLAUDE_CONFIG_DIR`` and ``CODEX_HOME`` are removed so the developer's real
+accounts can never leak in.
+"""
+import json
+import os
+import sys
+import tempfile
+import time
+from pathlib import Path
+from unittest import mock
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+import claude_status as cs  # noqa: E402
+
+
+class ProviderSandbox:
+    def __init__(self, testcase):
+        td = tempfile.TemporaryDirectory()
+        testcase.addCleanup(td.cleanup)
+        self.root = Path(td.name)
+        self.home = self.root / "home"
+        self.state = self.root / "state"
+        self.local = self.root / "local"
+        for d in (self.home, self.state, self.local):
+            d.mkdir()
+        env = {
+            "HOME": str(self.home), "USERPROFILE": str(self.home),
+            "LOCALAPPDATA": str(self.local),
+            "XDG_CACHE_HOME": str(self.root / "xdg-cache"),
+            "XDG_CONFIG_HOME": str(self.root / "xdg-config"),
+        }
+        p = mock.patch.dict(os.environ, env)
+        p.start()
+        testcase.addCleanup(p.stop)
+        for var in ("CLAUDE_CONFIG_DIR", "CODEX_HOME", "ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL"):
+            os.environ.pop(var, None)
+        p = mock.patch.object(cs, "get_state_dir", lambda: self.state)
+        p.start()
+        testcase.addCleanup(p.stop)
+        memo = getattr(cs, "_ACCOUNT_LABELS_MEMO", {})
+        memo.clear()
+        testcase.addCleanup(memo.clear)
+
+    # --- fake sources -----------------------------------------------------
+    def set_active(self, path):
+        os.environ["CLAUDE_CONFIG_DIR"] = str(path)
+
+    def claude_dir(self, name=".claude", token="tok-secret-123", expires_in=3600,
+                   tier="default_claude_max_20x", creds=True):
+        d = self.home / name
+        d.mkdir(exist_ok=True)
+        if creds:
+            oauth = {"accessToken": token, "refreshToken": "refresh-secret",
+                     "rateLimitTier": tier}
+            if expires_in is not None:
+                oauth["expiresAt"] = int((time.time() + expires_in) * 1000)
+            (d / ".credentials.json").write_text(
+                json.dumps({"claudeAiOauth": oauth}), encoding="utf-8")
+        return d
+
+    def accounts_file(self, accounts):
+        (self.home / ".claude-accounts.json").write_text(
+            json.dumps({"default": "a", "accounts": accounts}), encoding="utf-8")
+        getattr(cs, "_ACCOUNT_LABELS_MEMO", {}).clear()
+
+    def gemini(self, name="antigravity-cli", quota=None, plan_tier="Google AI Ultra",
+               email="someone@example.com", mtime=None):
+        d = self.home / ".gemini" / name
+        d.mkdir(parents=True, exist_ok=True)
+        data = {"email": email, "plan_tier": plan_tier, "quota": quota or {}}
+        if plan_tier is None:
+            data.pop("plan_tier")
+        f = d / "statusline_last_live.json"
+        f.write_text(json.dumps(data), encoding="utf-8")
+        if mtime is not None:
+            os.utime(f, (mtime, mtime))
+        return d
+
+    def codex_rollout(self, lines, day="2026/10/19", name="rollout-a.jsonl",
+                      home=None, mtime=None):
+        home = home or (self.home / ".codex")
+        d = home / "sessions" / day
+        d.mkdir(parents=True, exist_ok=True)
+        f = d / name
+        f.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        if mtime is not None:
+            os.utime(f, (mtime, mtime))
+        return f
+
+
+def codex_line(used5=29.0, usedw=5.0, limit_id="codex", reset5=None, resetw=None,
+               plan="plus"):
+    now = time.time()
+    rl = {"limit_id": limit_id, "limit_name": None,
+          "primary": {"used_percent": used5, "window_minutes": 300,
+                      "resets_at": int(reset5 if reset5 is not None else now + 3600)},
+          "secondary": {"used_percent": usedw, "window_minutes": 10080,
+                        "resets_at": int(resetw if resetw is not None else now + 86400 * 3)},
+          "credits": {"has_credits": False}, "plan_type": plan}
+    return json.dumps({"timestamp": "2026-10-19T00:00:00Z", "type": "event_msg",
+                       "payload": {"type": "token_count", "info": None, "rate_limits": rl}})
+
+
+def iso_z(seconds_from_now):
+    t = time.gmtime(time.time() + seconds_from_now)
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", t)
