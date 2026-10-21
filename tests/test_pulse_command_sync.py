@@ -14,10 +14,6 @@ sys.path.insert(0, str(REPO_ROOT))
 
 import claude_status as cs  # noqa: E402
 
-# Provider flags are documented ahead of the providers feature landing in
-# CLI_FLAGS (added at integration); they are checked once present.
-_PENDING = {"--providers", "--detect-providers"}
-
 
 class PulseCommandSyncTest(unittest.TestCase):
     def test_copies_are_identical(self):
@@ -30,7 +26,7 @@ class PulseCommandSyncTest(unittest.TestCase):
         known = {row[0] for row in cs.CLI_FLAGS} | set(cs._CLI_SUBOPTIONS)
         documented = set(re.findall(r"(?<![\w-])(--[a-z][a-z0-9-]+)", text))
         documented -= {"--max-budget-usd"}           # Claude Code's own flag
-        unknown = documented - known - (_PENDING - known)
+        unknown = documented - known
         self.assertEqual(unknown, set(), "pulse.md mentions flags the script does not handle")
 
     def test_documented_widgets_exist(self):
@@ -38,9 +34,7 @@ class PulseCommandSyncTest(unittest.TestCase):
         m = re.search(r"Valid parts:\s*(.+)", text)
         self.assertTrue(m, "pulse.md lists the valid --show/--hide parts")
         parts = {p.strip(" `.") for p in m.group(1).split(",")}
-        # Widgets from the parallel stdin work are listed ahead of time.
-        pending = {"cache_warm", "spend_limit", "repo", "session_name", "providers"}
-        unknown = {p for p in parts if p and p not in cs.DEFAULT_SHOW} - pending
+        unknown = {p for p in parts if p and p not in cs.DEFAULT_SHOW}
         self.assertEqual(unknown, set())
 
 

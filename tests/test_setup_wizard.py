@@ -296,7 +296,9 @@ class _WithProviders(_Sandbox):
             self.set_calls.append({"enable": set(enable_ids), "disable": set(disable_ids),
                                    "labels": dict(labels or {})})
             config = dict(config)
-            config["providers"] = [{"id": i, "enabled": True} for i in sorted(enable_ids)]
+            types = {r["id"]: r["type"] for r in PROVIDER_ROWS}
+            config["providers"] = [{"id": i, "type": types.get(i, "codex"), "enabled": True}
+                                   for i in sorted(enable_ids)]
             return config
         for name, fn in (("detect_providers", lambda: [dict(r) for r in self.rows]),
                          ("set_providers", fake_set)):
@@ -445,13 +447,13 @@ class WizardChoicesTest(_WithProviders):
                                            "labels": {"claude:b": "Work"}}])
 
     def test_already_configured_provider_is_not_re_enabled(self):
-        self.write_config({"providers": [{"id": "codex", "enabled": False}]})
+        self.write_config({"providers": [{"id": "codex", "type": "codex", "enabled": False}]})
         self.assertEqual(self.run_wizard(ENTER_THROUGH), 0)
         self.assertEqual(self.set_calls[0]["enable"], {"claude:b"})
 
     def test_enabled_provider_untick_disables_it(self):
         self.rows[2]["enabled"] = True   # codex already on
-        self.write_config({"providers": [{"id": "codex", "enabled": True}]})
+        self.write_config({"providers": [{"id": "codex", "type": "codex", "enabled": True}]})
         keys = ["enter"] * 3 + ["down", "down", " ", "enter"] + ["enter"] * 10
         self.assertEqual(self.run_wizard(keys), 0)
         self.assertEqual(self.set_calls[0]["disable"], {"codex"})
@@ -504,6 +506,15 @@ class WizardChoicesTest(_WithProviders):
 
 
 class WizardWithoutProvidersTest(_Sandbox):
+    """A build without the providers functions skips that screen."""
+
+    def setUp(self):
+        super().setUp()
+        for name in ("detect_providers", "set_providers"):
+            p = mock.patch.object(cs, name, None, create=True)
+            p.start()
+            self.addCleanup(p.stop)
+
     def test_providers_screen_skipped_with_note(self):
         self.assertIsNone(cs._providers_api()[0])
         self.assertEqual(self.run_wizard(ENTER_THROUGH_NO_PROVIDERS), 0)

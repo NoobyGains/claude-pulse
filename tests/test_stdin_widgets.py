@@ -212,8 +212,9 @@ class PriorityTest(unittest.TestCase):
         self.assertEqual(
             {k: cs.WIDGET_PRIORITY[k] for k in ("cache_warm", "spend_limit", "repo", "session_name")},
             {"cache_warm": 66, "spend_limit": 52, "repo": 172, "session_name": 105})
-        self.assertEqual(list(cs.DEFAULT_SHOW)[-4:],
-                         ["cache_warm", "spend_limit", "repo", "session_name"])
+        # The providers switch (no priority: it is rows, not a widget) comes last.
+        self.assertEqual(list(cs.DEFAULT_SHOW)[-5:],
+                         ["cache_warm", "spend_limit", "repo", "session_name", "providers"])
         self.assertEqual(list(cs.WIDGET_PRIORITY)[-4:],
                          ["cache_warm", "spend_limit", "repo", "session_name"])
 
@@ -299,7 +300,8 @@ class PersistenceThroughMainTest(unittest.TestCase):
         for text in ("refactor auth", "o/r", "♨ 92%", "spend $12.40/$50 wk"):
             self.assertIn(text, line)
 
-        persisted = json.loads((self.state / "stdin_ctx.json").read_text(encoding="utf-8"))
+        # A config dir other than ~/.claude keeps its state under accounts/<key>.
+        persisted = json.loads((cs.get_account_state_dir() / "stdin_ctx.json").read_text(encoding="utf-8"))
         for key in ("prompt_cache_warm", "prompt_cache_hit_pct", "prompt_cache_expires_at",
                     "spend_limit", "repo_slug", "session_name"):
             self.assertIn(key, persisted)

@@ -21,6 +21,25 @@ sys.path.insert(0, str(REPO_ROOT))
 
 import claude_status as cs  # noqa: E402
 
+# The picker's previews render through build_status_line, which reads and
+# writes the state dir; keep that out of the real one.
+_STATE = None
+_STATE_PATCH = None
+
+
+def setUpModule():
+    global _STATE, _STATE_PATCH
+    import tempfile
+    _STATE = tempfile.TemporaryDirectory()
+    state = Path(_STATE.name)
+    _STATE_PATCH = mock.patch.object(cs, "get_state_dir", lambda: state)
+    _STATE_PATCH.start()
+
+
+def tearDownModule():
+    _STATE_PATCH.stop()
+    _STATE.cleanup()
+
 
 class PickerLoopTest(unittest.TestCase):
     """The down/down/Enter dance should apply the third theme in the list."""

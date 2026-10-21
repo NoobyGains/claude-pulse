@@ -9655,7 +9655,9 @@ CLI_FLAGS = [
     ("--budget", "<amount|off>", "Widgets", "Spend budget to match --max-budget-usd"),
     ("--limits", "[key=N,...]", "Widgets", "Subagent and web-search caps used as denominators"),
     ("--focus", "<start [min]|stop|status>", "Widgets", "Focus (pomodoro) timer"),
-    # providers flags are added at integration
+    ("--detect-providers", "[--json]", "Providers", "Find other Claude accounts, Codex, Gemini and MiniMax on this machine"),
+    ("--providers", "<list|detect|enable|disable|label|remove|add-file> [...]", "Providers",
+     "Manage the extra status rows: --providers help lists the sub-commands"),
     ("--install-hooks", "[--only heartbeat,agents,team]", "Hooks", "Install hooks (all three groups unless --only)"),
     ("--config", "", "Info", "Print the current configuration"),
     ("--stats", "", "Info", "Usage statistics and streaks"),
