@@ -12,6 +12,8 @@ Ideas, not promises:
 - Reading `~/.claude/tasks/<team>/` so the team widget can show task subjects.
 - Live Codex limits through its app-server instead of the last session file.
 - A `skills/` layout for the plugin.
+- Pace as coloured arrows instead of a percentage, and a warning colour for the `max` effort level, as seen in community forks.
+- Per-section bar toggles: show a window's percentage without its bar.
 
 ## [3.5.0] - 2026-10-21
 
@@ -20,6 +22,7 @@ Ideas, not promises:
 - **Renamed to usage-pulse.** Anthropic's plugin directory reserves names that start with `claude-`, and a different "Claude Pulse" is already listed there. The plugin, the marketplace, the slash-command namespace (`/usage-pulse:setup`, `/usage-pulse:pulse`), the GitHub repository (`NoobyGains/usage-pulse`, the old address redirects) and every name the script prints are now usage-pulse. The script file is still `claude_status.py`, the `/pulse` command keeps its name, and the state folder does not move, so nothing installed stops working.
 - **Existing installs keep working.** A git or one-liner install in `~/.claude-pulse` keeps updating from the renamed repository, and the installers update it in place; new installs go to `~/.usage-pulse`. `USAGE_PULSE_DIR`, `USAGE_PULSE_REPO_URL` and `USAGE_PULSE_NONINTERACTIVE` are the new names of the installer variables, and the `CLAUDE_PULSE_*` names still work. Marketplace installs need a reinstall once: `/plugin uninstall claude-pulse`, `/plugin marketplace add NoobyGains/usage-pulse`, `/plugin install usage-pulse`; the new plugin's `SessionStart` hook then moves the status line over by itself.
 - **The README is new**, written around animated demos rendered from the real script (`scripts/readme_assets.py`), and the repository root is tidied: one copy of the `/pulse` command (`commands/pulse.md`), the old screenshots and the old GIF generator are gone.
+- **New logo.** A title-case "Usage Pulse" wordmark built from Cascadia Code outlines (`scripts/make_logo.py`), with light and dark variants chosen by GitHub's theme and a gently animated icon.
 
 ## [3.4.2] - 2026-10-21
 
