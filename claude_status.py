@@ -1349,86 +1349,216 @@ def _blocking_hook_command(flag, python_cmd, script_path):
     return f'{python_cmd} "{script_path}" {flag}; exit 0'
 
 
-def install_hooks():
-    """Install a PostToolUse hook into ~/.claude/settings.json."""
+# Hook groups, installable on their own (`--install-hooks --only agents,team`,
+# and the setup wizard's hooks screen). Each entry is (event, flag, blocking):
+# a blocking event is one whose exit code 2 steers Claude Code, so its command
+# is pinned to exit 0 by _blocking_hook_command.
+_HOOK_GROUPS = {
+    # PostToolUse drives the heartbeat spinner, tool counter, activity flag and
+    # last-tool widget. It runs Python after every tool call, so it is opt-in.
+    "heartbeat": (("PostToolUse", "--hook-refresh", False),),
+    # SubagentStart / SubagentStop drive the live agent counter. They carry
+    # agent_id and agent_type, so no polling is needed. SubagentStop is
+    # blocking: exit 2 keeps the subagent running (hooks reference), and Python
+    # exits 2 by itself when the script path has gone missing.
+    "agents": (("SubagentStart", "--hook-subagent-start", False),
+               ("SubagentStop", "--hook-subagent-stop", True)),
+    # The three agent-team events drive the team segment. They take no matcher
+    # (Claude Code silently ignores one), so their entries omit the key. Exit 2
+    # keeps a teammate from going idle, deletes a new task, or refuses a
+    # completion — all three are blocking.
+    "team": (("TeammateIdle", "--hook-teammate-idle", True),
+             ("TaskCreated", "--hook-task-created", True),
+             ("TaskCompleted", "--hook-task-completed", True)),
+}
+HOOK_GROUP_NAMES = tuple(_HOOK_GROUPS)
+
+
+def _parse_hook_groups(raw):
+    """Parse ``heartbeat,agents,team`` (or ``all``) into a set of group names.
+
+    Raises ValueError naming the first unknown group, so a typo never silently
+    installs nothing.
+    """
+    names = [p.strip().lower() for p in str(raw or "").split(",") if p.strip()]
+    if not names:
+        raise ValueError("no hook group given")
+    if "all" in names:
+        return set(HOOK_GROUP_NAMES)
+    for name in names:
+        if name not in _HOOK_GROUPS:
+            raise ValueError(f"unknown hook group: {_sanitize(name)}")
+    return set(names)
+
+
+def _is_pulse_hook_entry(entry, flag):
+    """True when a settings.json hook entry is one of ours for ``flag``."""
+    if not isinstance(entry, dict):
+        return False
+    inner = entry.get("hooks")
+    if not isinstance(inner, list):
+        return False
+    return any(isinstance(h, dict)
+               and "claude_status.py" in str(h.get("command", ""))
+               and flag in str(h.get("command", ""))
+               for h in inner)
+
+
+def _installed_pulse_hooks(settings):
+    """Return the hook groups claude-pulse has entries for in ``settings``.
+
+    A group counts as installed when any of its events carries one of our
+    entries; re-installing it repairs a partial set.
+    """
+    found = set()
+    hooks = settings.get("hooks") if isinstance(settings, dict) else None
+    if not isinstance(hooks, dict):
+        return found
+    for group, events in _HOOK_GROUPS.items():
+        for event, flag, _blocking in events:
+            entries = hooks.get(event)
+            if isinstance(entries, list) and any(_is_pulse_hook_entry(e, flag) for e in entries):
+                found.add(group)
+                break
+    return found
+
+
+def _load_settings_for_write(settings_path):
+    """Read settings.json for a read-modify-write.
+
+    Returns ``(settings, None)``, with ``{}`` for a missing file, or
+    ``(None, message)`` when the file exists but cannot be used. Writing over
+    an unreadable or invalid file would throw away the user's whole Claude
+    Code configuration, so callers must stop on an error.
+    """
+    if not settings_path.exists():
+        return {}, None
+    try:
+        with open(settings_path, "r", encoding="utf-8") as f:
+            settings = json.load(f)
+    except json.JSONDecodeError:
+        return None, f"{settings_path} contains invalid JSON. Fix or remove it, then run this again."
+    except (OSError, UnicodeDecodeError) as e:
+        return None, f"Cannot read {settings_path}: {e}"
+    if not isinstance(settings, dict):
+        return None, f"{settings_path} is not a JSON object. Fix or remove it, then run this again."
+    hooks = settings.get("hooks", {})
+    if not isinstance(hooks, dict):
+        return None, f'"hooks" in {settings_path} is not an object. Fix it, then run this again.'
+    return settings, None
+
+
+def _strip_pulse_hooks(hooks, groups):
+    """Remove our entries for ``groups`` from a settings ``hooks`` dict in place.
+
+    Foreign entries on the same events are kept. An event list that only held
+    our entry is dropped rather than left behind as ``[]``.
+    """
+    for group in groups:
+        for event, flag, _blocking in _HOOK_GROUPS[group]:
+            entries = hooks.get(event)
+            if not isinstance(entries, list):
+                continue
+            kept = [e for e in entries if not _is_pulse_hook_entry(e, flag)]
+            if kept:
+                hooks[event] = kept
+            elif event in hooks:
+                del hooks[event]
+
+
+def install_hooks(groups=None):
+    """Install claude-pulse's hooks into Claude Code's settings.json.
+
+    ``groups`` is any subset of ``HOOK_GROUP_NAMES`` (``heartbeat``,
+    ``agents``, ``team``); ``None`` installs all three, which is what
+    ``--install-hooks`` has always done. Only the chosen groups' events are
+    touched: hooks from other groups, ours or anyone else's, are left as they
+    are. Re-running is idempotent — our old entry for each event is replaced,
+    never duplicated.
+
+    Returns True when settings.json was written, False when it could not be
+    (invalid JSON, unreadable file) — nothing is written in that case.
+    """
+    if groups is None:
+        groups = set(HOOK_GROUP_NAMES)
+    else:
+        groups = set(groups)
+        unknown = groups - set(HOOK_GROUP_NAMES)
+        if unknown:
+            raise ValueError(f"unknown hook group(s): {', '.join(sorted(unknown))}")
     settings_path = _claude_config_dir() / "settings.json"
     script_path = _win_portable_path(Path(__file__).resolve())
     python_cmd = _get_python_cmd()
-    settings = {}
-    if settings_path.exists():
-        try:
-            with open(settings_path, "r", encoding="utf-8") as f:
-                settings = json.load(f)
-        except (json.JSONDecodeError, OSError):
-            pass
-    hook_command = f'{python_cmd} "{script_path}" --hook-refresh'
-    hook_entry = {
-        "matcher": "",
-        "hooks": [
-            {"type": "command", "command": hook_command}
-        ],
-    }
-    hooks = settings.setdefault("hooks", {})
-    post_tool_hooks = hooks.setdefault("PostToolUse", [])
-    # Remove existing pulse hook-refresh entries to avoid dupes
-    filtered = []
-    for h in post_tool_hooks:
-        is_pulse = False
-        for inner in h.get("hooks", []):
-            if "claude_status.py" in inner.get("command", "") and "--hook-refresh" in inner.get("command", ""):
-                is_pulse = True
-        if not is_pulse:
-            filtered.append(h)
-    filtered.append(hook_entry)
-    hooks["PostToolUse"] = filtered
+    settings, error = _load_settings_for_write(settings_path)
+    if error:
+        print(f"Error: {error}", file=sys.stderr)
+        return False
 
-    # SubagentStart / SubagentStop drive the live agent counter. They carry
-    # agent_id and agent_type, so no polling is needed.
-    #
-    # The three agent-team events drive the team segment. They take no
-    # matcher (Claude Code silently ignores one), so their entries omit the
-    # key. They can also steer the team — exit code 2 keeps a teammate from
-    # going idle, deletes a new task, or refuses a completion — so their
-    # command is built to run in every hook shell and to always exit 0; see
-    # _blocking_hook_command. SubagentStop is blocking too: exit 2 keeps the
-    # subagent running (hooks reference), and Python exits 2 by itself when
-    # the script path has gone missing, so it gets the same pinned command.
-    for event, flag, blocking in (("SubagentStart", "--hook-subagent-start", False),
-                                  ("SubagentStop", "--hook-subagent-stop", True),
-                                  ("TeammateIdle", "--hook-teammate-idle", True),
-                                  ("TaskCreated", "--hook-task-created", True),
-                                  ("TaskCompleted", "--hook-task-completed", True)):
-        command = f'{python_cmd} "{script_path}" {flag}'
-        existing = hooks.setdefault(event, [])
-        kept = []
-        for h in existing:
-            is_pulse = any(
-                "claude_status.py" in inner.get("command", "") and flag in inner.get("command", "")
-                for inner in h.get("hooks", [])
-            )
-            if not is_pulse:
-                kept.append(h)
-        if blocking:
-            kept.append({"hooks": [{"type": "command", "command":
-                                    _blocking_hook_command(flag, python_cmd, script_path)}]})
-        else:
-            kept.append({"matcher": "", "hooks": [{"type": "command", "command": command}]})
-        hooks[event] = kept
+    hooks = settings.setdefault("hooks", {})
+    for group in HOOK_GROUP_NAMES:          # fixed order keeps the file stable
+        if group not in groups:
+            continue
+        for event, flag, blocking in _HOOK_GROUPS[group]:
+            command = f'{python_cmd} "{script_path}" {flag}'
+            existing = hooks.get(event)
+            if not isinstance(existing, list):
+                existing = []
+            kept = [h for h in existing if not _is_pulse_hook_entry(h, flag)]
+            if blocking:
+                kept.append({"hooks": [{"type": "command", "command":
+                                        _blocking_hook_command(flag, python_cmd, script_path)}]})
+            else:
+                kept.append({"matcher": "", "hooks": [{"type": "command", "command": command}]})
+            hooks[event] = kept
 
     settings["hooks"] = hooks
     _secure_mkdir(settings_path.parent)
     _atomic_json_write(settings_path, settings)
-    utf8_print(f"{GREEN}Installed PostToolUse hook to {settings_path}{RESET}")
-    utf8_print(f"  Command: {hook_command}")
+    names = ", ".join(g for g in HOOK_GROUP_NAMES if g in groups)
+    utf8_print(f"{GREEN}Installed claude-pulse hooks ({names}) to {settings_path}{RESET}")
+    if "heartbeat" in groups:
+        utf8_print(f"  Command: {python_cmd} \"{script_path}\" --hook-refresh")
     utf8_print(f"")
     utf8_print(f"This enables:")
-    utf8_print(f"  {BOLD}Heartbeat{RESET}    \u2014 live spinner with tool count & elapsed time")
-    utf8_print(f"  {BOLD}Activity{RESET}     \u2014 {BRIGHT_YELLOW}\u26a1 Active{RESET} indicator during rapid tool calls")
-    utf8_print(f"  {BOLD}Last tool{RESET}    \u2014 shows last tool used (opt-in: --show last_tool)")
-    utf8_print(f"  {BOLD}Git branch{RESET}   \u2014 current branch name")
-    utf8_print(f"  {BOLD}Agent team{RESET}   \u2014 teammates seen and shared tasks done ({DIM}team 3 \u00b7 tasks 4/7{RESET})")
+    if "heartbeat" in groups:
+        utf8_print(f"  {BOLD}Heartbeat{RESET}    — live spinner with tool count & elapsed time")
+        utf8_print(f"  {BOLD}Activity{RESET}     — {BRIGHT_YELLOW}⚡ Active{RESET} indicator during rapid tool calls")
+        utf8_print(f"  {BOLD}Last tool{RESET}    — shows last tool used (opt-in: --show last_tool)")
+        utf8_print(f"  {BOLD}Git branch{RESET}   — current branch name")
+    if "agents" in groups:
+        utf8_print(f"  {BOLD}Live agents{RESET}  — subagents running now and spawned this session ({DIM}agents 3 live · 47/200{RESET})")
+    if "team" in groups:
+        utf8_print(f"  {BOLD}Agent team{RESET}   — teammates seen and shared tasks done ({DIM}team 3 · tasks 4/7{RESET})")
     utf8_print(f"")
     utf8_print(f"Restart Claude Code for hooks to take effect.")
+    return True
+
+
+def remove_hooks(groups):
+    """Remove claude-pulse's entries for ``groups`` from settings.json.
+
+    Used by the setup wizard when a hook group is unticked. Other tools' hooks
+    on the same events are kept. Returns True when settings.json was written
+    (or there was nothing to remove), False when it could not be read.
+    """
+    groups = set(groups or ())
+    unknown = groups - set(HOOK_GROUP_NAMES)
+    if unknown:
+        raise ValueError(f"unknown hook group(s): {', '.join(sorted(unknown))}")
+    settings_path = _claude_config_dir() / "settings.json"
+    settings, error = _load_settings_for_write(settings_path)
+    if error:
+        print(f"Error: {error}", file=sys.stderr)
+        return False
+    if not groups or not (groups & _installed_pulse_hooks(settings)):
+        return True
+    hooks = settings.get("hooks", {})
+    _strip_pulse_hooks(hooks, groups)
+    settings["hooks"] = hooks
+    _atomic_json_write(settings_path, settings)
+    names = ", ".join(g for g in HOOK_GROUP_NAMES if g in groups)
+    utf8_print(f"Removed claude-pulse hooks ({names}) from {settings_path}")
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -6213,9 +6343,12 @@ def _enable_windows_ansi():
 def _read_key():
     """Block for a single keypress and return a normalised token.
 
-    Returns one of: 'up', 'down', 'enter', 'esc', 'ctrl-c', or the literal
-    character pressed (e.g. 'q', 'k'). Arrow keys differ by platform: Windows
-    sends a '\\x00'/'\\xe0' prefix then a letter; POSIX sends an ESC '[' sequence.
+    Returns one of: 'up', 'down', 'left', 'right', 'enter', 'esc', 'ctrl-c',
+    'backspace', or the literal character pressed (e.g. 'q', 'k', ' '). Arrow
+    keys differ by platform: Windows sends a '\\x00'/'\\xe0' prefix then a
+    letter; POSIX sends an ESC '[' sequence. Backspace arrives as '\\x08' on
+    Windows and as '\\x7f' (DEL) from most POSIX terminals; both map to
+    'backspace' so the setup wizard's text fields work everywhere.
     """
     if sys.platform == "win32":
         import msvcrt
@@ -6229,6 +6362,8 @@ def _read_key():
             return "esc"
         if ch == "\x03":
             return "ctrl-c"
+        if ch in ("\x08", "\x7f"):
+            return "backspace"
         return ch
     # POSIX
     import termios
@@ -6252,6 +6387,8 @@ def _read_key():
             return "enter"
         if ch == "\x03":
             return "ctrl-c"
+        if ch in ("\x08", "\x7f"):
+            return "backspace"
         return ch
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
@@ -6289,6 +6426,38 @@ def _render_picker(names, cursor, current_theme, bar_size, bar_style):
     return "\n".join(lines)
 
 
+def _pick_theme_loop(config, step=None):
+    """Run the arrow-key theme picker; return the chosen theme name or None.
+
+    Draws into whatever screen the caller has set up: it neither enters nor
+    leaves the alternate screen and saves nothing, so ``cmd_pick_theme`` and
+    the setup wizard can both use it. With ``step`` (the wizard's step
+    header) ← / ``b`` return ``_BACK`` so the wizard can go back a screen.
+    """
+    current_theme = config.get("theme", "default")
+    bar_size = config.get("bar_size", DEFAULT_BAR_SIZE)
+    bar_style = config.get("bar_style", DEFAULT_BAR_STYLE)
+    names = list(THEMES.keys())
+    cursor = names.index(current_theme) if current_theme in names else 0
+    while True:
+        screen = _render_picker(names, cursor, current_theme, bar_size, bar_style)
+        if step is not None:
+            screen = (_screen_header(step) + screen
+                      + f"  {DIM}← back · Esc cancels setup (nothing is saved){RESET}\n")
+        _tty_write("\x1b[H\x1b[J" + screen)
+        key = _read_key()
+        if key in ("up", "k"):
+            cursor = (cursor - 1) % len(names)
+        elif key in ("down", "j"):
+            cursor = (cursor + 1) % len(names)
+        elif key == "enter":
+            return names[cursor]
+        elif step is not None and key in _BACK_KEYS:
+            return _BACK
+        elif key in ("esc", "ctrl-c", "q"):
+            return None
+
+
 def cmd_pick_theme():
     """Interactive arrow-key theme picker with a live status-line preview.
 
@@ -6305,38 +6474,917 @@ def cmd_pick_theme():
     _enable_windows_ansi()
 
     config = load_config()
-    current_theme = config.get("theme", "default")
-    bar_size = config.get("bar_size", DEFAULT_BAR_SIZE)
-    bar_style = config.get("bar_style", DEFAULT_BAR_STYLE)
-    names = list(THEMES.keys())
-    cursor = names.index(current_theme) if current_theme in names else 0
-
-    def _w(text):
-        sys.stdout.buffer.write(text.encode("utf-8"))
-        sys.stdout.flush()
-
     chosen = None
-    _w("\x1b[?1049h\x1b[?25l")  # enter alternate screen + hide cursor
+    _tty_write("\x1b[?1049h\x1b[?25l")  # enter alternate screen + hide cursor
     try:
-        while True:
-            _w("\x1b[H\x1b[J" + _render_picker(names, cursor, current_theme, bar_size, bar_style))
-            key = _read_key()
-            if key in ("up", "k"):
-                cursor = (cursor - 1) % len(names)
-            elif key in ("down", "j"):
-                cursor = (cursor + 1) % len(names)
-            elif key == "enter":
-                chosen = names[cursor]
-                break
-            elif key in ("esc", "ctrl-c", "q"):
-                break
+        chosen = _pick_theme_loop(config)
     finally:
-        _w("\x1b[?25h\x1b[?1049l")  # show cursor + leave alternate screen
+        _tty_write("\x1b[?25h\x1b[?1049l")  # show cursor + leave alternate screen
 
     if chosen:
         cmd_set_theme(chosen)  # handles default→factory-reset, cache clear, confirmation
     else:
         utf8_print("Theme unchanged.")
+
+
+# ---------------------------------------------------------------------------
+# Screen toolkit — full-screen prompts for the setup wizard.
+#
+# Every screen clears and redraws with ESC[H ESC[J (legacy conhost ignores the
+# alternate-screen switch, so a redraw must never rely on it) and reads keys
+# only through the module-global _read_key, so tests drive any screen by
+# patching _read_key with a scripted key sequence. Each returns its value,
+# _BACK when the user asked for the previous screen (← or b), or None when
+# they cancelled (Esc, q, Ctrl-C).
+# ---------------------------------------------------------------------------
+
+_BACK = object()   # "go back one screen"
+_SKIP = object()   # wizard step had nothing to ask (e.g. no providers found)
+_BACK_KEYS = ("left", "b")
+_CANCEL_KEYS = ("esc", "ctrl-c", "q")
+
+
+def _tty_write(text):
+    """Write straight to the terminal as UTF-8 and flush."""
+    sys.stdout.buffer.write(text.encode("utf-8"))
+    sys.stdout.flush()
+
+
+def _screen_header(step):
+    """The dim 'claude-pulse setup · Step 3/13 · Providers' line."""
+    if not step:
+        return ""
+    return f"\n  {DIM}claude-pulse setup · {step}{RESET}\n"
+
+
+def _screen_frame(step, title, body_lines, hint):
+    """Build one full screen: clear, header, title, body, hint."""
+    out = ["\x1b[H\x1b[J" + _screen_header(step),
+           f"  {BOLD}{title}{RESET}",
+           f"  {DIM}{chr(0x2500) * 60}{RESET}"]
+    out.extend(body_lines)
+    out.append("")
+    if hint:
+        out.append(f"  {DIM}{hint}{RESET}")
+    return "\n".join(out) + "\n"
+
+
+def _body(lines):
+    """Indent free text for a screen body (None/empty → nothing)."""
+    return [f"  {line}" for line in (lines or [])]
+
+
+def _screen_select(step, title, items, index=0, preview=None, hint=None, body=None):
+    """Single choice from ``items`` — ``(key, label, description)`` tuples.
+
+    ``preview(key)`` (optional) returns a line drawn above the list for the row
+    under the cursor, re-rendered on every move. Returns the chosen index.
+    """
+    if not items:
+        return _BACK
+    cursor = max(0, min(int(index or 0), len(items) - 1))
+    hint = hint or "↑/↓ move · Enter choose · ← back · Esc cancel"
+    width = max(len(str(label)) for _k, label, _d in items)
+    while True:
+        lines = _body(body)
+        if body:
+            lines.append("")
+        if preview is not None:
+            try:
+                shown = preview(items[cursor][0])
+            except Exception:
+                shown = ""
+            if shown:
+                lines += [f"  {shown}{RESET}", ""]
+        for i, (_key, label, desc) in enumerate(items):
+            desc_str = f"  {DIM}{desc}{RESET}" if desc else ""
+            if i == cursor:
+                lines.append(f"  {BOLD}▸{RESET} {REVERSE}{BOLD} {str(label):<{width}} {RESET}{desc_str}")
+            else:
+                lines.append(f"     {str(label):<{width}} {desc_str}")
+        _tty_write(_screen_frame(step, title, lines, hint))
+        key = _read_key()
+        if key in ("up", "k"):
+            cursor = (cursor - 1) % len(items)
+        elif key in ("down", "j"):
+            cursor = (cursor + 1) % len(items)
+        elif key == "enter":
+            return cursor
+        elif key in _BACK_KEYS:
+            return _BACK
+        elif key in _CANCEL_KEYS:
+            return None
+        elif len(key) == 1 and key.isdigit() and 1 <= int(key) <= len(items):
+            cursor = int(key) - 1
+
+
+def _screen_multiselect(step, title, items, checked=None, hint=None, body=None, actions=None):
+    """Tick any number of ``items`` — ``(key, label, description)`` tuples.
+
+    Space toggles the row under the cursor, ``a`` ticks all, ``n`` none,
+    Enter confirms. ``actions`` maps extra keys to ``fn(index)``; ``items`` is
+    re-read after each one, so an action may edit labels in place (the
+    providers screen's ``r`` rename does). Returns the set of ticked keys.
+    """
+    if not items:
+        return set()
+    ticked = set(checked or ())
+    cursor = 0
+    actions = actions or {}
+    hint = hint or ("↑/↓ move · Space tick · a all · n none · "
+                    "Enter confirm · ← back · Esc cancel")
+    while True:
+        lines = _body(body)
+        if body:
+            lines.append("")
+        width = max(len(str(label)) for _k, label, _d in items)
+        for i, (key, label, desc) in enumerate(items):
+            box = f"{GREEN}[x]{RESET}" if key in ticked else "[ ]"
+            desc_str = f"  {DIM}{desc}{RESET}" if desc else ""
+            row = f"{box} {str(label):<{width}}"
+            if i == cursor:
+                lines.append(f"  {BOLD}▸{RESET} {REVERSE}{row}{RESET}{desc_str}")
+            else:
+                lines.append(f"    {row}{desc_str}")
+        _tty_write(_screen_frame(step, title, lines, hint))
+        key = _read_key()
+        if key in ("up", "k"):
+            cursor = (cursor - 1) % len(items)
+        elif key in ("down", "j"):
+            cursor = (cursor + 1) % len(items)
+        elif key == " ":
+            k = items[cursor][0]
+            ticked.symmetric_difference_update({k})
+        elif key == "a":
+            ticked = {k for k, _l, _d in items}
+        elif key == "n":
+            ticked = set()
+        elif key == "enter":
+            return {k for k, _l, _d in items if k in ticked}
+        elif key in _BACK_KEYS:
+            return _BACK
+        elif key in _CANCEL_KEYS:
+            return None
+        elif key in actions:
+            actions[key](cursor)
+
+
+def _screen_text(step, title, default="", validate=None, body=None, hint=None, max_len=64):
+    """Free-text entry. ``validate(text)`` returns an error message or None.
+
+    Letters (including q and b) are typed, so only ← goes back and Esc /
+    Ctrl-C cancel. Backspace deletes. Returns the entered text.
+    """
+    buf = list(str(default or ""))[:max_len]
+    error = ""
+    hint = hint or "type · Backspace delete · Enter accept · ← back · Esc cancel"
+    while True:
+        lines = _body(body)
+        if body:
+            lines.append("")
+        lines.append(f"  > {''.join(buf)}{REVERSE} {RESET}")
+        if error:
+            lines += ["", f"  {RED}{error}{RESET}"]
+        _tty_write(_screen_frame(step, title, lines, hint))
+        key = _read_key()
+        if key == "enter":
+            text = "".join(buf).strip()
+            problem = validate(text) if validate else None
+            if problem:
+                error = problem
+                continue
+            return text
+        if key == "backspace":
+            if buf:
+                buf.pop()
+            error = ""
+        elif key == "left":
+            return _BACK
+        elif key in ("esc", "ctrl-c"):
+            return None
+        elif len(key) == 1 and key.isprintable() and len(buf) < max_len:
+            buf.append(key)
+            error = ""
+
+
+def _screen_confirm(step, title, default=True, body=None, yes="Yes", no="No", hint=None):
+    """Yes/No question. ``y``/``n`` answer at once; Enter takes the highlighted
+    answer, which starts on ``default``. Returns True or False."""
+    choice = bool(default)
+    hint = hint or "y / n · ↑/↓ move · Enter choose · ← back · Esc cancel"
+    while True:
+        lines = _body(body)
+        if body:
+            lines.append("")
+        for value, label in ((True, yes), (False, no)):
+            if value == choice:
+                lines.append(f"  {BOLD}▸{RESET} {REVERSE}{BOLD} {label} {RESET}")
+            else:
+                lines.append(f"     {label}")
+        _tty_write(_screen_frame(step, title, lines, hint))
+        key = _read_key()
+        if key in ("up", "down", "k", "j", "right"):
+            choice = not choice
+        elif key == "enter":
+            return choice
+        elif key == "y":
+            return True
+        elif key == "n":
+            return False
+        elif key in _BACK_KEYS:
+            return _BACK
+        elif key in _CANCEL_KEYS:
+            return None
+
+
+# ---------------------------------------------------------------------------
+# Setup wizard — ``--setup``
+#
+# gather → summary → apply. Every screen edits one in-memory plan; nothing is
+# written until the summary screen's Enter, so Esc anywhere leaves the machine
+# exactly as it was. The config is saved once, at the end, with the theme set
+# directly — cmd_set_theme("default") would run the factory-reset preset and
+# wipe every other choice.
+# ---------------------------------------------------------------------------
+
+# Widgets offered on the wizard's optional-widgets screen, in display order.
+# Keys missing from DEFAULT_SHOW (a widget from a newer or older build) are
+# simply not offered.
+_SETUP_WIDGETS = (
+    ("lines", "Lines changed", "+142 -37 this session"),
+    ("cache", "Cache hit rate", "share of input served from the prompt cache"),
+    ("cache_warm", "Cache warmth", "prompt cache hit ratio and time until it expires"),
+    ("pr", "PR badge", "clickable #123 with its review state"),
+    ("repo", "Repo badge", "owner/name of the current repository"),
+    ("session_name", "Session name", "the name set with /rename"),
+    ("weekly_cost", "7-day cost", "rolling weekly API-equivalent spend"),
+    ("cumulative_cost", "All-time cost", "API-equivalent spend across all sessions"),
+    ("spend_limit", "Spend limit", "used / limit, when your gateway reports one"),
+    ("budget", "Budget", "spend against an amount you set (mirrors --max-budget-usd)"),
+    ("thinking", "Thinking state", "whether extended thinking is on"),
+    ("burn_rate", "Burn rate", "how fast the 5-hour window is filling"),
+    ("git_drift", "Git drift", "commits behind/ahead of upstream"),
+    ("files_changed", "Files changed", "count of uncommitted files"),
+    ("last_tool", "Last tool", "the last tool Claude used (needs the heartbeat hook)"),
+)
+
+_SETUP_HOOK_ITEMS = (
+    ("agents", "Live agents", "agents 3 live · 47/200  (SubagentStart/Stop)"),
+    ("team", "Agent team", "team 3 · tasks 4/7  (TeammateIdle/TaskCreated/TaskCompleted)"),
+    ("heartbeat", "Heartbeat", "spinner + tool count; runs Python after every tool call (PostToolUse)"),
+)
+
+# Provider types the unattended path may switch on by itself: they only read
+# local files (Codex, Gemini) or another Claude account's own login. MiniMax
+# runs a subprocess, so it is only ever enabled by an explicit choice.
+_AUTO_PROVIDER_TYPES = ("claude", "codex", "gemini")
+
+
+def _providers_api():
+    """Return ``(detect_providers, set_providers)``, either None when missing.
+
+    The providers feature is optional for the wizard: when this build lacks it
+    the providers screen is skipped with a note instead of failing.
+    """
+    detect = globals().get("detect_providers")
+    setp = globals().get("set_providers")
+    return (detect if callable(detect) else None, setp if callable(setp) else None)
+
+
+def _short_home(path):
+    """Show a path with the home directory as ``~``."""
+    text = str(path or "")
+    try:
+        home = str(Path.home())
+    except Exception:
+        return text
+    if home and text.lower().startswith(home.lower()):
+        return "~" + text[len(home):]
+    return text
+
+
+def _stdio_is_tty():
+    try:
+        return bool(sys.stdin.isatty() and sys.stdout.isatty())
+    except (AttributeError, ValueError, OSError):
+        return False
+
+
+def _setup_env():
+    """Inspect this machine for the setup report. Reads only, writes nothing."""
+    cfg_dir = _claude_config_dir()
+    settings_path = cfg_dir / "settings.json"
+    settings, error = _load_settings_for_write(settings_path)
+    env = {
+        "python": sys.version_info[:3],
+        "python_ok": sys.version_info >= (3, 8),
+        "claude": _CLAUDE_PATH,
+        "config_dir": cfg_dir,
+        "config_dir_from_env": bool(os.environ.get("CLAUDE_CONFIG_DIR", "").strip()),
+        "settings_path": settings_path,
+        "settings_exists": settings_path.exists(),
+        "settings_error": error,
+        "status_line": "none",
+        "status_line_cmd": "",
+        "subagent_line": "none",
+        "hooks": set(),
+        "pulse_command": (cfg_dir / "commands" / "pulse.md").exists(),
+        "providers_available": all(_providers_api()),
+    }
+    if settings is not None:
+        sl = settings.get("statusLine")
+        cmd = str(sl.get("command", "")) if isinstance(sl, dict) else ""
+        env["status_line_cmd"] = cmd
+        if "claude_status.py" in cmd:
+            env["status_line"] = "ours"
+        elif cmd.strip():
+            env["status_line"] = "other"
+        sub = settings.get("subagentStatusLine")
+        sub_cmd = str(sub.get("command", "")) if isinstance(sub, dict) else ""
+        if "claude_status.py" in sub_cmd:
+            env["subagent_line"] = "ours"
+        elif sub_cmd.strip():
+            env["subagent_line"] = "other"
+        env["hooks"] = _installed_pulse_hooks(settings)
+    here = Path(__file__).resolve()
+    if "plugins" in [p.lower() for p in here.parts]:
+        env["install_kind"] = "plugin"
+    elif (here.parent / ".git").exists():
+        env["install_kind"] = "git"
+    else:
+        env["install_kind"] = "raw"
+    env["script_dir"] = here.parent
+    return env
+
+
+def _setup_env_lines(env):
+    """The environment report as plain text lines (shared by both modes)."""
+    py = ".".join(str(n) for n in env["python"])
+    lines = [
+        f"Python        {py}" + ("" if env["python_ok"] else "  (claude-pulse needs 3.8 or newer)"),
+        "Claude Code   " + (_short_home(env["claude"]) if env["claude"]
+                            else "not found on PATH (fine if you start it another way)"),
+        f"Config dir    {_short_home(env['config_dir'])}"
+        + ("  (from CLAUDE_CONFIG_DIR)" if env["config_dir_from_env"] else ""),
+    ]
+    if env["settings_error"]:
+        lines.append(f"settings.json PROBLEM: {env['settings_error']}")
+    elif not env["settings_exists"]:
+        lines.append("settings.json not there yet (setup creates it)")
+    else:
+        lines.append("settings.json ok")
+    kind = env["status_line"]
+    if kind == "ours":
+        lines.append("Status line   claude-pulse (installed)")
+    elif kind == "other":
+        lines.append(f"Status line   another tool: {_sanitize(env['status_line_cmd'])[:70]}")
+    else:
+        lines.append("Status line   not set")
+    lines.append("Agent panel   " + {"ours": "claude-pulse rows", "other": "another tool's rows",
+                                     "none": "Claude Code's default rows"}[env["subagent_line"]])
+    hooks = ", ".join(g for g in HOOK_GROUP_NAMES if g in env["hooks"]) or "none"
+    lines.append(f"Hooks         {hooks}")
+    lines.append("/pulse        " + ("installed" if env["pulse_command"] else "not installed"))
+    lines.append("This copy     " + {
+        "git": f"git clone at {_short_home(env['script_dir'])} (update with --update)",
+        "plugin": "Claude Code plugin (update it with /plugin)",
+        "raw": f"plain download at {_short_home(env['script_dir'])} (re-run the installer to update)",
+    }[env["install_kind"]])
+    return lines
+
+
+def _setup_detect_providers():
+    """Run detect_providers() defensively: returns (rows, note)."""
+    detect, setp = _providers_api()
+    if detect is None or setp is None:
+        return [], "not available in this build"
+    try:
+        rows = detect() or []
+    except Exception as e:
+        return [], f"detection failed ({type(e).__name__})"
+    rows = [r for r in rows if isinstance(r, dict) and r.get("id")]
+    return rows, ("" if rows else "none detected")
+
+
+def _configured_provider_ids(config):
+    entries = config.get("providers")
+    if not isinstance(entries, list):
+        return set()
+    return {str(e.get("id")) for e in entries if isinstance(e, dict) and e.get("id")}
+
+
+def _auto_provider_ids(rows, config):
+    """Providers the defaults switch on: detected, not the active account, a
+    file/login reader (never MiniMax), and never configured before — so a
+    provider the user disabled stays disabled when setup runs again."""
+    known = _configured_provider_ids(config)
+    return {str(r["id"]) for r in rows
+            if not r.get("active") and not r.get("enabled")
+            and r.get("type") in _AUTO_PROVIDER_TYPES
+            and str(r["id"]) not in known}
+
+
+def _setup_preview_line(config):
+    """A demo status line drawn with ``config``'s look (theme, size, style,
+    layout, effort format) and a fixed set of widgets, for the wizard's live
+    previews. Never touches the network or git."""
+    now = datetime.now(timezone.utc)
+    usage = {
+        "five_hour": {"utilization": 27, "resets_at": (now + timedelta(hours=2, minutes=53)).isoformat()},
+        "seven_day": {"utilization": 73, "resets_at": (now + timedelta(days=3, hours=4)).isoformat()},
+    }
+    show = {k: False for k in DEFAULT_SHOW}
+    for k in ("session", "weekly", "timer", "weekly_timer", "context", "model", "effort", "lines"):
+        show[k] = True
+    demo = dict(config)
+    demo["show"] = show
+    demo["animate"] = "off"
+    demo.pop("widget_priority", None)
+    stdin = {"model_name": "Opus 5.5", "context_pct": 35, "effort": "xhigh",
+             "lines_added": 142, "lines_removed": 37}
+    return build_status_line(usage, "Max 20x", demo, stdin, cache_age=0)
+
+
+def _new_setup_plan(config, env):
+    return {
+        "config": config,
+        "install": True,
+        "hooks": set(),
+        "hooks_remove": set(),
+        "providers": None,          # {"enable": set, "disable": set, "labels": {}}
+        "provider_note": "",
+        "replaced_status_line": env["status_line_cmd"] if env["status_line"] == "other" else None,
+    }
+
+
+def _fmt_value(value):
+    if isinstance(value, bool):
+        return "on" if value else "off"
+    if value in ("", None):
+        return "(none)"
+    return str(value)
+
+
+def _setup_changes(original, plan, env):
+    """Human-readable list of what applying ``plan`` will do."""
+    config = plan["config"]
+    out = []
+    if plan["install"]:
+        if env["status_line"] == "ours":
+            out.append("Status line: reinstall claude-pulse + agent-panel rows + /pulse")
+        elif env["status_line"] == "other":
+            out.append(f"Status line: replace {_sanitize(env['status_line_cmd'])[:50]} with claude-pulse")
+        else:
+            out.append("Status line: install claude-pulse + agent-panel rows + /pulse")
+    else:
+        out.append("Status line: leave as it is")
+    add = [g for g in HOOK_GROUP_NAMES if g in plan["hooks"]]
+    rem = [g for g in HOOK_GROUP_NAMES if g in plan["hooks_remove"]]
+    hook_bits = []
+    if add:
+        hook_bits.append("install " + ", ".join(add))
+    if rem:
+        hook_bits.append("remove " + ", ".join(rem))
+    out.append("Hooks: " + ("; ".join(hook_bits) if hook_bits else "none"))
+    prov = plan.get("providers")
+    if prov and (prov["enable"] or prov["disable"] or prov["labels"]):
+        bits = []
+        if prov["enable"]:
+            bits.append("show " + ", ".join(sorted(prov["enable"])))
+        if prov["disable"]:
+            bits.append("hide " + ", ".join(sorted(prov["disable"])))
+        for pid, label in sorted(prov["labels"].items()):
+            bits.append(f"rename {pid} to {label}")
+        out.append("Providers: " + "; ".join(bits))
+    elif plan.get("provider_note"):
+        out.append(f"Providers: {plan['provider_note']}")
+    else:
+        out.append("Providers: no change")
+    for key in sorted(set(original) | set(config)):
+        if key in ("show", "providers") or key.startswith("_"):
+            continue
+        old, new = original.get(key), config.get(key)
+        if old != new:
+            out.append(f"{key.replace('_', ' ').capitalize()}: {_fmt_value(old)} → {_fmt_value(new)}")
+    old_show, new_show = original.get("show", {}), config.get("show", {})
+    on = sorted(k for k in new_show if new_show.get(k) and not old_show.get(k))
+    off = sorted(k for k in new_show if not new_show.get(k) and old_show.get(k))
+    if on:
+        out.append("Show: " + ", ".join(on))
+    if off:
+        out.append("Hide: " + ", ".join(off))
+    if config.get("show", {}).get("last_tool") and "heartbeat" not in (plan["hooks"] | (env["hooks"] - plan["hooks_remove"])):
+        out.append("Note: Last tool stays blank without the heartbeat hook")
+    return out
+
+
+def _setup_apply(plan, env):
+    """Write everything ``plan`` asks for. Returns True when all of it worked."""
+    config = plan["config"]
+    ok = True
+    if plan["install"]:
+        install_status_line()
+        install_pulse_command()
+        settings, _err = _load_settings_for_write(env["settings_path"])
+        cmd = ((settings or {}).get("statusLine") or {}).get("command", "")
+        if "claude_status.py" not in str(cmd):
+            ok = False
+            utf8_print(f"{RED}The status line was not written to {env['settings_path']}.{RESET}")
+    if plan["hooks_remove"]:
+        ok = remove_hooks(plan["hooks_remove"]) and ok
+    if plan["hooks"]:
+        ok = install_hooks(plan["hooks"]) and ok
+    prov = plan.get("providers")
+    if prov and (prov["enable"] or prov["disable"] or prov["labels"]):
+        _detect, setp = _providers_api()
+        try:
+            result = setp(config, enable_ids=tuple(sorted(prov["enable"])),
+                          disable_ids=tuple(sorted(prov["disable"])),
+                          labels=dict(prov["labels"]) or None)
+            if isinstance(result, dict):
+                config = result
+            if prov["enable"] and "providers" in DEFAULT_SHOW:
+                config.setdefault("show", {})["providers"] = True
+        except Exception as e:
+            ok = False
+            utf8_print(f"{RED}Could not update providers: {type(e).__name__}: {_sanitize(str(e))}{RESET}")
+    save_config(config)
+    try:
+        os.remove(get_cache_path())
+    except OSError:
+        pass
+    return ok
+
+
+def _setup_interactive(env):
+    """Full-screen guided setup. Returns a process exit code."""
+    import copy
+    original = load_config()
+    config = copy.deepcopy(original)
+    plan = _new_setup_plan(config, env)
+    rows, note = _setup_detect_providers()
+    plan["provider_note"] = note
+    prov_orig_labels = {str(r["id"]): _sanitize(str(r.get("label") or r["id"]))[:24] for r in rows}
+    prov_checked = ({str(r["id"]) for r in rows if r.get("enabled")}
+                    | _auto_provider_ids(rows, config))
+    prov_labels = {}
+    caps_minutes = max(1, int(round(_model_caps_ttl(config) / 60)))
+    state = {"error": None}
+
+    def welcome(step):
+        lines = _setup_env_lines(env)
+        if env["settings_error"]:
+            state["error"] = env["settings_error"]
+            _tty_write(_screen_frame(step, "Setup can't continue", _body(lines),
+                                     "Fix settings.json, then run --setup again. Press any key."))
+            _read_key()
+            return None
+        r = _screen_confirm(step, "Set up claude-pulse", True,
+                            body=lines + ["", "Nothing is written until you confirm the summary at the end."],
+                            yes="Start", no="Quit", hint="Enter start · Esc quit")
+        return None if r is False else r
+
+    def status_line(step):
+        kind = env["status_line"]
+        if kind == "ours":
+            title = "Reinstall the claude-pulse status line?"
+            body = ["Refreshes the command in settings.json, the agent-panel rows",
+                    "(subagentStatusLine) and the /pulse command. Safe to repeat."]
+        elif kind == "other":
+            title = "Replace your current status line?"
+            body = [f"settings.json runs: {_sanitize(env['status_line_cmd'])[:70]}",
+                    "claude-pulse replaces it. The old command is printed when setup",
+                    "finishes, so you can put it back."]
+        else:
+            title = "Install the claude-pulse status line?"
+            body = ["Adds statusLine and subagentStatusLine (one row per running agent)",
+                    "to settings.json, and the /pulse command for later tweaks."]
+        r = _screen_confirm(step, title, plan["install"], body=body)
+        if isinstance(r, bool):
+            plan["install"] = r
+            return True
+        return r
+
+    def hooks(step):
+        installed = env["hooks"]
+        default = set(installed) if installed else {"agents", "team"}
+        current = plan.get("_hooks_seen", default)
+        r = _screen_multiselect(step, "Which hooks should claude-pulse install?",
+                                list(_SETUP_HOOK_ITEMS), current,
+                                body=["Hooks are commands Claude Code runs on events. None of these can",
+                                      "block Claude: the events that could are pinned to exit 0."])
+        if not isinstance(r, set):
+            return r
+        plan["_hooks_seen"] = r
+        plan["hooks"] = set(r)
+        plan["hooks_remove"] = set(installed) - r
+        show = config["show"]
+        base = original["show"].get("heartbeat", False)
+        if "heartbeat" in r and "heartbeat" not in installed:
+            show["heartbeat"] = True
+        elif "heartbeat" in installed and "heartbeat" not in r:
+            show["heartbeat"] = False
+        else:
+            show["heartbeat"] = base
+        return True
+
+    def providers(step):
+        if not rows:
+            return _SKIP
+        items = []
+        for r in rows:
+            pid = str(r["id"])
+            label = _sanitize(str(prov_labels.get(pid) or r.get("label") or pid))[:24]
+            bits = [str(r.get("type") or "?")]
+            if r.get("path"):
+                bits.append(_short_home(_sanitize(str(r["path"]))))
+            if r.get("active"):
+                bits.append("this account (already the main line)")
+            if r.get("note"):
+                bits.append(_sanitize(str(r["note"])))
+            items.append((pid, label, " · ".join(bits)))
+
+        def rename(index):
+            pid, label, _desc = items[index]
+            new = _screen_text(step, f"Label for {pid}", default=label, max_len=24,
+                               validate=lambda t: None if t else "A label can't be empty.",
+                               hint="type · Backspace delete · Enter accept · ←/Esc keep the old label")
+            if isinstance(new, str) and new:
+                new = _sanitize(new)[:24]
+                prov_labels[pid] = new
+                items[index] = (pid, new, items[index][2])
+
+        current = plan.get("_prov_seen", prov_checked)
+        r = _screen_multiselect(step, "Show usage rows for your other accounts and tools?",
+                                items, current, actions={"r": rename},
+                                body=["Each ticked provider gets its own row under the main line.",
+                                      "Codex and Gemini rows read local files. Another Claude account's row",
+                                      "asks api.anthropic.com with that account's own token (never refreshed)."],
+                                hint="Space tick · r rename · a all · n none · Enter confirm "
+                                     "· ← back · Esc cancel")
+        if not isinstance(r, set):
+            return r
+        plan["_prov_seen"] = r
+        was = {str(x["id"]) for x in rows if x.get("enabled")}
+        labels = {pid: lab for pid, lab in prov_labels.items() if lab != prov_orig_labels.get(pid)}
+        plan["providers"] = {"enable": r - was, "disable": was - r, "labels": labels}
+        return True
+
+    def caps(step):
+        items = [(k, label, "") for k, label in (("opus", "Opus"), ("sonnet", "Sonnet"), ("fable", "Fable"))
+                 if k in DEFAULT_SHOW]
+        if not items:
+            return _SKIP
+        current = {k for k, _l, _d in items if config["show"].get(k)}
+        r = _screen_multiselect(step, "Per-model weekly cap bars?", items, current, body=[
+            "Claude Code's status-line input carries only the 5-hour and weekly",
+            "windows. Each per-model bar needs one usage-API call every",
+            f"{caps_minutes} minutes with your Claude Code OAuth token. Off by default."])
+        if not isinstance(r, set):
+            return r
+        for k, _l, _d in items:
+            config["show"][k] = k in r
+        return True
+
+    def theme(step):
+        r = _pick_theme_loop(config, step=step)
+        if isinstance(r, str):
+            config["theme"] = r
+            return True
+        return r
+
+    def _choice(step, title, key, options, preview=True, body=None):
+        names = [o[0] for o in options]
+        cur = config.get(key)
+        idx = names.index(cur) if cur in names else 0
+        pv = (lambda k: _setup_preview_line(dict(config, **{key: k}))) if preview else None
+        r = _screen_select(step, title, options, idx, preview=pv, body=body)
+        if isinstance(r, int):
+            config[key] = names[r]
+            return True
+        return r
+
+    def bar_size(step):
+        return _choice(step, "Bar size", "bar_size",
+                       [(n, n, f"{w} characters") for n, w in BAR_SIZES.items()])
+
+    def bar_style(step):
+        return _choice(step, "Bar style", "bar_style",
+                       [(n, n, f"{f}{f}{f}{e}{e}") for n, (f, e) in BAR_STYLES.items()])
+
+    def layout(step):
+        desc = {"standard": "labels, bars and timers", "compact": "short labels",
+                "minimal": "bars only", "percent-first": "percentage before the bar"}
+        return _choice(step, "Layout", "layout", [(n, n, desc.get(n, "")) for n in LAYOUTS])
+
+    def currency(step):
+        detected = _detect_default_currency()
+        names = {"$": "US dollar (costs are calculated in USD)",
+                 "£": "British pound (converted daily)", "€": "Euro (converted daily)"}
+        syms = []
+        for s in (config.get("currency") or "$", detected, "$", "£", "€"):
+            if s and s not in syms:
+                syms.append(s)
+        options = [(s, s, names.get(s, "converted daily") + ("  · detected" if s == detected else ""))
+                   for s in syms]
+        options.append(("__other__", "Other…", "type any symbol: ¥ ₹ C$ kr"))
+        while True:
+            r = _screen_select(step, "Currency for cost widgets", options, 0)
+            if not isinstance(r, int):
+                return r
+            if options[r][0] != "__other__":
+                config["currency"] = options[r][0]
+                return True
+            t = _screen_text(step, "Currency symbol (up to 5 characters)", "", max_len=5,
+                             validate=lambda v: None if _sanitize(v)[:5] else "Type a symbol, or ← to go back.")
+            if isinstance(t, str):
+                config["currency"] = _sanitize(t)[:5]
+                return True
+            if t is None:
+                return None
+            # _BACK → show the currency list again
+
+    def clock(step):
+        return _choice(step, "Clock format for reset times", "clock_format",
+                       [("12h", "12h", "Fri 5pm"), ("24h", "24h", "Fri 17:00")], preview=False)
+
+    def effort(step):
+        return _choice(step, "How should reasoning effort be written?", "effort_format",
+                       [(f, f, _format_effort("high", f)) for f in ("labeled", "full", "short")
+                        if f in EFFORT_FORMATS])
+
+    def widgets(step):
+        items = [(k, label, desc) for k, label, desc in _SETUP_WIDGETS if k in DEFAULT_SHOW]
+        show = config["show"]
+
+        def is_on(k):
+            if k == "budget":
+                return bool(show.get("budget")) and float(config.get("budget_usd") or 0) > 0
+            return bool(show.get(k, DEFAULT_SHOW.get(k, False)))
+
+        while True:
+            before = {k for k, _l, _d in items if is_on(k)}
+            r = _screen_multiselect(step, "Optional widgets", items, before,
+                                    body=["Ticked widgets appear when they have something to show."])
+            if not isinstance(r, set):
+                return r
+            if "budget" in r and "budget" not in before:
+                amount = _screen_text(step, "Budget in USD (match your --max-budget-usd)", "",
+                                      max_len=10, validate=_validate_budget)
+                if amount is None:
+                    return None
+                if amount is _BACK:
+                    continue
+                config["budget_usd"] = float(amount.lstrip("$"))
+            for k, _l, _d in items:
+                on = k in r
+                if on != (k in before):
+                    show[k] = on
+            return True
+
+    def summary(step):
+        lines = _setup_changes(original, plan, env)
+        r = _screen_confirm(step, "Apply these changes?", True, body=lines,
+                            yes="Apply", no="Cancel (change nothing)")
+        if r is True:
+            return True
+        if r is False:
+            return None
+        return r
+
+    steps = [("Welcome", welcome), ("Status line", status_line), ("Hooks", hooks),
+             ("Providers", providers), ("Model caps", caps), ("Theme", theme),
+             ("Bar size", bar_size), ("Bar style", bar_style), ("Layout", layout),
+             ("Currency", currency), ("Clock", clock), ("Effort", effort),
+             ("Widgets", widgets), ("Summary", summary)]
+
+    _enable_windows_ansi()
+    _tty_write("\x1b[?1049h\x1b[?25l")
+    finished = False
+    try:
+        i, direction = 0, 1
+        while 0 <= i < len(steps):
+            name, fn = steps[i]
+            result = fn(f"Step {i}/{len(steps) - 1} · {name}")
+            if result is None:
+                break
+            if result is _BACK:
+                i, direction = max(0, i - 1), -1
+            elif result is _SKIP:
+                i += direction
+                if i < 0:
+                    i, direction = 0, 1
+            else:
+                i, direction = i + 1, 1
+        else:
+            finished = True
+    except KeyboardInterrupt:
+        finished = False
+    finally:
+        _tty_write("\x1b[?25h\x1b[?1049l")
+
+    if state["error"]:
+        utf8_print(f"{RED}Error: {state['error']}{RESET}")
+        utf8_print("Nothing changed.")
+        return 1
+    if not finished:
+        utf8_print("Nothing changed.")
+        return 0
+    plan.pop("_hooks_seen", None)
+    plan.pop("_prov_seen", None)
+    for line in _setup_changes(original, plan, env):
+        utf8_print(f"  {line}")
+    utf8_print("")
+    ok = _setup_apply(plan, env)
+    if plan["install"] and plan["replaced_status_line"]:
+        utf8_print(f"Replaced your previous status line command: {_sanitize(plan['replaced_status_line'])}")
+    utf8_print("")
+    if ok:
+        utf8_print(f"{GREEN}Done.{RESET} Restart Claude Code to load it. Tweak anything later with /pulse.")
+        return 0
+    utf8_print(f"{RED}Setup finished with errors (see above).{RESET}")
+    return 1
+
+
+def _validate_budget(text):
+    try:
+        value = float(str(text).lstrip("$"))
+    except ValueError:
+        return "Type an amount such as 25, or ← to go back."
+    if not (value > 0) or value != value or value == float("inf"):
+        return "The budget must be more than 0."
+    return None
+
+
+def _setup_noninteractive(env):
+    """Unattended setup with safe defaults. Returns a process exit code.
+
+    Installs the status line, the agent-panel rows and /pulse, and switches on
+    newly detected file/login providers. It installs no hooks and never
+    enables MiniMax: an unattended install keeps a static bar.
+    """
+    utf8_print("claude-pulse setup (defaults)")
+    for line in _setup_env_lines(env):
+        utf8_print(f"  {line}")
+    utf8_print("")
+    if env["settings_error"]:
+        print(f"Error: {env['settings_error']}", file=sys.stderr)
+        utf8_print("Nothing changed.")
+        return 1
+    config = load_config()
+    plan = _new_setup_plan(config, env)
+    rows, note = _setup_detect_providers()
+    enable = _auto_provider_ids(rows, config)
+    if enable:
+        plan["providers"] = {"enable": enable, "disable": set(), "labels": {}}
+    else:
+        plan["provider_note"] = note or "no new ones"
+    install_status_line()
+    install_pulse_command()
+    ok = True
+    settings, _err = _load_settings_for_write(env["settings_path"])
+    if "claude_status.py" not in str(((settings or {}).get("statusLine") or {}).get("command", "")):
+        ok = False
+        utf8_print(f"{RED}The status line was not written to {env['settings_path']}.{RESET}")
+    if plan["providers"]:
+        plan["install"] = False   # already done above; apply only the rest
+        ok = _setup_apply(plan, env) and ok
+    if plan["replaced_status_line"]:
+        utf8_print(f"Replaced your previous status line command: {_sanitize(plan['replaced_status_line'])}")
+    utf8_print("")
+    prov_txt = (", ".join(sorted(enable)) if enable else (plan["provider_note"] or "none"))
+    utf8_print(f"Set up: status line, agent-panel rows, /pulse. Providers: {prov_txt}. Hooks: none.")
+    utf8_print("For hooks, theme and widgets run --setup in a terminal, or /pulse setup inside Claude Code.")
+    return 0 if ok else 1
+
+
+def cmd_setup(args):
+    """``--setup [--non-interactive]``: guided first-run setup.
+
+    Interactive when stdin and stdout are both terminals and neither
+    ``--non-interactive`` nor ``CLAUDE_PULSE_NONINTERACTIVE`` asks otherwise;
+    unattended defaults everywhere else (pipes, CI, Git Bash's mintty).
+    Returns a process exit code.
+    """
+    try:
+        forced = ("--non-interactive" in args
+                  or os.environ.get("CLAUDE_PULSE_NONINTERACTIVE", "").strip() not in ("", "0"))
+        env = _setup_env()
+        if forced:
+            return _setup_noninteractive(env)
+        if not _stdio_is_tty():
+            utf8_print("No interactive terminal here, so setup uses the defaults.")
+            if sys.platform == "win32" and (os.environ.get("MSYSTEM") or os.environ.get("TERM_PROGRAM") == "mintty"):
+                utf8_print("Git Bash (mintty) can't run the full-screen setup: use Windows Terminal or PowerShell,"
+                           " or prefix the command with winpty.")
+            return _setup_noninteractive(env)
+        return _setup_interactive(env)
+    except KeyboardInterrupt:
+        utf8_print("Setup interrupted.")
+        return 130
+    except Exception as e:
+        print(f"Setup failed: {type(e).__name__}: {_sanitize(str(e))}", file=sys.stderr)
+        return 1
 
 
 def cmd_show(parts_str):
@@ -6542,6 +7590,96 @@ def cmd_print_config():
 # Main
 # ---------------------------------------------------------------------------
 
+# Every command-line flag main() understands: (flag, args, group, help).
+# The single source for --help, the README flag audit and the /pulse docs;
+# tests/test_help.py checks it against main()'s `"--flag" in args` chain both
+# ways, so a new flag must be listed here.
+CLI_GROUPS = ("Setup", "Look", "Widgets", "Providers", "Hooks", "Info", "Internal")
+CLI_FLAGS = [
+    ("--setup", "[--non-interactive]", "Setup", "Guided setup: status line, hooks, providers, theme, widgets"),
+    ("--install", "", "Setup", "Install the status line, agent-panel rows and /pulse (no questions)"),
+    ("--update", "", "Setup", "Update a git install to the latest release"),
+    ("--help", "", "Setup", "Show this list (also -h)"),
+    ("-h", "", "Setup", "Same as --help"),
+    ("--theme", "<name>", "Look", "Set the colour theme (see --themes)"),
+    ("--pick-theme", "", "Look", "Arrow-key theme picker with a live preview"),
+    ("--pick", "", "Look", "Same as --pick-theme"),
+    ("--themes", "", "Look", "List themes"),
+    ("--themes-demo", "", "Look", "Preview the status line in every theme"),
+    ("--show-themes", "", "Look", "Theme previews in their accent colours"),
+    ("--show-colors", "", "Look", "List text colours"),
+    ("--show-all", "", "Look", "--show-themes and --show-colors together"),
+    ("--text-color", "<name|auto>", "Look", "Colour for labels and percentages"),
+    ("--animate", "<off|rainbow|pulse|glow|shift>", "Look", "Bar animation"),
+    ("--animation-speed", "<slow|normal|fast>", "Look", "Animation speed"),
+    ("--bar-size", "<small|small-medium|medium|medium-large|large>", "Look", "Bar width"),
+    ("--bar-style", "<name>", "Look", "Bar characters (classic, block, dot, braille, ...)"),
+    ("--layout", "<standard|compact|minimal|percent-first>", "Look", "How labels, bars and numbers are arranged"),
+    ("--max-width", "<20-100>", "Look", "Percent of the terminal width to use"),
+    ("--wrap", "<off|auto>", "Look", "Wrap onto a second row instead of truncating"),
+    ("--preset", "<minimal|default>", "Look", "Apply a bundle of settings (default = factory reset)"),
+    ("--show", "<parts>", "Widgets", "Turn widgets on (comma-separated)"),
+    ("--hide", "<parts>", "Widgets", "Turn widgets off (comma-separated)"),
+    ("--priority", "<widget=N,...>", "Widgets", "Reorder widgets (lower = further left)"),
+    ("--currency", "<symbol>", "Widgets", "Currency for cost widgets (converted from USD)"),
+    ("--clock-format", "<12h|24h>", "Widgets", "Clock for reset times"),
+    ("--effort-format", "<labeled|full|short>", "Widgets", "How reasoning effort is written"),
+    ("--context-format", "<percent|tokens>", "Widgets", "Context window as a percentage or tokens"),
+    ("--extra-display", "<auto|full|amount>", "Widgets", "How extra-usage credits are shown"),
+    ("--weekly-timer-format", "<auto|countdown|date|full>", "Widgets", "Weekly reset timer style"),
+    ("--weekly-timer-prefix", "<text>", "Widgets", "Text before the weekly reset time (e.g. R:)"),
+    ("--streak-style", "<fire|text>", "Widgets", "Usage streak style"),
+    ("--budget", "<amount|off>", "Widgets", "Spend budget to match --max-budget-usd"),
+    ("--limits", "[key=N,...]", "Widgets", "Subagent and web-search caps used as denominators"),
+    ("--focus", "<start [min]|stop|status>", "Widgets", "Focus (pomodoro) timer"),
+    # providers flags are added at integration
+    ("--install-hooks", "[--only heartbeat,agents,team]", "Hooks", "Install hooks (all three groups unless --only)"),
+    ("--config", "", "Info", "Print the current configuration"),
+    ("--stats", "", "Info", "Usage statistics and streaks"),
+    ("--heatmap", "", "Info", "Usage heatmap"),
+    ("--debug-stdin", "", "Info", "Save and parse the JSON Claude Code pipes in"),
+    ("--subagent-status-line", "", "Internal", "Agent-panel rows (run by Claude Code)"),
+    ("--hook-refresh", "[tool]", "Internal", "PostToolUse hook"),
+    ("--hook-subagent-start", "", "Internal", "SubagentStart hook"),
+    ("--hook-subagent-stop", "", "Internal", "SubagentStop hook"),
+    ("--hook-teammate-idle", "", "Internal", "TeammateIdle hook"),
+    ("--hook-task-created", "", "Internal", "TaskCreated hook"),
+    ("--hook-task-completed", "", "Internal", "TaskCompleted hook"),
+]
+# Options that only ever follow another flag; known to the unknown-flag guard.
+_CLI_SUBOPTIONS = ("--non-interactive", "--only", "--json")
+
+
+def cmd_help():
+    """Print CLI_FLAGS grouped, for --help / -h."""
+    utf8_print(f"claude-pulse {VERSION} — usage status line for Claude Code")
+    utf8_print("")
+    utf8_print("Usage: python claude_status.py [flag [args]]")
+    utf8_print("With no flag and JSON on stdin (how Claude Code runs it) it prints the status line.")
+    for group in CLI_GROUPS:
+        rows = [r for r in CLI_FLAGS if r[2] == group and r[0] != "-h"]
+        if not rows:
+            continue
+        utf8_print("")
+        utf8_print(group)
+        for flag, fargs, _group, text in rows:
+            left = f"{flag} {fargs}".strip()
+            if len(left) > 34:
+                utf8_print(f"  {left}")
+                utf8_print(f"  {'':<34}  {text}")
+            else:
+                utf8_print(f"  {left:<34}  {text}")
+    utf8_print("")
+    utf8_print("Inside Claude Code: /pulse (or /pulse setup) does all of this by asking you.")
+
+
+def _unknown_cli_flags(args):
+    """Flags in ``args`` that neither CLI_FLAGS nor a sub-option knows."""
+    known = {row[0] for row in CLI_FLAGS} | set(_CLI_SUBOPTIONS)
+    return [a for a in args if a.startswith("-") and len(a) > 1 and a not in known
+            and not a.lstrip("-").replace(".", "").isdigit()]
+
+
 def main():
     # Handle SIGPIPE gracefully on Unix (e.g. when piped to head)
     if hasattr(signal, "SIGPIPE"):
@@ -6551,6 +7689,28 @@ def main():
 
     if "--update" in args:
         cmd_update()
+        return
+
+    if "--help" in args or "-h" in args:
+        cmd_help()
+        return
+
+    # A mistyped flag typed at a terminal used to fall through to the status
+    # line and print a bar. Status-line mode always has stdin piped, so this
+    # guard never fires for Claude Code itself.
+    if args and args[0].startswith("-") and _unknown_cli_flags(args[:1]):
+        try:
+            _interactive_stdin = sys.stdin.isatty()
+        except (AttributeError, ValueError, OSError):
+            _interactive_stdin = False
+        if _interactive_stdin:
+            utf8_print(f"Unknown flag: {_sanitize(args[0])}  (see --help)")
+            sys.exit(2)
+
+    if "--setup" in args:
+        code = cmd_setup(args)
+        if code:
+            sys.exit(code)
         return
 
     if "--install" in args:
@@ -7033,7 +8193,17 @@ def main():
         return
 
     if "--install-hooks" in args:
-        install_hooks()
+        groups = None
+        if "--only" in args:
+            idx = args.index("--only")
+            try:
+                groups = _parse_hook_groups(args[idx + 1] if idx + 1 < len(args) else "")
+            except ValueError as e:
+                utf8_print(f"{e}")
+                utf8_print(f"Usage: --install-hooks [--only {','.join(HOOK_GROUP_NAMES)}|all]")
+                sys.exit(2)
+        if not install_hooks(groups):
+            sys.exit(1)
         return
 
     if "--hook-refresh" in args:
