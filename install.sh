@@ -2,7 +2,7 @@
 set -eu
 
 REPO_SLUG="NoobyGains/claude-pulse"
-REPO_URL="https://github.com/${REPO_SLUG}.git"
+REPO_URL="${CLAUDE_PULSE_REPO_URL:-https://github.com/${REPO_SLUG}.git}"
 RAW_BASE_URL="https://raw.githubusercontent.com/${REPO_SLUG}/main"
 
 INSTALL_DIR="${CLAUDE_PULSE_DIR:-$HOME/.claude-pulse}"
@@ -91,18 +91,23 @@ install_repo() {
   install_from_raw
 }
 
-run_python_install() {
+run_python_setup() {
   if has_cmd python3; then
-    python3 "$INSTALL_DIR/claude_status.py" --install
-    return
+    PY=python3
+  elif has_cmd python; then
+    PY=python
+  else
+    die "Python 3 is required. Install Python, then run this installer again."
   fi
 
-  if has_cmd python; then
-    python "$INSTALL_DIR/claude_status.py" --install
-    return
+  # `curl | bash` leaves stdin on the pipe, so test stdout and /dev/tty
+  # instead: when both work, the wizard reads real keys from /dev/tty.
+  # CLAUDE_PULSE_NONINTERACTIVE=1 (dotfiles, CI) always takes the defaults.
+  if [ -z "${CLAUDE_PULSE_NONINTERACTIVE:-}" ] && [ -t 1 ] && ( : </dev/tty ) 2>/dev/null; then
+    "$PY" "$INSTALL_DIR/claude_status.py" --setup </dev/tty
+  else
+    "$PY" "$INSTALL_DIR/claude_status.py" --setup --non-interactive
   fi
-
-  die "Python 3 is required. Install Python, then run this installer again."
 }
 
 install_pulse_command() {
@@ -114,11 +119,11 @@ install_pulse_command() {
 
 install_repo
 install_pulse_command
-run_python_install
+run_python_setup
 
 log ""
 log "claude-pulse installed in: $INSTALL_DIR"
-log "Restart Claude Code, then run /pulse to configure your status bar."
+log "Restart Claude Code. Change anything later with /pulse (or /pulse setup)."
 
 if [ "$INSTALL_METHOD" = "raw" ]; then
   log "Note: installed without git. /pulse update expects a git clone."
